@@ -61,3 +61,15 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# --- Vercel 本地链接状态（含 projectId，不应入库）---
+.vercel
+
+# --- 环境变量文件 ---
+# 注意：不要写成 .env*，那会把需要入库的 .env.example 一起排除
+.env
+.env.local
+.env*.local
+.env.development
+.env.production
+!.env.example
