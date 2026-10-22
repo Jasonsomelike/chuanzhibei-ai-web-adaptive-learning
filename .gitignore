@@ -32,6 +32,9 @@ playwright-report/
 test-results/
 .vitest/
 
+# --- 截图：保留，因为 README 与预指导材料会引用 ---
+# （不忽略，评审可以直接看到界面效果）
+
 # --- 日志 ---
 *.log
 logs/

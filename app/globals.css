@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+/*
+ * 设计 token。选暖中性色而不是纯灰，因为学习界面长时间注视，
+ * 纯灰在低亮度屏上偏冷、易疲劳。
+ * 强调色用琥珀色系：与「路径/进度」的语义相符，且在深色下对比度足够。
+ */
+@theme {
+  --color-canvas: #faf9f7;
+  --color-surface: #ffffff;
+  --color-ink: #1c1917;
+  --color-ink-soft: #57534e;
+  --color-ink-faint: #a8a29e;
+  --color-line: #e7e5e4;
+
+  --color-accent: #b45309;
+  --color-accent-soft: #fef3c7;
+  --color-accent-line: #fcd34d;
+
+  --color-good: #15803d;
+  --color-good-soft: #dcfce7;
+  --color-warn: #a16207;
+  --color-warn-soft: #fef9c3;
+  --color-bad: #b91c1c;
+  --color-bad-soft: #fee2e2;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-canvas: #1c1917;
+    --color-surface: #292524;
+    --color-ink: #fafaf9;
+    --color-ink-soft: #d6d3d1;
+    --color-ink-faint: #78716c;
+    --color-line: #44403c;
+
+    --color-accent: #fbbf24;
+    --color-accent-soft: #451a03;
+    --color-accent-line: #78350f;
+
+    --color-good: #4ade80;
+    --color-good-soft: #052e16;
+    --color-warn: #fcd34d;
+    --color-warn-soft: #422006;
+    --color-bad: #f87171;
+    --color-bad-soft: #450a0a;
+  }
+}
+
+html {
+  color-scheme: light dark;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  /* 中文正文行高略大一些更易读 */
+  text-wrap: pretty;
+}
+
+/* 键盘可达：焦点必须可见，这是无障碍硬要求（对比度 ≥4.5:1） */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* 尊重「减少动态效果」的系统设置 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 数字对齐：掌握度、百分比这类数值用等宽数字，避免跳动 */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

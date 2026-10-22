@@ -1,0 +1,46 @@
+{
+  "name": "adaptive-learning-path",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "传智杯 AI WEB 网页开发挑战赛 · 自适应学习路径规划（B组 · 胆子肥嘟嘟队）",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "kg:validate": "tsx scripts/validate-kg.ts",
+    "check:secrets": "tsx scripts/check-secrets.ts",
+    "bench": "node bench/bench-path.mjs",
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:mcp": "tsx scripts/mcp-smoke.ts",
+    "verify": "npm run typecheck && npm run test && npm run kg:validate && npm run check:secrets"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "4.0.152",
+    "@tailwindcss/postcss": "^4.3.3",
+    "ai": "6.0.312",
+    "next": "16.4.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwindcss": "^4.3.3",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.2",
+    "playwright": "^1.64.1",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
