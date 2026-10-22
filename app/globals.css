@@ -1,77 +1,228 @@
 @import "tailwindcss";
 
 /*
- * 设计 token。选暖中性色而不是纯灰，因为学习界面长时间注视，
- * 纯灰在低亮度屏上偏冷、易疲劳。
- * 强调色用琥珀色系：与「路径/进度」的语义相符，且在深色下对比度足够。
+ * 主题系统：5 套色相 × 2 种模式（浅/深）= 10 个组合。
+ *
+ * 设计依据见 research/07-color-schemes.md，全部对比度由
+ * research/tools/contrast-audit.mjs 实算，210 个检查对 0 失败。
+ *
+ * ⚠️ 关键实现细节（这里踩过坑）：
+ * 1. 语义变量写在 :root[data-theme][data-mode] 下，@theme 里只做别名，
+ *    且必须用 `@theme inline`。否则工具类引用的是 --color-* 在定义处求值的结果，
+ *    运行时改 --canvas 不会传导，主题切换失效。
+ * 2. 绝不能把 @theme 包进 @media (prefers-color-scheme)。
+ *    @theme 是编译期指令，包在 media query 里只有最后一份值被写进 :root，
+ *    media query 本身会在输出里消失——浅色主题会实际不生效（旧版就是这个 bug）。
+ * 3. 深色下中文正文加字重到 450：中文笔画密度高，深底亮字会 halation，
+ *    细笔画先糊。不要用 text-shadow 描边，那会让小字糊成一团。
  */
-@theme {
-  --color-canvas: #faf9f7;
-  --color-surface: #ffffff;
-  --color-ink: #1c1917;
-  --color-ink-soft: #57534e;
-  --color-ink-faint: #a8a29e;
-  --color-line: #e7e5e4;
 
-  --color-accent: #b45309;
-  --color-accent-soft: #fef3c7;
-  --color-accent-line: #fcd34d;
+/* ── 语义变量的默认值：暖砂 · 浅色 ─────────────────────────── */
+:root {
+  color-scheme: light;
 
-  --color-good: #15803d;
-  --color-good-soft: #dcfce7;
-  --color-warn: #a16207;
-  --color-warn-soft: #fef9c3;
-  --color-bad: #b91c1c;
-  --color-bad-soft: #fee2e2;
+  --canvas: #faf6ef;
+  --surface: #fffcf7;
+  --ink: #1f1a14;
+  --ink-soft: #544a3d;
+  --ink-faint: #736656;
+  --line: #e6ddcf;
+  --line-strong: #8d8172;
+  --accent: #9a4410;
+  --accent-soft: #f6e3cd;
+  --on-accent: #ffffff;
+  --good: #1a6236;
+  --good-soft: #dff0e4;
+  --warn: #7d5105;
+  --warn-soft: #f7ecd2;
+  --bad: #99251b;
+  --bad-soft: #f8dedb;
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --text-weight-body: 400;
+}
+
+/* ── ① 暖砂 Sand · 沉稳阅读（默认） ───────────────────────── */
+[data-theme="sand"][data-mode="light"] {
+  color-scheme: light;
+  --canvas: #faf6ef; --surface: #fffcf7;
+  --ink: #1f1a14; --ink-soft: #544a3d; --ink-faint: #736656;
+  --line: #e6ddcf; --line-strong: #8d8172;
+  --accent: #9a4410; --accent-soft: #f6e3cd; --on-accent: #ffffff;
+  --good: #1a6236; --good-soft: #dff0e4;
+  --warn: #7d5105; --warn-soft: #f7ecd2;
+  --bad: #99251b; --bad-soft: #f8dedb;
+  --text-weight-body: 400;
+}
+[data-theme="sand"][data-mode="dark"] {
+  color-scheme: dark;
+  --canvas: #17140f; --surface: #211d17;
+  --ink: #f3ecdf; --ink-soft: #cdc2b1; --ink-faint: #a2957f;
+  --line: #37312a; --line-strong: #7d7365;
+  --accent: #eaa76a; --accent-soft: #3a2919; --on-accent: #2a1a08;
+  --good: #7dd39d; --good-soft: #1b2f22;
+  --warn: #e6c273; --warn-soft: #33280f;
+  --bad: #f39b90; --bad-soft: #3a1d19;
+  --text-weight-body: 450;
+}
+
+/* ── ② 森林 Forest · 专注沉静 ─────────────────────────────── */
+[data-theme="forest"][data-mode="light"] {
+  color-scheme: light;
+  --canvas: #f4f7f2; --surface: #fcfdfb;
+  --ink: #15201a; --ink-soft: #45564b; --ink-faint: #5f7367;
+  --line: #dbe4db; --line-strong: #778a7c;
+  --accent: #1c6643; --accent-soft: #d9eede; --on-accent: #ffffff;
+  --good: #15603a; --good-soft: #d8ecdf;
+  --warn: #775006; --warn-soft: #f4ebd3;
+  --bad: #9a2822; --bad-soft: #f6dedb;
+  --text-weight-body: 400;
+}
+[data-theme="forest"][data-mode="dark"] {
+  color-scheme: dark;
+  --canvas: #0f1612; --surface: #17211b;
+  --ink: #e7f1e8; --ink-soft: #b9cbbd; --ink-faint: #93a696;
+  --line: #2a3830; --line-strong: #6f8274;
+  --accent: #71cd9b; --accent-soft: #1c3227; --on-accent: #082415;
+  --good: #75d49e; --good-soft: #132a1e;
+  --warn: #e0bb70; --warn-soft: #2f2711;
+  --bad: #f2968d; --bad-soft: #381d1a;
+  --text-weight-body: 450;
+}
+
+/* ── ③ 深蓝 Indigo · 专业理性 ─────────────────────────────── */
+[data-theme="indigo"][data-mode="light"] {
+  color-scheme: light;
+  --canvas: #f6f8fb; --surface: #ffffff;
+  --ink: #121821; --ink-soft: #43506a; --ink-faint: #616f86;
+  --line: #dce3ed; --line-strong: #77869d;
+  --accent: #1c47c4; --accent-soft: #e2eafd; --on-accent: #ffffff;
+  --good: #12603c; --good-soft: #d9ecE2;
+  --warn: #745006; --warn-soft: #f4ebd4;
+  --bad: #9d2530; --bad-soft: #f7dde0;
+  --text-weight-body: 400;
+}
+[data-theme="indigo"][data-mode="dark"] {
+  color-scheme: dark;
+  --canvas: #0d1219; --surface: #151c26;
+  --ink: #e8eef7; --ink-soft: #b4c0d2; --ink-faint: #8b99ad;
+  --line: #28313d; --line-strong: #6d7c91;
+  --accent: #93b2ff; --accent-soft: #1a2740; --on-accent: #0a1730;
+  --good: #70d3a0; --good-soft: #112b20;
+  --warn: #dfba70; --warn-soft: #2e2711;
+  --bad: #f39aa1; --bad-soft: #381d21;
+  --text-weight-body: 450;
+}
+
+/* ── ④ 紫罗兰 Violet · 创意 ───────────────────────────────── */
+[data-theme="violet"][data-mode="light"] {
+  color-scheme: light;
+  --canvas: #f9f7fc; --surface: #fffefe;
+  --ink: #1a1523; --ink-soft: #4e4560; --ink-faint: #6e6480;
+  --line: #e5e0ed; --line-strong: #8f85a3;
+  --accent: #6524cf; --accent-soft: #eee3fd; --on-accent: #ffffff;
+  --good: #14603a; --good-soft: #d8ecdf;
+  --warn: #725006; --warn-soft: #f4ebd3;
+  --bad: #9b2333; --bad-soft: #f7dcdf;
+  --text-weight-body: 400;
+}
+[data-theme="violet"][data-mode="dark"] {
+  color-scheme: dark;
+  --canvas: #121019; --surface: #1b1724;
+  --ink: #eee9f7; --ink-soft: #c4bbd4; --ink-faint: #9a90ab;
+  --line: #322b41; --line-strong: #786d8c;
+  --accent: #c3a6ff; --accent-soft: #2a2040; --on-accent: #1a0f33;
+  --good: #70d39c; --good-soft: #122b1f;
+  --warn: #dfba70; --warn-soft: #2e2711;
+  --bad: #f49aa8; --bad-soft: #381d24;
+  --text-weight-body: 450;
+}
+
+/* ── ⑤ 高对比 Contrast · 无障碍优先 ───────────────────────── */
+[data-theme="contrast"][data-mode="light"] {
+  color-scheme: light;
+  --canvas: #ffffff; --surface: #ffffff;
+  --ink: #000000; --ink-soft: #2b2b2b; --ink-faint: #4a4a4a;
+  --line: #8f8f8f; --line-strong: #595959;
+  --accent: #00309e; --accent-soft: #e4eaff; --on-accent: #ffffff;
+  --good: #00542a; --good-soft: #dcefe4;
+  --warn: #523700; --warn-soft: #f3ead4;
+  --bad: #900d17; --bad-soft: #f8dadc;
+  --text-weight-body: 400;
+}
+[data-theme="contrast"][data-mode="dark"] {
+  color-scheme: dark;
+  --canvas: #000000; --surface: #0c0c0c;
+  --ink: #ffffff; --ink-soft: #e6e6e6; --ink-faint: #c2c2c2;
+  --line: #6e6e6e; --line-strong: #8f8f8f;
+  --accent: #9dbcff; --accent-soft: #101a33; --on-accent: #00102e;
+  --good: #63dd9f; --good-soft: #0a2a1a;
+  --warn: #f2cf80; --warn-soft: #2e2510;
+  --bad: #ffa0a0; --bad-soft: #3a1414;
+  --text-weight-body: 450;
+}
+
+/*
+ * Tailwind 别名：只做映射，不存值。
+ * 必须 inline，否则 bg-canvas 编译成 var(--color-canvas)，
+ * 在定义处求值，主题切换不生效。
+ */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Source Han Sans SC", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  @theme {
-    --color-canvas: #1c1917;
-    --color-surface: #292524;
-    --color-ink: #fafaf9;
-    --color-ink-soft: #d6d3d1;
-    --color-ink-faint: #78716c;
-    --color-line: #44403c;
-
-    --color-accent: #fbbf24;
-    --color-accent-soft: #451a03;
-    --color-accent-line: #78350f;
-
-    --color-good: #4ade80;
-    --color-good-soft: #052e16;
-    --color-warn: #fcd34d;
-    --color-warn-soft: #422006;
-    --color-bad: #f87171;
-    --color-bad-soft: #450a0a;
-  }
-}
-
 html {
-  color-scheme: light dark;
   -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--color-canvas);
-  color: var(--color-ink);
+  background: var(--canvas);
+  color: var(--ink);
   font-family: var(--font-sans);
-  line-height: 1.6;
-  /* 中文正文行高略大一些更易读 */
+  /* 中文正文行高 1.75，高于西文研究的 1.5：汉字无升部降部，行距需更大才不挤 */
+  line-height: 1.75;
+  font-size: 16px;
+  font-weight: var(--text-weight-body);
+  /* 不要合成假粗体，中文会糊 */
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   text-wrap: pretty;
 }
 
-/* 键盘可达：焦点必须可见，这是无障碍硬要求（对比度 ≥4.5:1） */
+/* 键盘可达：焦点必须可见（SC 1.4.11 要求 3:1，此处用 accent 保证足够对比） */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
 }
 
-/* 尊重「减少动态效果」的系统设置 */
+/* 深色下给极小字号一点字距，抵消光晕造成的笔画粘连 */
+[data-mode="dark"] .text-xs,
+[data-mode="dark"] .text-\[11px\] {
+  letter-spacing: 0.01em;
+}
+
+/* 尊重「减少动态效果」 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -83,7 +234,7 @@ body {
   }
 }
 
-/* 数字对齐：掌握度、百分比这类数值用等宽数字，避免跳动 */
+/* 数字等宽：掌握度百分比、时长不跳动 */
 .tabular {
   font-variant-numeric: tabular-nums;
 }

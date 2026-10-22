@@ -14,7 +14,7 @@ export function Card({
 }) {
   return (
     <div
-      className={`rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5 ${className}`}
+      className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
     >
       {children}
     </div>
@@ -31,9 +31,7 @@ export function SectionTitle({
   return (
     <div className="mb-4">
       <h2 className="text-lg font-semibold tracking-tight">{children}</h2>
-      {hint ? (
-        <p className="mt-1 text-sm text-[var(--color-ink-soft)]">{hint}</p>
-      ) : null}
+      {hint ? <p className="mt-1 text-sm text-[var(--ink-soft)]">{hint}</p> : null}
     </div>
   );
 }
@@ -52,22 +50,25 @@ export function MasteryBar({
 }) {
   const pct = Math.round(mean * 100);
   const margin = Math.round(sd * 100);
-  // 不确定度区间：均值 ± 一个标准差
   const low = Math.max(0, Math.round((mean - sd) * 100));
   const high = Math.min(100, Math.round((mean + sd) * 100));
 
   return (
     <div>
       {label ? (
-        <div className="mb-1 flex items-baseline justify-between text-sm">
-          <span className="text-[var(--color-ink-soft)]">{label}</span>
-          <span className="tabular text-[var(--color-ink)]">
+        <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
+          <span className="text-[var(--ink-soft)]">{label}</span>
+          <span className="tabular shrink-0 text-[var(--ink)]">
             {evidenceN === 0 ? "未测评" : `${pct}% ±${margin}`}
           </span>
         </div>
       ) : null}
+      {/*
+        进度条是「非文本元素」，填充与轨道之间需 ≥3:1（SC 1.4.11）。
+        用 accent 实色 + accent-soft 区间 + line 轨道，三层可区分。
+      */}
       <div
-        className="relative h-2 overflow-hidden rounded-full bg-[var(--color-line)]"
+        className="relative h-2 overflow-hidden rounded-full bg-[var(--line)]"
         role="img"
         aria-label={
           evidenceN === 0
@@ -75,13 +76,12 @@ export function MasteryBar({
             : `掌握度 ${pct}%，不确定区间 ${low}% 到 ${high}%`
         }
       >
-        {/* 不确定区间用浅色铺底，点估计用实色覆盖 */}
         <div
-          className="absolute inset-y-0 bg-[var(--color-accent-soft)]"
+          className="absolute inset-y-0 bg-[var(--accent-soft)]"
           style={{ left: `${low}%`, width: `${Math.max(0, high - low)}%` }}
         />
         <div
-          className="absolute inset-y-0 left-0 bg-[var(--color-accent)]"
+          className="absolute inset-y-0 left-0 bg-[var(--accent)]"
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -97,12 +97,11 @@ export function Pill({
   tone?: "neutral" | "good" | "warn" | "bad" | "accent";
 }) {
   const tones: Record<string, string> = {
-    neutral:
-      "bg-[var(--color-line)] text-[var(--color-ink-soft)]",
-    good: "bg-[var(--color-good-soft)] text-[var(--color-good)]",
-    warn: "bg-[var(--color-warn-soft)] text-[var(--color-warn)]",
-    bad: "bg-[var(--color-bad-soft)] text-[var(--color-bad)]",
-    accent: "bg-[var(--color-accent-soft)] text-[var(--color-accent)]",
+    neutral: "bg-[var(--line)] text-[var(--ink-soft)]",
+    good: "bg-[var(--good-soft)] text-[var(--good)]",
+    warn: "bg-[var(--warn-soft)] text-[var(--warn)]",
+    bad: "bg-[var(--bad-soft)] text-[var(--bad)]",
+    accent: "bg-[var(--accent-soft)] text-[var(--accent)]",
   };
   return (
     <span
@@ -124,8 +123,8 @@ export function ButtonLink({
 }) {
   const styles =
     variant === "primary"
-      ? "bg-[var(--color-accent)] text-white hover:opacity-90"
-      : "border border-[var(--color-line)] text-[var(--color-ink)] hover:bg-[var(--color-line)]";
+      ? "bg-[var(--accent)] text-[var(--on-accent)] hover:opacity-90"
+      : "border border-[var(--line-strong)] text-[var(--ink)] hover:bg-[var(--line)]";
   return (
     <Link
       href={href}
@@ -136,37 +135,36 @@ export function ButtonLink({
   );
 }
 
-/** 顶部导航。保持极简：三个入口，不堆功能。 */
+/** 顶部导航。五个入口，加主题与学科切换。 */
 export function Nav() {
+  const links = [
+    { href: "/diagnose", label: "诊断" },
+    { href: "/path", label: "路径" },
+    { href: "/tutor", label: "导师" },
+    { href: "/settings", label: "设置" },
+    { href: "/about", label: "关于" },
+  ];
+
   return (
-    <header className="border-b border-[var(--color-line)] bg-[var(--color-surface)]">
-      <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-3">
+    <header className="border-b border-[var(--line)] bg-[var(--surface)]">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
         <Link href="/" className="flex items-center gap-2 font-semibold">
-          <span className="grid h-7 w-7 place-items-center rounded-md bg-[var(--color-accent)] text-xs text-white">
+          <span className="grid h-7 w-7 place-items-center rounded-md bg-[var(--accent)] text-xs text-[var(--on-accent)]">
             路
           </span>
           <span className="hidden sm:inline">可解释的自适应学习路径</span>
           <span className="sm:hidden">学习路径</span>
         </Link>
-        <nav className="flex items-center gap-1 text-sm">
-          <Link
-            href="/diagnose"
-            className="rounded-md px-3 py-1.5 text-[var(--color-ink-soft)] hover:bg-[var(--color-line)] hover:text-[var(--color-ink)]"
-          >
-            诊断
-          </Link>
-          <Link
-            href="/path"
-            className="rounded-md px-3 py-1.5 text-[var(--color-ink-soft)] hover:bg-[var(--color-line)] hover:text-[var(--color-ink)]"
-          >
-            路径
-          </Link>
-          <Link
-            href="/tutor"
-            className="rounded-md px-3 py-1.5 text-[var(--color-ink-soft)] hover:bg-[var(--color-line)] hover:text-[var(--color-ink)]"
-          >
-            导师
-          </Link>
+        <nav className="flex items-center gap-0.5 text-sm">
+          {links.map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              className="rounded-md px-2.5 py-1.5 text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
+            >
+              {l.label}
+            </Link>
+          ))}
         </nav>
       </div>
     </header>

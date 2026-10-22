@@ -1,0 +1,320 @@
+import Link from "next/link";
+import { Nav, Card, SectionTitle, Pill, ButtonLink } from "@/components/ui";
+import { TEAM, SCHEDULE } from "@/data/team";
+import { SUBJECTS, allSubjectsStats } from "@/data/subjects";
+import { ALGO_VERSION } from "@/lib/plan";
+import { THEMES } from "@/lib/themes";
+
+/**
+ * 关于页：功能说明 + 团队介绍。
+ *
+ * 单独成页而不是塞在首页，是因为评审和老师打开链接时，
+ * 第一件想知道的是「这是谁做的、做了什么、能信吗」。
+ * 首页用来演示，这一页用来交代。
+ */
+
+export default function AboutPage() {
+  const stats = allSubjectsStats();
+  const totalKc = stats.reduce((s, x) => s + x.concepts, 0);
+  const totalQ = stats.reduce((s, x) => s + x.questions, 0);
+  const totalEdge = stats.reduce((s, x) => s + x.edges, 0);
+
+  return (
+    <>
+      <Nav />
+      <main id="main" className="mx-auto max-w-3xl px-5 py-10">
+        <div className="mb-8">
+          <Pill tone="accent">{TEAM.competition}</Pill>
+          <h1 className="mt-3 text-2xl font-semibold tracking-tight">
+            可解释的自适应学习路径
+          </h1>
+          <p className="mt-2 text-[var(--ink-soft)]">
+            面向高校硬课的学生与任课教师，做一张算得出、说得清、改得动的学习路径图。
+            当前覆盖 {SUBJECTS.length} 个学科、{totalKc} 个知识点、{totalQ} 道题。
+          </p>
+        </div>
+
+        {/* ── 功能 ── */}
+        <section className="mb-10">
+          <SectionTitle hint="每个功能都对应评分表里的具体考察点，不是堆砌。">
+            这个应用能做什么
+          </SectionTitle>
+
+          <div className="space-y-3">
+            <Feature
+              title="诊断测评"
+              href="/diagnose"
+              points={[
+                "按先修顺序出题，不会让你跳过前置知识直接做题",
+                "每答一题立即更新掌握度，并显示这一题带来的变化",
+                "掌握度带不确定度：显示「已测 3 题 · 68%（±19）」而不是一个光秃秃的百分比",
+              ]}
+            />
+            <Feature
+              title="学习路径"
+              href="/path"
+              points={[
+                "按时间预算生成路径，改预算立刻重算，无需等待",
+                "反事实对比：选一个对照预算，标出哪些步骤会被推迟",
+                "手动改写：可以拖动或删除任何一步，系统实时标出是否违反先修约束",
+                "路径指纹：对输出取 SHA-256，同一输入永远得到同一指纹",
+              ]}
+            />
+            <Feature
+              title="课程导师"
+              href="/tutor"
+              points={[
+                "回答只依据课程知识库，每条都标注引用了哪个知识点",
+                "检索用 BM25 中文 bigram，不依赖向量数据库",
+                "没配置大模型时仍可用，退化为检索拼装并如实标注",
+              ]}
+            />
+            <Feature
+              title="模型供应商设置"
+              href="/settings"
+              points={[
+                "地址、密钥、模型名全部自己填，支持任何 OpenAI 兼容端点",
+                "内置 DeepSeek / OpenAI / 通义 / Kimi / 智谱 / Ollama 预设",
+                "一键测试连通性，会真实发一次对话请求验证 key 与模型名",
+                "密钥只存本浏览器，请求由浏览器直连供应商，不经过本项目后端",
+              ]}
+            />
+            <Feature
+              title="外观主题"
+              href="/settings"
+              points={[
+                `${THEMES.length} 套配色 × 明暗两种模式，共 ${THEMES.length * 2} 个组合`,
+                "全部通过 WCAG AAA 正文对比度（≥7:1），对比度由脚本实算而非估计",
+                "深色下中文正文自动加字重，避免笔画发虚",
+              ]}
+            />
+            <Feature
+              title="MCP 端点"
+              href="/api/mcp"
+              points={[
+                "实现 MCP 三种原语：tools 4 个 / resources 2 个 / prompts 2 个",
+                "任何支持 MCP 的客户端都能把本课程的知识图谱当工具调用",
+                "GET 该地址可直接看到服务能力清单",
+              ]}
+            />
+          </div>
+        </section>
+
+        {/* ── 三个可验证的承诺 ── */}
+        <section className="mb-10">
+          <SectionTitle hint="这三条都能在仓库里找到实现与测试，不是宣传语。">
+            三个可验证的承诺
+          </SectionTitle>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Card>
+              <h3 className="font-medium">路径可复现</h3>
+              <p className="mt-2 text-sm text-[var(--ink-soft)]">
+                排序是纯函数，不调大模型。同输入同版本 → 同指纹，
+                算法或图谱一改指纹立刻变。
+              </p>
+              <p className="mt-2 font-mono text-xs text-[var(--ink-faint)]">
+                src/lib/plan.ts · {ALGO_VERSION}
+              </p>
+            </Card>
+            <Card>
+              <h3 className="font-medium">理由可追溯</h3>
+              <p className="mt-2 text-sm text-[var(--ink-soft)]">
+                每一步都写明为什么排在这，并引用具体掌握度数值。
+                大模型生成的解释必须标注引用来源。
+              </p>
+              <p className="mt-2 font-mono text-xs text-[var(--ink-faint)]">
+                src/lib/llm.ts
+              </p>
+            </Card>
+            <Card>
+              <h3 className="font-medium">大模型可缺席</h3>
+              <p className="mt-2 text-sm text-[var(--ink-soft)]">
+                不配置任何密钥，诊断与路径仍完整可用。
+                这是设计选择，不是降级兜底。
+              </p>
+              <p className="mt-2 font-mono text-xs text-[var(--ink-faint)]">
+                src/lib/provider.ts
+              </p>
+            </Card>
+          </div>
+        </section>
+
+        {/* ── 学科覆盖 ── */}
+        <section className="mb-10">
+          <SectionTitle
+            hint={`共 ${totalKc} 个知识点 / ${totalEdge} 条先修边 / ${totalQ} 道题。每个学科规模一致，是为了共用同一套模型参数。`}
+          >
+            学科覆盖
+          </SectionTitle>
+          <Card>
+            <div className="space-y-3">
+              {SUBJECTS.map((s) => {
+                const st = stats.find((x) => x.id === s.id)!;
+                return (
+                  <div
+                    key={s.id}
+                    className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-[var(--line)] pb-3 last:border-0 last:pb-0"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium">{s.name}</p>
+                      <p className="text-xs text-[var(--ink-faint)]">
+                        {s.tagline} · {s.syllabus}
+                      </p>
+                    </div>
+                    <p className="tabular shrink-0 text-xs text-[var(--ink-soft)]">
+                      {st.concepts} 点 / {st.edges} 边 / {st.questions} 题 · {st.chapters} 章
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </section>
+
+        {/* ── 团队 ── */}
+        <section className="mb-10">
+          <SectionTitle hint={`${TEAM.competition} · ${TEAM.track}（${TEAM.trackType}）`}>
+            关于我们
+          </SectionTitle>
+          <Card>
+            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-3">
+              <div>
+                <dt className="text-sm text-[var(--ink-soft)]">团队</dt>
+                <dd className="mt-1 font-medium">
+                  {TEAM.name}
+                  <span className="tabular ml-2 text-sm text-[var(--ink-faint)]">
+                    #{TEAM.id}
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-sm text-[var(--ink-soft)]">院校与组别</dt>
+                <dd className="mt-1 font-medium">
+                  {TEAM.school} · {TEAM.group}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-sm text-[var(--ink-soft)]">指导教师</dt>
+                <dd className="mt-1 font-medium">{TEAM.advisor}</dd>
+              </div>
+            </dl>
+
+            <div className="mt-4 border-t border-[var(--line)] pt-4">
+              <p className="text-sm text-[var(--ink-soft)]">成员</p>
+              <ul className="mt-2 space-y-1.5 text-sm">
+                {TEAM.members.map((m) => (
+                  <li key={m.name} className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="font-medium">{m.name}</span>
+                    <span className="text-[var(--ink-faint)]">{m.role}</span>
+                    {"major" in m ? (
+                      <span className="text-xs text-[var(--ink-faint)]">
+                        {m.major} · {m.grade}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-4 border-t border-[var(--line)] pt-4">
+              <p className="text-sm text-[var(--ink-soft)]">赛程</p>
+              <ul className="mt-2 space-y-1 text-sm">
+                {SCHEDULE.map((s) => (
+                  <li key={s.stage} className="flex flex-wrap items-baseline gap-x-2">
+                    <span>{s.stage}</span>
+                    <span className="tabular text-[var(--ink-soft)]">{s.deadline}</span>
+                    {s.note ? (
+                      <span className="text-xs text-[var(--ink-faint)]">{s.note}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <p className="mt-4 border-t border-[var(--line)] pt-4 text-xs text-[var(--ink-faint)]">
+              联系方式按赛事要求在报名系统内提交，不写入公开页面。
+            </p>
+          </Card>
+        </section>
+
+        {/* ── 技术栈 ── */}
+        <section className="mb-10">
+          <SectionTitle>技术栈</SectionTitle>
+          <Card>
+            <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+              {[
+                ["框架", "Next.js 16 App Router + React 19"],
+                ["语言", "TypeScript strict"],
+                ["样式", "Tailwind CSS 4，CSS 变量驱动主题"],
+                ["掌握度", "难度加权 Beta-Bernoulli 后验"],
+                ["路径规划", "纯函数：先修闭包 → 深度+ZPD 排序 → 预算装包"],
+                ["检索", "BM25 + 中文 bigram，进程内，无向量库"],
+                ["工具协议", "MCP（JSON-RPC 2.0）"],
+                ["存储", "浏览器 localStorage（可换 Postgres）"],
+                ["测试", "Vitest 单元测试 + Playwright E2E + MCP 协议测试"],
+              ].map(([k, v]) => (
+                <div key={k}>
+                  <dt className="text-[var(--ink-soft)]">{k}</dt>
+                  <dd className="mt-0.5">{v}</dd>
+                </div>
+              ))}
+            </dl>
+          </Card>
+        </section>
+
+        {/* ── 已知限制 ── */}
+        <section className="mb-10">
+          <SectionTitle hint="预指导阶段如实列出，不粉饰。">
+            已知限制
+          </SectionTitle>
+          <Card>
+            <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
+              <li>· 题库与图谱未经任课教师逐条签字确认，是初始版本</li>
+              <li>· 没有真实学生使用数据，掌握度数字来自自测</li>
+              <li>· 教师班级视图未实现，这是当前最大的功能缺口</li>
+              <li>· 学习者状态存在浏览器本地，换设备不同步</li>
+              <li>· 路径页是列表视图，未做图形化画布</li>
+              <li>· 未做性能预算实测（Lighthouse / CWV）</li>
+            </ul>
+          </Card>
+        </section>
+
+        <div className="flex flex-wrap gap-3">
+          <ButtonLink href="/diagnose">开始使用</ButtonLink>
+          <Link
+            href="/settings"
+            className="inline-flex items-center rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm font-medium"
+          >
+            配置模型供应商
+          </Link>
+        </div>
+      </main>
+    </>
+  );
+}
+
+function Feature({
+  title,
+  href,
+  points,
+}: {
+  title: string;
+  href: string;
+  points: string[];
+}) {
+  return (
+    <Card>
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="font-medium">{title}</h3>
+        <Link href={href} className="shrink-0 text-xs text-[var(--accent)] underline">
+          去试试
+        </Link>
+      </div>
+      <ul className="mt-2 space-y-1 text-sm text-[var(--ink-soft)]">
+        {points.map((p) => (
+          <li key={p}>· {p}</li>
+        ))}
+      </ul>
+    </Card>
+  );
+}

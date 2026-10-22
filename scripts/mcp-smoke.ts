@@ -64,7 +64,24 @@ check(
 // 2. tools/list
 const list = await rpc("tools/list");
 const tools = (list.result as { tools?: { name: string }[] })?.tools ?? [];
-check("tools/list 返回 4 个工具", tools.length === 4, tools.map((t) => t.name).join(", "));
+const toolNames = tools.map((t) => t.name);
+check(
+  "tools/list 返回全部工具",
+  tools.length === 5 && toolNames.includes("list_subjects"),
+  toolNames.join(", "),
+);
+
+// 2b. 多学科：list_subjects
+const subjectsCall = await rpc("tools/call", { name: "list_subjects", arguments: {} });
+const subjectsData = JSON.parse(
+  (subjectsCall.result as { content?: { text?: string }[] })?.content?.[0]?.text ?? "[]",
+) as { id: string; concepts: number; edges: number; questions: number }[];
+check(
+  "list_subjects 返回 5 个学科且规模正确",
+  subjectsData.length === 5 &&
+    subjectsData.every((s) => s.concepts === 40 && s.edges === 60 && s.questions === 120),
+  subjectsData.map((s) => `${s.id}(${s.concepts}/${s.edges}/${s.questions})`).join(" "),
+);
 
 // 3. tools/call: plan_path
 const planCall = await rpc("tools/call", {
@@ -124,7 +141,13 @@ check(
 // 7. resources
 const resList = await rpc("resources/list");
 const resources = (resList.result as { resources?: { uri: string }[] })?.resources ?? [];
-check("resources/list 返回 2 个资源", resources.length === 2, resources.map((r) => r.uri).join(", "));
+check(
+  "resources/list 返回全学科资源（5 学科 x 2）",
+  resources.length === 10 &&
+    resources.some((r) => r.uri === "kg://network/graph") &&
+    resources.some((r) => r.uri === "kg://python/questions"),
+  `${resources.length} 个资源`,
+);
 
 const resRead = await rpc("resources/read", { uri: "kg://data-structures/graph" });
 const graphText = (resRead.result as { contents?: { text?: string }[] })?.contents?.[0]?.text ?? "{}";
@@ -133,6 +156,33 @@ check(
   "resources/read 能读到完整图谱",
   graphData.concepts?.length === 40 && graphData.edges?.length === 60,
   `${graphData.concepts?.length} 点 / ${graphData.edges?.length} 边`,
+);
+
+// 7b. 跨学科资源读取
+const osRead = await rpc("resources/read", { uri: "kg://os/graph" });
+const osGraph = JSON.parse(
+  (osRead.result as { contents?: { text?: string }[] })?.contents?.[0]?.text ?? "{}",
+) as { version?: string; concepts?: unknown[] };
+check(
+  "能读取其他学科的资源",
+  osGraph.version === "kg-os-v1" && osGraph.concepts?.length === 40,
+  `${osGraph.version} / ${osGraph.concepts?.length} 点`,
+);
+
+// 7c. 跨学科 plan_path
+const osPlan = await rpc("tools/call", {
+  name: "plan_path",
+  arguments: { subject: "os", budgetMinutes: 120 },
+});
+const osPlanData = JSON.parse(
+  (osPlan.result as { content?: { text?: string }[] })?.content?.[0]?.text ?? "{}",
+) as { subject?: string; pathHash?: string; steps?: { kcId: string }[] };
+check(
+  "plan_path 支持 subject 参数",
+  osPlanData.subject === "os" &&
+    typeof osPlanData.pathHash === "string" &&
+    (osPlanData.steps?.[0]?.kcId ?? "").startsWith("o"),
+  `${osPlanData.subject} / 首步 ${osPlanData.steps?.[0]?.kcId} / hash ${osPlanData.pathHash?.slice(0, 12)}`,
 );
 
 // 8. prompts

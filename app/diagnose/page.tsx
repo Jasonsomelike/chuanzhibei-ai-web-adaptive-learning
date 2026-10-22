@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
-import { knowledgeGraph } from "@/data/knowledge-graph";
-import { questionsForKc, type Question } from "@/data/questions";
+import { useSubject, SubjectPicker } from "@/lib/subject";
+import type { Question } from "@/data/questions";
 import {
   createLearner,
   loadLearner,
   saveLearner,
   recordAttempt,
   attemptedQuestionIds,
+  progressOf,
   type LearnerState,
 } from "@/lib/learner";
 import { masteryMean, masterySd } from "@/lib/mastery";
@@ -20,7 +21,7 @@ import { computeDepths } from "@/lib/graph";
  * 诊断流程：
  *   1. 从先修深度最小的未测评知识点开始，保证不跳级
  *   2. 每个知识点出 1 道还没做过的题（优先中等难度，信息量最大）
- *   3. 做完立即更新掌握度并显示变化，让学生看到「这一题改变了什么」
+ *   3. 做完立即更新掌握度并显示变化
  *   4. 达到目标题数或没有可出的题时结束
  */
 
@@ -33,47 +34,53 @@ interface PickedQuestion {
 }
 
 export default function DiagnosePage() {
+  const { subject, subjectId, setSubject, ready } = useSubject();
   const [learner, setLearner] = useState<LearnerState | null>(null);
-  const [answered, setAnswered] = useState<{
-    question: Question;
-    correct: boolean;
-    before: number;
-    after: number;
-  }[]>([]);
+  const [answered, setAnswered] = useState<
+    { question: Question; correct: boolean; before: number; after: number }[]
+  >([]);
   const [current, setCurrent] = useState<PickedQuestion | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [revealed, setRevealed] = useState(false);
 
-  const depths = useMemo(() => computeDepths(knowledgeGraph), []);
+  const depths = useMemo(() => computeDepths(subject.graph), [subject.graph]);
   const kcName = useMemo(
-    () => new Map(knowledgeGraph.concepts.map((c) => [c.id, c.name])),
-    [],
+    () => new Map(subject.graph.concepts.map((c) => [c.id, c.name])),
+    [subject.graph],
   );
+  const questionsByKc = useMemo(() => {
+    const map = new Map<string, Question[]>();
+    for (const c of subject.graph.concepts) map.set(c.id, []);
+    for (const q of subject.questions) map.get(q.kcId)?.push(q);
+    return map;
+  }, [subject]);
 
-  // 首次加载：从 localStorage 恢复，或新建
   useEffect(() => {
     setLearner(loadLearner());
   }, []);
 
-  // 每次状态变化都持久化——这就是「跨会话记得住」的实现
   useEffect(() => {
     if (learner) saveLearner(learner);
   }, [learner]);
 
+  // 切换学科时重置当前题目与本次答题记录
+  useEffect(() => {
+    setAnswered([]);
+    setCurrent(null);
+    setSelected(null);
+    setRevealed(false);
+  }, [subjectId]);
+
   const pickNext = useCallback(
     (state: LearnerState): PickedQuestion | null => {
-      // 按先修深度升序，同深度内按掌握度升序（优先补弱的）
-      const candidates = knowledgeGraph.concepts
+      const progress = progressOf(state, subjectId);
+
+      const candidates = subject.graph.concepts
         .map((c) => {
-          const m = state.mastery.find((x) => x.kcId === c.id);
-          const done = attemptedQuestionIds(state, c.id);
-          const remaining = questionsForKc(c.id).filter((q) => !done.has(q.id));
-          return {
-            concept: c,
-            mastery: m,
-            remaining,
-            depth: depths.get(c.id) ?? 0,
-          };
+          const m = progress.mastery.find((x) => x.kcId === c.id);
+          const done = attemptedQuestionIds(state, subjectId, c.id);
+          const remaining = (questionsByKc.get(c.id) ?? []).filter((q) => !done.has(q.id));
+          return { concept: c, mastery: m, remaining, depth: depths.get(c.id) ?? 0 };
         })
         .filter((x) => x.remaining.length > 0 && x.mastery);
 
@@ -93,16 +100,11 @@ export default function DiagnosePage() {
         (a, b) => Math.abs(a.difficulty - 3) - Math.abs(b.difficulty - 3),
       );
 
-      return {
-        question: byDifficulty[0],
-        kcName: chosen.concept.name,
-        depth: chosen.depth,
-      };
+      return { question: byDifficulty[0], kcName: chosen.concept.name, depth: chosen.depth };
     },
-    [depths],
+    [depths, questionsByKc, subjectId],
   );
 
-  // 初始化第一题
   useEffect(() => {
     if (learner && !current && answered.length < DIAGNOSE_TARGET) {
       setCurrent(pickNext(learner));
@@ -113,11 +115,20 @@ export default function DiagnosePage() {
     if (!learner || !current || selected === null) return;
 
     const correct = selected === current.question.answerIndex;
-    const beforeState = learner.mastery.find((m) => m.kcId === current.question.kcId);
+    const progress = progressOf(learner, subjectId);
+    const beforeState = progress.mastery.find((m) => m.kcId === current.question.kcId);
     const before = beforeState ? masteryMean(beforeState) : 0;
 
-    const next = recordAttempt(learner, current.question, correct, new Date().toISOString());
-    const afterState = next.mastery.find((m) => m.kcId === current.question.kcId);
+    const next = recordAttempt(
+      learner,
+      subjectId,
+      current.question,
+      correct,
+      new Date().toISOString(),
+    );
+    const afterState = progressOf(next, subjectId).mastery.find(
+      (m) => m.kcId === current.question.kcId,
+    );
     const after = afterState ? masteryMean(afterState) : 0;
 
     setLearner(next);
@@ -141,12 +152,12 @@ export default function DiagnosePage() {
     setRevealed(false);
   };
 
-  if (!learner) {
+  if (!ready || !learner) {
     return (
       <>
         <Nav />
         <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-          <p className="text-[var(--color-ink-soft)]">正在读取你的学习记录…</p>
+          <p className="text-[var(--ink-soft)]">正在读取你的学习记录…</p>
         </main>
       </>
     );
@@ -154,43 +165,60 @@ export default function DiagnosePage() {
 
   const done = answered.length >= DIAGNOSE_TARGET || (!current && !revealed);
   const correctCount = answered.filter((a) => a.correct).length;
+  const progress = progressOf(learner, subjectId);
 
   return (
     <>
       <Nav />
       <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6 flex items-start justify-between gap-4">
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">诊断测评</h1>
-            <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+            <p className="mt-1 text-sm text-[var(--ink-soft)]">
               按先修顺序出题，每答一题立即更新掌握度。做 {DIAGNOSE_TARGET} 题即可生成路径。
             </p>
           </div>
           <button
             type="button"
             onClick={reset}
-            className="shrink-0 rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm text-[var(--color-ink-soft)] hover:bg-[var(--color-line)]"
+            className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-sm text-[var(--ink-soft)] hover:bg-[var(--line)]"
           >
-            清空记录
+            清空全部记录
           </button>
         </div>
+
+        {/* 学科切换 */}
+        <Card className="mb-5">
+          <p className="mb-2 text-sm font-medium">当前学科</p>
+          <SubjectPicker current={subjectId} onChange={setSubject} />
+          <p className="mt-2 text-xs text-[var(--ink-faint)]">
+            {subject.tagline} · {subject.syllabus}。各学科的掌握度独立计算。
+          </p>
+        </Card>
 
         {/* 进度 */}
         <Card className="mb-5">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-[var(--color-ink-soft)]">
-              已答 <span className="tabular font-medium text-[var(--color-ink)]">{answered.length}</span> / {DIAGNOSE_TARGET} 题
+            <span className="text-[var(--ink-soft)]">
+              本次已答{" "}
+              <span className="tabular font-medium text-[var(--ink)]">{answered.length}</span> /{" "}
+              {DIAGNOSE_TARGET} 题
             </span>
-            <span className="text-[var(--color-ink-soft)]">
-              正确 <span className="tabular font-medium text-[var(--color-ink)]">{correctCount}</span> 题
+            <span className="text-[var(--ink-soft)]">
+              正确 <span className="tabular font-medium text-[var(--ink)]">{correctCount}</span> 题
             </span>
           </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--color-line)]">
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--line)]">
             <div
-              className="h-full bg-[var(--color-accent)] transition-[width] duration-300"
+              className="h-full bg-[var(--accent)] transition-[width] duration-300"
               style={{ width: `${Math.min(100, (answered.length / DIAGNOSE_TARGET) * 100)}%` }}
             />
           </div>
+          {progress.attempts.length > 0 ? (
+            <p className="mt-2 text-xs text-[var(--ink-faint)]">
+              该学科历史累计作答 {progress.attempts.length} 题
+            </p>
+          ) : null}
         </Card>
 
         {/* 当前题目 */}
@@ -208,18 +236,18 @@ export default function DiagnosePage() {
               {current.question.options.map((opt, i) => {
                 const isSelected = selected === i;
                 const isCorrect = i === current.question.answerIndex;
-                let tone =
-                  "border-[var(--color-line)] hover:border-[var(--color-ink-faint)]";
+                let tone = "border-[var(--line-strong)] hover:border-[var(--ink-faint)]";
                 if (revealed && isCorrect)
-                  tone = "border-[var(--color-good)] bg-[var(--color-good-soft)]";
+                  tone = "border-[var(--good)] bg-[var(--good-soft)]";
                 else if (revealed && isSelected && !isCorrect)
-                  tone = "border-[var(--color-bad)] bg-[var(--color-bad-soft)]";
-                else if (isSelected) tone = "border-[var(--color-accent)] bg-[var(--color-accent-soft)]";
+                  tone = "border-[var(--bad)] bg-[var(--bad-soft)]";
+                else if (isSelected)
+                  tone = "border-[var(--accent)] bg-[var(--accent-soft)]";
 
                 return (
                   <label
                     key={i}
-                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${tone} ${revealed ? "cursor-default" : ""}`}
+                    className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${tone} ${revealed ? "cursor-default" : "cursor-pointer"}`}
                   >
                     <input
                       type="radio"
@@ -235,24 +263,19 @@ export default function DiagnosePage() {
             </fieldset>
 
             {revealed ? (
-              <div className="mt-4 rounded-lg bg-[var(--color-canvas)] p-3 text-sm">
+              <div className="mt-4 rounded-lg bg-[var(--canvas)] p-3 text-sm">
                 <p className="font-medium">
                   {selected === current.question.answerIndex ? "回答正确" : "回答错误"}
                 </p>
-                <p className="mt-1 text-[var(--color-ink-soft)]">
-                  {current.question.explanation}
-                </p>
-                <p className="mt-2 tabular text-xs text-[var(--color-ink-faint)]">
-                  该知识点掌握度：
-                  {Math.round(
-                    (answered[answered.length - 1]?.before ?? 0) * 100,
-                  )}
+                <p className="mt-1 text-[var(--ink-soft)]">{current.question.explanation}</p>
+                <p className="tabular mt-2 text-xs text-[var(--ink-faint)]">
+                  该知识点掌握度：{Math.round((answered[answered.length - 1]?.before ?? 0) * 100)}
                   % → {Math.round((answered[answered.length - 1]?.after ?? 0) * 100)}%
                 </p>
                 <button
                   type="button"
                   onClick={next}
-                  className="mt-3 rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
+                  className="mt-3 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
                 >
                   下一题
                 </button>
@@ -262,7 +285,7 @@ export default function DiagnosePage() {
                 type="button"
                 onClick={submit}
                 disabled={selected === null}
-                className="mt-4 rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="mt-4 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 提交答案
               </button>
@@ -276,28 +299,38 @@ export default function DiagnosePage() {
             <SectionTitle hint="诊断结束。下面是这次测评带来的变化。">
               诊断完成
             </SectionTitle>
-            <div className="space-y-3">
-              {summarize(answered, learner).map((row) => (
-                <MasteryBar
-                  key={row.kcId}
-                  mean={row.mean}
-                  sd={row.sd}
-                  evidenceN={row.n}
-                  label={kcName.get(row.kcId) ?? row.kcId}
-                />
-              ))}
-            </div>
+            {answered.length === 0 ? (
+              <p className="text-sm text-[var(--ink-soft)]">
+                该学科的题目已全部作答完毕。可以去{" "}
+                <Link href="/path" className="underline">
+                  查看学习路径
+                </Link>
+                ，或切换学科继续。
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {summarize(answered, progress).map((row) => (
+                  <MasteryBar
+                    key={row.kcId}
+                    mean={row.mean}
+                    sd={row.sd}
+                    evidenceN={row.n}
+                    label={kcName.get(row.kcId) ?? row.kcId}
+                  />
+                ))}
+              </div>
+            )}
             <div className="mt-5 flex flex-wrap gap-3">
               <Link
                 href="/path"
-                className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
+                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
               >
                 查看学习路径
               </Link>
               <button
                 type="button"
                 onClick={reset}
-                className="rounded-lg border border-[var(--color-line)] px-4 py-2 text-sm"
+                className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
               >
                 重新诊断
               </button>
@@ -308,20 +341,18 @@ export default function DiagnosePage() {
         {/* 已答题目回顾 */}
         {answered.length > 0 ? (
           <section>
-            <SectionTitle>答题记录</SectionTitle>
+            <SectionTitle>本次答题记录</SectionTitle>
             <div className="space-y-2">
               {answered.map((a, i) => (
                 <Card key={`${a.question.id}-${i}`} className="py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate text-sm">{a.question.stem}</p>
-                      <p className="mt-0.5 text-xs text-[var(--color-ink-faint)]">
+                      <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
                         {kcName.get(a.question.kcId)} · 难度 {a.question.difficulty}
                       </p>
                     </div>
-                    <Pill tone={a.correct ? "good" : "bad"}>
-                      {a.correct ? "对" : "错"}
-                    </Pill>
+                    <Pill tone={a.correct ? "good" : "bad"}>{a.correct ? "对" : "错"}</Pill>
                   </div>
                 </Card>
               ))}
@@ -333,15 +364,15 @@ export default function DiagnosePage() {
   );
 }
 
-/** 把作答汇总成每个知识点的最新状态。用传入的 learner，不读存储。 */
+/** 把作答汇总成每个知识点的最新状态。用传入的 progress，不读存储。 */
 function summarize(
   answered: { question: Question }[],
-  learner: LearnerState,
+  progress: { mastery: readonly { kcId: string; alpha: number; beta: number; evidenceN: number }[] },
 ): { kcId: string; mean: number; sd: number; n: number }[] {
   const kcIds = [...new Set(answered.map((a) => a.question.kcId))];
 
   return kcIds.map((kcId) => {
-    const m = learner.mastery.find((x) => x.kcId === kcId);
+    const m = progress.mastery.find((x) => x.kcId === kcId);
     return {
       kcId,
       mean: m ? masteryMean(m) : 0,
