@@ -41,6 +41,37 @@ try {
     "含 40 个知识点 / 120 道题",
   );
 
+  // 团队与参赛信息必须完整可见（评审第一眼要看的东西）
+  const teamChecks: [string, string][] = [
+    ["胆子肥嘟嘟队", "团队名称"],
+    ["38543", "团队编号"],
+    ["北京电子科技学院", "院校"],
+    ["B 组", "组别"],
+    ["李双", "队长"],
+    ["于凯", "队员"],
+    ["王一超", "队员"],
+    ["李浩亮", "指导教师"],
+    ["2026 第九届传智杯", "竞赛名称"],
+  ];
+  const missing = teamChecks.filter(([needle]) => !bodyText.includes(needle));
+  record(
+    "首页显示完整参赛信息",
+    missing.length === 0,
+    missing.length === 0
+      ? teamChecks.map(([, label]) => label).join("、")
+      : `缺少：${missing.map(([n]) => n).join("、")}`,
+  );
+
+  // 个人信息不得出现在公开页面
+  const privacyLeaks = ["18010730140", "2838955944@qq.com"].filter((v) =>
+    bodyText.includes(v),
+  );
+  record(
+    "首页未泄露联系方式",
+    privacyLeaks.length === 0,
+    privacyLeaks.length === 0 ? "电话与邮箱均未出现" : `泄露：${privacyLeaks.join("、")}`,
+  );
+
   // 2. 诊断页
   await page.goto(`${BASE}/diagnose`, { waitUntil: "networkidle" });
   await page.waitForTimeout(800);

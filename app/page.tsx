@@ -2,6 +2,7 @@ import { Nav, Card, SectionTitle, Pill, ButtonLink } from "@/components/ui";
 import { datasetStats } from "@/lib/dataset";
 import { ALGO_VERSION } from "@/lib/plan";
 import { knowledgeGraph } from "@/data/knowledge-graph";
+import { TEAM, teamLine } from "@/data/team";
 
 export default function HomePage() {
   const stats = datasetStats();
@@ -108,7 +109,7 @@ export default function HomePage() {
         </section>
 
         {/* 章节概览 */}
-        <section>
+        <section className="mb-12">
           <SectionTitle hint="点击任意知识点可以先看它依赖什么、又被谁依赖。">
             知识图谱覆盖
           </SectionTitle>
@@ -125,9 +126,55 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* 参赛信息：评审需要一眼看到团队与赛程 */}
+        <section>
+          <SectionTitle hint={`${TEAM.competition} · ${TEAM.track}（${TEAM.trackType}）`}>
+            参赛团队
+          </SectionTitle>
+          <Card>
+            <div className="grid gap-x-6 gap-y-4 sm:grid-cols-3">
+              <div>
+                <p className="text-sm text-[var(--color-ink-soft)]">团队</p>
+                <p className="mt-1 font-medium">
+                  {TEAM.name}
+                  <span className="tabular ml-2 text-sm text-[var(--color-ink-faint)]">
+                    #{TEAM.id}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-[var(--color-ink-soft)]">院校与组别</p>
+                <p className="mt-1 font-medium">
+                  {TEAM.school} · {TEAM.group}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-[var(--color-ink-soft)]">指导教师</p>
+                <p className="mt-1 font-medium">{TEAM.advisor}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-[var(--color-line)] pt-4">
+              <p className="text-sm text-[var(--color-ink-soft)]">成员</p>
+              <ul className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                {TEAM.members.map((m) => (
+                  <li key={m.name}>
+                    <span className="font-medium">{m.name}</span>
+                    <span className="ml-1.5 text-[var(--color-ink-faint)]">
+                      {m.role}
+                      {"major" in m ? ` · ${m.major}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </Card>
+        </section>
+
         <footer className="mt-12 border-t border-[var(--color-line)] pt-6 text-sm text-[var(--color-ink-faint)]">
-          <p>
-            胆子肥嘟嘟队 · 北京电子科技学院 · B 组 · 团队编号 38543
+          <p>{teamLine()}</p>
+          <p className="mt-1">
+            {TEAM.competition} · {TEAM.track}
           </p>
           <p className="mt-1">
             图谱版本 {knowledgeGraph.version} · 算法版本 {ALGO_VERSION}
