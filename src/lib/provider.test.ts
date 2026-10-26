@@ -126,11 +126,11 @@ describe("本地地址识别", () => {
 
 describe("密钥打码", () => {
   it("保留首尾各 4 位，中间打码", () => {
-    const masked = maskKey("sk-1234567890abcdefghij");
-    expect(masked.startsWith("sk-1")).toBe(true);
-    expect(masked.endsWith("ghij")).toBe(true);
+    const masked = maskKey("fake-prefix-1234567890-tail");
+    expect(masked.startsWith("fake")).toBe(true);
+    expect(masked.endsWith("tail")).toBe(true);
     expect(masked).toContain("•");
-    expect(masked).not.toContain("567890abc");
+    expect(masked).not.toContain("1234567890");
   });
 
   it("短密钥全部打码", () => {
