@@ -37,10 +37,14 @@ try {
   record("首页渲染", h1.includes("学习路径"), h1.replace(/\s+/g, " ").slice(0, 40));
 
   const bodyText = await page.locator("body").innerText();
+  const subjectCountMatch = /(\d+)\s*个学科/.exec(bodyText);
+  const conceptMatch = /(\d+)\s*个知识点/.exec(bodyText);
   record(
     "首页显示多学科规模",
-    bodyText.includes("5 个学科") || bodyText.includes("200"),
-    bodyText.includes("5 个学科") ? "显示 5 个学科" : "含 200 知识点",
+    Boolean(subjectCountMatch && Number(subjectCountMatch[1]) >= 9),
+    subjectCountMatch
+      ? `${subjectCountMatch[1]} 个学科 · ${conceptMatch?.[1] ?? "?"} 个知识点`
+      : "未找到学科数量",
   );
 
   const teamChecks: [string, string][] = [
@@ -266,13 +270,21 @@ try {
   // 切到计算机网络，题目应该变
   const dsStem = await page.locator("h2").first().innerText();
   await page.getByRole("button", { name: /^计算机网络/ }).click();
-  await page.waitForTimeout(800);
+  // 切换学科会重置当前题目，等新题渲染出来再读
+  await page.waitForSelector('fieldset input[type="radio"]', { timeout: 15000 });
+  await page.waitForTimeout(600);
   const networkStem = await page.locator("h2").first().innerText();
   record(
     "切换学科后题目改变",
     dsStem !== networkStem,
     `${dsStem.slice(0, 18)}… → ${networkStem.slice(0, 18)}…`,
   );
+
+  // 切回数据结构并清空本浏览器记录，保证有题可出
+  // （前面的用例可能已把网络学科的题目答完）
+  await page.getByRole("button", { name: /^数据结构/ }).click();
+  await page.waitForSelector('fieldset input[type="radio"]', { timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(600);
 
   // 答 3 题
   let answered = 0;
@@ -338,7 +350,94 @@ try {
   const hasCitation = /\[[a-z]\d{2}\]/.test(replyText);
   record("导师回答带引用", hasCitation, hasCitation ? "含 [xXX] 引用" : "无引用");
 
-  // ── 8. 截图（两套主题） ──
+  // ── 8. 登录与注册界面 ──
+  await page.goto(`${BASE}/login`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const loginText = await page.locator("body").innerText();
+  record(
+    "登录页有登录与注册两个模式",
+    loginText.includes("登录") && loginText.includes("注册"),
+    "两种模式都在",
+  );
+  record(
+    "登录页说明隐私范围",
+    loginText.includes("PBKDF2") || loginText.includes("不存明文"),
+    loginText.includes("PBKDF2") ? "已说明哈希方式" : "已说明存储内容",
+  );
+
+  // 注册一个新账号
+  const uiEmail = `ui${Date.now()}@test.local`;
+  await page.getByRole("button", { name: "注册", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.locator('input[placeholder="例如：小李"]').fill("测试用户");
+  await page.locator('input[type="email"]').fill(uiEmail);
+  await page.locator('input[type="password"]').fill("uitest1234");
+  await page.getByRole("button", { name: "创建账号" }).click();
+  // 等真正离开登录页，而不是固定等 3 秒
+  await page.waitForURL((u) => !u.pathname.startsWith("/login"), { timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(1200);
+
+  const afterReg = await page.locator("body").innerText();
+  record(
+    "注册后跳转并显示登录态",
+    afterReg.includes("测试用户") || page.url().includes("/diagnose"),
+    `URL=${new URL(page.url()).pathname}`,
+  );
+
+  // ── 9. 自定义方向页 ──
+  await page.goto(`${BASE}/directions`, { waitUntil: "networkidle" });
+  await page.waitForSelector("textarea", { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  const dirText = await page.locator("body").innerText();
+  record(
+    "方向页需要登录且已登录可创建",
+    dirText.includes("新建方向") || dirText.includes("你想学什么"),
+    dirText.includes("新建方向") ? "显示创建表单" : "显示其他内容",
+  );
+
+  // 用规则拼装生成一个方向（不依赖模型）
+  const textarea = page.locator("textarea");
+  if ((await textarea.count()) > 0) {
+    await textarea.fill("我想系统学一遍树结构");
+    await page.getByRole("button", { name: "生成方向" }).click();
+    await page
+      .waitForFunction(
+        () => /从现有学科挑选|模型生成/.test(document.body.innerText),
+        { timeout: 25000 },
+      )
+      .catch(() => {});
+    await page.waitForTimeout(500);
+
+    const draftText = await page.locator("body").innerText();
+    const hasDraft = draftText.includes("从现有学科挑选") || draftText.includes("模型生成");
+    record("生成方向草稿并预览", hasDraft, hasDraft ? "已显示预览" : "无预览");
+
+    if (hasDraft) {
+      await page.getByRole("checkbox").check();
+      await page.getByRole("button", { name: "保存这个方向" }).click();
+      await page.waitForTimeout(3000);
+      const savedText = await page.locator("body").innerText();
+      record(
+        "保存方向并公开",
+        savedText.includes("已公开") || savedText.includes("已创建的方向"),
+        savedText.includes("已公开") ? "已公开" : "已保存",
+      );
+    }
+  } else {
+    record("生成方向草稿并预览", false, "未找到输入框");
+  }
+
+  // ── 10. 方向市场 ──
+  await page.goto(`${BASE}/market`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  const marketText = await page.locator("body").innerText();
+  record(
+    "市场页可浏览且列出方向",
+    marketText.includes("方向市场") && (marketText.includes("选用") || marketText.includes("公开方向")),
+    marketText.includes("选用") ? "有可选方向" : "列表为空但页面正常",
+  );
+
+  // ── 11. 截图（两套主题） ──
   await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
   await page.waitForTimeout(400);
   await page.getByRole("button", { name: /^暖砂/ }).first().click();

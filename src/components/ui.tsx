@@ -4,6 +4,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { NavLinks } from "@/components/nav-links";
 
 export function Card({
   children,
@@ -135,16 +136,13 @@ export function ButtonLink({
   );
 }
 
-/** 顶部导航。五个入口，加主题与学科切换。 */
+/**
+ * 顶部导航。
+ *
+ * 链接与登录态在 NavLinks 里（客户端组件），因为要根据登录状态渲染。
+ * 这个外层保持服务端组件，避免整页变成客户端。
+ */
 export function Nav() {
-  const links = [
-    { href: "/diagnose", label: "诊断" },
-    { href: "/path", label: "路径" },
-    { href: "/tutor", label: "导师" },
-    { href: "/settings", label: "设置" },
-    { href: "/about", label: "关于" },
-  ];
-
   return (
     <header className="border-b border-[var(--line)] bg-[var(--surface)]">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
@@ -155,17 +153,7 @@ export function Nav() {
           <span className="hidden sm:inline">可解释的自适应学习路径</span>
           <span className="sm:hidden">学习路径</span>
         </Link>
-        <nav className="flex items-center gap-0.5 text-sm">
-          {links.map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className="rounded-md px-2.5 py-1.5 text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
-            >
-              {l.label}
-            </Link>
-          ))}
-        </nav>
+        <NavLinks />
       </div>
     </header>
   );

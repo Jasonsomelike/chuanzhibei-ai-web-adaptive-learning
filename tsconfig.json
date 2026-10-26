@@ -41,6 +41,9 @@
   ],
   "exclude": [
     "node_modules",
-    "bench"
+    "bench",
+    "scripts/smoke.ts",
+    "scripts/auth-smoke.ts",
+    "scripts/mcp-smoke.ts"
   ]
 }

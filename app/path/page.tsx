@@ -4,13 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { useSubject, SubjectPicker } from "@/lib/subject";
-import {
-  loadLearner,
-  saveLearner,
-  recordPathEdit,
-  progressOf,
-  type LearnerState,
-} from "@/lib/learner";
+import { recordPathEdit } from "@/lib/learner";
+import { useLearner } from "@/lib/useLearner";
 import {
   planPath,
   checkPrereqOrder,
@@ -34,7 +29,13 @@ const BUDGET_OPTIONS = [30, 60, 90, 120, 180, 240];
 
 export default function PathPage() {
   const { subject, subjectId, setSubject, ready } = useSubject();
-  const [learner, setLearner] = useState<LearnerState | null>(null);
+  const {
+    learner,
+    ready: learnerReady,
+    progress,
+    setLearner,
+    synced,
+  } = useLearner(subjectId);
   const [budget, setBudget] = useState(90);
   const [compareBudget, setCompareBudget] = useState<number | null>(null);
   const [manualSteps, setManualSteps] = useState<PathStep[] | null>(null);
@@ -45,21 +46,11 @@ export default function PathPage() {
     [subject.graph],
   );
 
-  useEffect(() => {
-    setLearner(loadLearner());
-  }, []);
-
-  useEffect(() => {
-    if (learner) saveLearner(learner);
-  }, [learner]);
-
   // 切换学科时清掉手动改写，避免把上一科的顺序带过来
   useEffect(() => {
     setManualSteps(null);
     setCompareBudget(null);
   }, [subjectId]);
-
-  const progress = learner ? progressOf(learner, subjectId) : null;
 
   const plan: PlanResult | null = useMemo(() => {
     if (!progress) return null;
@@ -127,7 +118,7 @@ export default function PathPage() {
     setLearner(updated);
   };
 
-  if (!ready || !learner || !progress) {
+  if (!ready || !learnerReady || !learner || !progress) {
     return (
       <>
         <Nav />
@@ -394,6 +385,12 @@ export default function PathPage() {
               <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-[var(--ink-soft)]">因预算不足推迟</dt>
                 <dd className="tabular text-xs">{plan?.deferred.length ?? 0} 个知识点</dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-[var(--ink-soft)]">进度存储</dt>
+                <dd className="text-xs">
+                  {synced ? "账号（跨设备同步）" : "本浏览器"}
+                </dd>
               </div>
             </dl>
             <p className="mt-3 border-t border-[var(--line)] pt-3 text-xs text-[var(--ink-faint)]">

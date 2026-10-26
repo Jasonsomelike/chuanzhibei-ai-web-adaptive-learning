@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.152",
+    "@neondatabase/serverless": "^1.2.0",
     "@tailwindcss/postcss": "^4.3.3",
     "ai": "6.0.312",
     "next": "16.4.2",

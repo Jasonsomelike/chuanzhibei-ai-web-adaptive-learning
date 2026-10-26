@@ -5,15 +5,8 @@ import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { useSubject, SubjectPicker } from "@/lib/subject";
 import type { Question } from "@/data/questions";
-import {
-  createLearner,
-  loadLearner,
-  saveLearner,
-  recordAttempt,
-  attemptedQuestionIds,
-  progressOf,
-  type LearnerState,
-} from "@/lib/learner";
+import { recordAttempt, attemptedQuestionIds } from "@/lib/learner";
+import { useLearner } from "@/lib/useLearner";
 import { masteryMean, masterySd } from "@/lib/mastery";
 import { computeDepths } from "@/lib/graph";
 
@@ -35,7 +28,14 @@ interface PickedQuestion {
 
 export default function DiagnosePage() {
   const { subject, subjectId, setSubject, ready } = useSubject();
-  const [learner, setLearner] = useState<LearnerState | null>(null);
+  const {
+    learner,
+    ready: learnerReady,
+    progress,
+    setLearner,
+    synced,
+    resetSubject,
+  } = useLearner(subjectId);
   const [answered, setAnswered] = useState<
     { question: Question; correct: boolean; before: number; after: number }[]
   >([]);
@@ -55,14 +55,6 @@ export default function DiagnosePage() {
     return map;
   }, [subject]);
 
-  useEffect(() => {
-    setLearner(loadLearner());
-  }, []);
-
-  useEffect(() => {
-    if (learner) saveLearner(learner);
-  }, [learner]);
-
   // 切换学科时重置当前题目与本次答题记录
   useEffect(() => {
     setAnswered([]);
@@ -72,12 +64,15 @@ export default function DiagnosePage() {
   }, [subjectId]);
 
   const pickNext = useCallback(
-    (state: LearnerState): PickedQuestion | null => {
-      const progress = progressOf(state, subjectId);
+    (state: typeof learner): PickedQuestion | null => {
+      if (!state) return null;
+
+      const stateProgress = state.subjects[subjectId];
+      if (!stateProgress) return null;
 
       const candidates = subject.graph.concepts
         .map((c) => {
-          const m = progress.mastery.find((x) => x.kcId === c.id);
+          const m = stateProgress.mastery.find((x) => x.kcId === c.id);
           const done = attemptedQuestionIds(state, subjectId, c.id);
           const remaining = (questionsByKc.get(c.id) ?? []).filter((q) => !done.has(q.id));
           return { concept: c, mastery: m, remaining, depth: depths.get(c.id) ?? 0 };
@@ -105,18 +100,24 @@ export default function DiagnosePage() {
     [depths, questionsByKc, subjectId],
   );
 
+  /*
+   * 出题。
+   *
+   * 依赖里必须有 subjectId：切换学科时上面的 effect 会把 current 置空，
+   * 但 current 已经是 null 就不会再触发本 effect——没有 subjectId 的话
+   * 页面会停在「没有题目」的状态，而不会为新学科出题。
+   */
   useEffect(() => {
     if (learner && !current && answered.length < DIAGNOSE_TARGET) {
       setCurrent(pickNext(learner));
     }
-  }, [learner, current, answered.length, pickNext]);
+  }, [learner, current, answered.length, pickNext, subjectId]);
 
   const submit = () => {
     if (!learner || !current || selected === null) return;
 
     const correct = selected === current.question.answerIndex;
-    const progress = progressOf(learner, subjectId);
-    const beforeState = progress.mastery.find((m) => m.kcId === current.question.kcId);
+    const beforeState = progress?.mastery.find((m) => m.kcId === current.question.kcId);
     const before = beforeState ? masteryMean(beforeState) : 0;
 
     const next = recordAttempt(
@@ -126,7 +127,7 @@ export default function DiagnosePage() {
       correct,
       new Date().toISOString(),
     );
-    const afterState = progressOf(next, subjectId).mastery.find(
+    const afterState = next.subjects[subjectId]?.mastery.find(
       (m) => m.kcId === current.question.kcId,
     );
     const after = afterState ? masteryMean(afterState) : 0;
@@ -143,16 +144,14 @@ export default function DiagnosePage() {
   };
 
   const reset = () => {
-    const fresh = createLearner();
-    setLearner(fresh);
-    saveLearner(fresh);
+    resetSubject();
     setAnswered([]);
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
   };
 
-  if (!ready || !learner) {
+  if (!ready || !learnerReady || !learner || !progress) {
     return (
       <>
         <Nav />
@@ -165,7 +164,6 @@ export default function DiagnosePage() {
 
   const done = answered.length >= DIAGNOSE_TARGET || (!current && !revealed);
   const correctCount = answered.filter((a) => a.correct).length;
-  const progress = progressOf(learner, subjectId);
 
   return (
     <>
@@ -214,11 +212,12 @@ export default function DiagnosePage() {
               style={{ width: `${Math.min(100, (answered.length / DIAGNOSE_TARGET) * 100)}%` }}
             />
           </div>
-          {progress.attempts.length > 0 ? (
-            <p className="mt-2 text-xs text-[var(--ink-faint)]">
-              该学科历史累计作答 {progress.attempts.length} 题
-            </p>
-          ) : null}
+          <p className="mt-2 text-xs text-[var(--ink-faint)]">
+            {progress.attempts.length > 0
+              ? `该学科历史累计作答 ${progress.attempts.length} 题 · `
+              : ""}
+            {synced ? "进度已同步到账号" : "进度仅存本浏览器"}
+          </p>
         </Card>
 
         {/* 当前题目 */}

@@ -73,3 +73,5 @@ venv/
 .env.development
 .env.production
 !.env.example
+
+.env*

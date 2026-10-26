@@ -19,6 +19,10 @@ import { networkGraph, networkQuestions } from "@/data/subjects/network";
 import { osGraph, osQuestions } from "@/data/subjects/os";
 import { linearAlgebraGraph, linearAlgebraQuestions } from "@/data/subjects/linear-algebra";
 import { pythonGraph, pythonQuestions } from "@/data/subjects/python";
+import { probabilityGraph, probabilityQuestions } from "@/data/subjects/probability";
+import { discreteMathGraph, discreteMathQuestions } from "@/data/subjects/discrete-math";
+import { machineLearningGraph, machineLearningQuestions } from "@/data/subjects/machine-learning";
+import { academicWritingGraph, academicWritingQuestions } from "@/data/subjects/academic-writing";
 
 export interface Subject {
   /** URL 与存储用的稳定 id。 */
@@ -73,6 +77,38 @@ export const SUBJECTS: readonly Subject[] = [
     syllabus: "8 章，面向零基础到进阶",
     graph: pythonGraph,
     questions: pythonQuestions,
+  },
+  {
+    id: "probability",
+    name: "概率论与数理统计",
+    tagline: "随机变量、数字特征、大数定律、参数估计、假设检验",
+    syllabus: "浙大版体系，8 章",
+    graph: probabilityGraph,
+    questions: probabilityQuestions,
+  },
+  {
+    id: "discrete-math",
+    name: "离散数学",
+    tagline: "集合与关系、图论、代数系统、布尔代数、数理逻辑",
+    syllabus: "8 章",
+    graph: discreteMathGraph,
+    questions: discreteMathQuestions,
+  },
+  {
+    id: "machine-learning",
+    name: "机器学习基础",
+    tagline: "回归与分类、模型评估、正则化、集成、SVM、无监督、神经网络",
+    syllabus: "8 章，面向入门",
+    graph: machineLearningGraph,
+    questions: machineLearningQuestions,
+  },
+  {
+    id: "academic-writing",
+    name: "学术英语写作",
+    tagline: "句子语法、段落组织、论证逻辑、学术词汇、引用、摘要与讨论",
+    syllabus: "8 章，从句子到语篇",
+    graph: academicWritingGraph,
+    questions: academicWritingQuestions,
   },
 ];
 
