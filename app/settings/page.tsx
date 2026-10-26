@@ -9,6 +9,8 @@ import {
   clearProvider,
   maskKey,
   testConnection,
+  checkBaseUrl,
+  isLocalAddress,
   type ProviderConfig,
   type ProviderKind,
   type TestResult,
@@ -20,12 +22,12 @@ import { useTheme } from "@/lib/theme";
  * 设置页：模型供应商 + 外观主题。
  *
  * 供应商配置的设计参考主流 agent 工具（Cursor / Continue / Open WebUI）：
- * 地址、密钥、模型名全部用户自填，支持任何 OpenAI 兼容端点。
+ * 地址、密钥、模型名全部用户自填，两种协议分别支持。
  *
  * 关键的安全与成本说明必须写在界面上，不能只写在文档里：
  * - key 只存在本浏览器，不上传
  * - 请求由浏览器直连供应商，不经过本项目服务器
- * - 谁填的 key 谁付费
+ * - HTTPS 页面不能请求 HTTP 地址（混合内容），这是浏览器硬限制
  */
 
 type TestState =
@@ -59,7 +61,11 @@ export default function SettingsPage() {
       setApiKey(p.apiKey);
       setModel(p.model);
       setExtraHeaders(p.extraHeaders ?? "");
-      setPresetId("custom");
+      // 匹配到预设就选中它，否则落到对应协议的自定义
+      const matched = PRESETS.find(
+        (x) => x.baseUrl === p.baseUrl && x.kind === p.kind,
+      );
+      setPresetId(matched?.id ?? (p.kind === "anthropic" ? "custom-anthropic" : "custom-openai"));
     } else {
       applyPreset("deepseek");
     }
@@ -87,6 +93,8 @@ export default function SettingsPage() {
   });
 
   const canTest = baseUrl.trim() !== "" && apiKey.trim() !== "" && model.trim() !== "";
+  const urlCheck = baseUrl.trim() === "" ? null : checkBaseUrl(baseUrl);
+  const localAddr = isLocalAddress(baseUrl);
 
   async function runTest() {
     setTest({ status: "testing" });
@@ -108,6 +116,8 @@ export default function SettingsPage() {
     setTest({ status: "idle" });
   }
 
+  const preset = PRESETS.find((p) => p.id === presetId);
+
   return (
     <>
       <Nav />
@@ -127,7 +137,9 @@ export default function SettingsPage() {
               <>
                 <Pill tone="good">已配置</Pill>
                 <span className="text-xs text-[var(--ink-faint)]">
-                  {existing.label} · {existing.model} · key {maskKey(existing.apiKey)}
+                  {existing.label} · {existing.model} ·{" "}
+                  {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
+                  {maskKey(existing.apiKey)}
                 </span>
               </>
             ) : (
@@ -143,14 +155,14 @@ export default function SettingsPage() {
 
         {/* ── 供应商 ── */}
         <section className="mb-8">
-          <SectionTitle hint="选一个预设，或填任何 OpenAI 兼容端点。">
+          <SectionTitle hint="选一个预设，或填任何兼容端点。">
             模型供应商
           </SectionTitle>
 
           <Card className="mb-4">
             <p className="mb-2 text-sm font-medium">预设</p>
             <div className="flex flex-wrap gap-1.5">
-              {PRESETS.map((p) => (
+              {PRESETS.filter((p) => !p.id.startsWith("custom")).map((p) => (
                 <button
                   key={p.id}
                   type="button"
@@ -166,15 +178,29 @@ export default function SettingsPage() {
                 </button>
               ))}
             </div>
-            {presetId !== "custom" ? (
-              <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                {PRESETS.find((p) => p.id === presetId)?.note}
-              </p>
-            ) : (
-              <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                任何 OpenAI 兼容端点，包括自建 vLLM / One-API / LM Studio
-              </p>
-            )}
+
+            <p className="mb-2 mt-4 text-sm font-medium">自定义端点</p>
+            <div className="flex flex-wrap gap-1.5">
+              {PRESETS.filter((p) => p.id.startsWith("custom")).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => applyPreset(p.id)}
+                  aria-pressed={presetId === p.id}
+                  className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                    presetId === p.id
+                      ? "bg-[var(--accent)] text-[var(--on-accent)]"
+                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            {preset ? (
+              <p className="mt-3 text-xs text-[var(--ink-faint)]">{preset.note}</p>
+            ) : null}
           </Card>
 
           <Card>
@@ -190,16 +216,53 @@ export default function SettingsPage() {
 
               <Field
                 label="API 地址（Base URL）"
-                hint="不要带 /chat/completions。多数供应商以 /v1 结尾"
+                hint={
+                  kind === "anthropic"
+                    ? "填到 /v1 为止，会自动拼接 /messages"
+                    : "填到 /v1 为止，会自动拼接 /chat/completions"
+                }
               >
                 <input
                   value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
+                  onChange={(e) => {
+                    setBaseUrl(e.target.value);
+                    setTest({ status: "idle" });
+                  }}
                   className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                  placeholder="https://api.deepseek.com/v1"
+                  placeholder={
+                    kind === "anthropic"
+                      ? "https://api.anthropic.com/v1"
+                      : "https://api.deepseek.com/v1"
+                  }
                   spellCheck={false}
                 />
               </Field>
+
+              {/* 地址问题就地提示，不等用户点测试 */}
+              {urlCheck && urlCheck.kind !== "ok" ? (
+                <div className="rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] p-3 text-sm">
+                  <p className="font-medium text-[var(--warn)]">
+                    {urlCheck.kind === "mixed-content"
+                      ? "HTTPS 页面不能请求 HTTP 地址"
+                      : "地址有问题"}
+                  </p>
+                  <p className="mt-1 text-[var(--ink-soft)]">{urlCheck.detail}</p>
+                  {urlCheck.kind === "mixed-content" ? (
+                    <ul className="mt-2 space-y-1 text-xs text-[var(--ink-soft)]">
+                      <li>· 这是浏览器的安全策略，无法在页面内绕过</li>
+                      <li>· 给该服务配 HTTPS 域名（推荐，前面挂一层反向代理 + 证书）</li>
+                      <li>· 或在本机跑本项目（http://localhost:3000）再连这个内网地址</li>
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {localAddr && urlCheck?.kind === "ok" ? (
+                <p className="text-xs text-[var(--ink-faint)]">
+                  检测到本地或内网地址。只有在同网络环境下的浏览器才能访问；
+                  若本项目部署在公网，请改用可公网访问的地址。
+                </p>
+              ) : null}
 
               <Field label="API Key" hint="只保存在本浏览器，不上传到任何服务器">
                 <div className="flex gap-2">
@@ -208,7 +271,7 @@ export default function SettingsPage() {
                     onChange={(e) => setApiKey(e.target.value)}
                     type={showKey ? "text" : "password"}
                     className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                    placeholder="sk-…"
+                    placeholder={kind === "anthropic" ? "sk-ant-…" : "sk-…"}
                     spellCheck={false}
                     autoComplete="off"
                   />
@@ -227,7 +290,7 @@ export default function SettingsPage() {
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                  placeholder="deepseek-chat"
+                  placeholder={kind === "anthropic" ? "claude-sonnet-4-5-20250929" : "deepseek-chat"}
                   spellCheck={false}
                 />
               </Field>
@@ -237,13 +300,23 @@ export default function SettingsPage() {
                   高级：协议类型与额外请求头
                 </summary>
                 <div className="mt-3 space-y-3 pl-1">
-                  <Field label="协议" hint="绝大多数供应商用 OpenAI 兼容协议">
+                  <Field
+                    label="协议"
+                    hint={
+                      kind === "anthropic"
+                        ? "Anthropic Messages：POST /messages，密钥走 x-api-key"
+                        : "OpenAI 兼容：POST /chat/completions，密钥走 Authorization"
+                    }
+                  >
                     <select
                       value={kind}
-                      onChange={(e) => setKind(e.target.value as ProviderKind)}
+                      onChange={(e) => {
+                        setKind(e.target.value as ProviderKind);
+                        setTest({ status: "idle" });
+                      }}
                       className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
                     >
-                      <option value="openai-compatible">OpenAI 兼容（默认）</option>
+                      <option value="openai-compatible">OpenAI 兼容</option>
                       <option value="anthropic">Anthropic Messages</option>
                     </select>
                   </Field>
@@ -295,35 +368,7 @@ export default function SettingsPage() {
                 ) : null}
 
                 {test.status === "done" ? (
-                  <div
-                    className={`mt-3 rounded-lg border p-3 text-sm ${
-                      test.result.ok
-                        ? "border-[var(--good)] bg-[var(--good-soft)]"
-                        : "border-[var(--bad)] bg-[var(--bad-soft)]"
-                    }`}
-                    role="status"
-                  >
-                    <p className="flex flex-wrap items-center gap-2 font-medium">
-                      <span className={test.result.ok ? "text-[var(--good)]" : "text-[var(--bad)]"}>
-                        {test.result.ok ? "✓ 连接成功" : "✗ 连接失败"}
-                      </span>
-                      <span className="tabular text-xs text-[var(--ink-faint)]">
-                        {test.result.latencyMs} ms
-                      </span>
-                    </p>
-                    <p className="mt-1 text-[var(--ink-soft)]">{test.result.detail}</p>
-                    {test.result.ok && test.result.capabilities ? (
-                      <p className="mt-1 text-xs text-[var(--ink-faint)]">
-                        支持对话与流式输出。导师页会使用此配置。
-                      </p>
-                    ) : null}
-                    {!test.result.ok ? (
-                      <ul className="mt-2 space-y-1 text-xs text-[var(--ink-soft)]">
-                        <li>· 401 表示密钥无效；404 多半是 baseURL 多了或少了 /v1</li>
-                        <li>· 浏览器直连被 CORS 拦截时，换供应商或走自建代理</li>
-                      </ul>
-                    ) : null}
-                  </div>
+                  <TestReport result={test.result} />
                 ) : null}
               </div>
             </div>
@@ -366,16 +411,14 @@ export default function SettingsPage() {
                   className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left ${
                     theme === t.id
                       ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                      : "border-[var(--line-strong)] hover:bg-[var(--line)]"
+                      : "border border-[var(--line-strong)] hover:bg-[var(--line)]"
                   }`}
                 >
                   <span className="min-w-0">
                     <span className="block text-sm font-medium">{t.name}</span>
                     <span className="block text-xs text-[var(--ink-faint)]">{t.note}</span>
                   </span>
-                  {theme === t.id ? (
-                    <Pill tone="accent">当前</Pill>
-                  ) : null}
+                  {theme === t.id ? <Pill tone="accent">当前</Pill> : null}
                 </button>
               ))}
             </div>
@@ -397,11 +440,15 @@ export default function SettingsPage() {
               <li>
                 <strong className="text-[var(--ink)]">请求由浏览器直连供应商。</strong>
                 调用链是「浏览器 → 你填的地址」，本项目后端不参与转发，
-                因此部署在 Vercel 上也无需保管任何密钥。
+                因此部署在公网也无需保管任何密钥。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">费用由填 key 的人承担。</strong>
                 调用直接计入你的账户额度。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">HTTPS 站点不能请求 HTTP 地址。</strong>
+                这是浏览器的混合内容策略，无法在页面内绕过。内网服务需要配 HTTPS 或在本地运行本项目。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">公共电脑上用完请点「清除」。</strong>
@@ -418,6 +465,57 @@ export default function SettingsPage() {
     </>
   );
 }
+
+/** 测试结果报告：区分失败原因，给对应的修复步骤。 */
+function TestReport({ result }: { result: TestResult }) {
+  const tone = result.ok
+    ? "border-[var(--good)] bg-[var(--good-soft)]"
+    : "border-[var(--bad)] bg-[var(--bad-soft)]";
+
+  const title = result.ok ? "✓ 连接成功" : "✗ 连接失败";
+
+  return (
+    <div className={`mt-3 rounded-lg border p-3 text-sm ${tone}`} role="status">
+      <p className="flex flex-wrap items-center gap-2 font-medium">
+        <span className={result.ok ? "text-[var(--good)]" : "text-[var(--bad)]"}>{title}</span>
+        {result.latencyMs > 0 ? (
+          <span className="tabular text-xs text-[var(--ink-faint)]">{result.latencyMs} ms</span>
+        ) : null}
+        {!result.ok && result.failure ? (
+          <span className="rounded bg-[var(--surface)] px-1.5 py-0.5 text-xs text-[var(--ink-soft)]">
+            {FAILURE_LABEL[result.failure]}
+          </span>
+        ) : null}
+      </p>
+      <p className="mt-1 text-[var(--ink-soft)]">{result.detail}</p>
+      {result.hints && result.hints.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-xs text-[var(--ink-soft)]">
+          {result.hints.map((h) => (
+            <li key={h}>· {h}</li>
+          ))}
+        </ul>
+      ) : null}
+      {result.ok ? (
+        <p className="mt-1 text-xs text-[var(--ink-faint)]">
+          支持对话与流式输出。导师页会使用此配置。
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+const FAILURE_LABEL: Record<string, string> = {
+  precheck: "配置问题",
+  "mixed-content": "混合内容拦截",
+  cors: "跨域拦截",
+  auth: "鉴权失败",
+  "not-found": "地址或模型名错",
+  "rate-limit": "限流或余额",
+  server: "供应商故障",
+  timeout: "超时",
+  network: "网络错误",
+  response: "响应异常",
+};
 
 function Field({
   label,

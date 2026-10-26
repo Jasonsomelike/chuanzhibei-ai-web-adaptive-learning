@@ -364,6 +364,8 @@ async function callProvider(
   if (provider.kind === "anthropic") {
     headers["x-api-key"] = provider.apiKey;
     headers["anthropic-version"] = "2023-06-01";
+    // Anthropic 官方要求浏览器直连时显式声明，否则会被拒
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
   } else {
     headers.Authorization = `Bearer ${provider.apiKey}`;
   }

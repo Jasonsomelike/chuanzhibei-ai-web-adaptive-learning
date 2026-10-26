@@ -144,26 +144,104 @@ try {
   );
 
   // ── 4. 供应商设置 ──
-  await page.getByRole("button", { name: "DeepSeek" }).click();
+  // 4a. 预设列表：不该出现 Ollama，应有 Anthropic 与两个自定义
+  const presetAreaText = await page.locator("body").innerText();
+  record(
+    "预设不含 Ollama",
+    !presetAreaText.includes("Ollama（本地）"),
+    presetAreaText.includes("Ollama") ? "仍出现 Ollama 预设" : "已移除",
+  );
+  record(
+    "预设含 Anthropic Claude",
+    presetAreaText.includes("Anthropic Claude"),
+    "已列出",
+  );
+  record(
+    "自定义拆成两种协议",
+    presetAreaText.includes("自定义（OpenAI 兼容）") &&
+      presetAreaText.includes("自定义（Anthropic 兼容）"),
+    "两种协议都在",
+  );
+
+  // 4b. 预设自动填入
+  await page.getByRole("button", { name: "DeepSeek", exact: true }).click();
   await page.waitForTimeout(200);
-  const baseUrlValue = await page.locator('input[placeholder="https://api.deepseek.com/v1"]').inputValue();
+  const baseUrlValue = await page
+    .locator('input[placeholder="https://api.deepseek.com/v1"]')
+    .inputValue();
   record("预设自动填入地址", baseUrlValue.includes("deepseek.com"), baseUrlValue);
 
-  // 测试按钮在未填 key 时应禁用
+  // 4c. 切到 Anthropic 预设，占位符与提示应随之变化
+  await page.getByRole("button", { name: "Anthropic Claude" }).click();
+  await page.waitForTimeout(300);
+  const anthropicUrl = await page
+    .locator('input[placeholder="https://api.anthropic.com/v1"]')
+    .inputValue();
+  const anthropicModel = await page
+    .locator('input[placeholder="claude-sonnet-4-5-20250929"]')
+    .inputValue();
+  record(
+    "Anthropic 预设填入正确地址与模型",
+    anthropicUrl.includes("anthropic.com") && anthropicModel.startsWith("claude"),
+    `${anthropicUrl} · ${anthropicModel}`,
+  );
+
+  // 4d. 未填 key 时测试按钮禁用
   const testBtn = page.getByRole("button", { name: "测试连通性" });
   const disabled = await testBtn.isDisabled();
   record("未填密钥时测试按钮禁用", disabled, disabled ? "已禁用" : "可点击（不符合预期）");
 
-  // 填假 key，测试连通性应失败但给出可读原因
-  // 用「明显不是密钥」的字符串，避免密钥扫描器误报
+  // 4e. 混合内容提示只在 https 页面下才该出现
+  //     （本地 http 环境不触发是正确行为，所以按页面协议分别断言）
+  await page.getByRole("button", { name: "自定义（OpenAI 兼容）" }).click();
+  await page.waitForTimeout(200);
+  await page.locator('input[placeholder="https://api.deepseek.com/v1"]').fill("http://1.92.81.144:8788/v1");
+  await page.waitForTimeout(400);
+  const mixedText = await page.locator("body").innerText();
+  const pageProtocol = await page.evaluate(() => location.protocol);
+  const showsMixedWarning = mixedText.includes("HTTPS 页面不能请求 HTTP 地址");
+
+  if (pageProtocol === "https:") {
+    record("HTTPS 页面填 HTTP 地址就地提示混合内容", showsMixedWarning, showsMixedWarning ? "已提示" : "未提示");
+  } else {
+    // http 页面下不该提示混合内容（否则是误报），但应给出「本地/内网地址」提醒
+    record(
+      "http 页面不误报混合内容",
+      !showsMixedWarning,
+      showsMixedWarning ? "误报" : `协议 ${pageProtocol}，正确地未提示`,
+    );
+  }
+
+  // 4f. 填假 key 后测试：https 页面应判为混合内容拦截；http 页面会真发请求
   await page.locator('input[placeholder="sk-…"]').fill("fake-not-a-real-key-for-ui-test");
+  await page.locator('input[placeholder="deepseek-chat"]').fill("some-model");
   await testBtn.click();
-  await page.waitForTimeout(6000);
-  const afterTest = await page.locator("body").innerText();
+  await page.waitForTimeout(4000);
+  const mixedResult = await page.locator("body").innerText();
+  if (pageProtocol === "https:") {
+    record(
+      "测试结果标出混合内容而非泛泛网络错误",
+      mixedResult.includes("混合内容拦截"),
+      mixedResult.includes("混合内容拦截") ? "分类正确" : "未标出分类",
+    );
+  } else {
+    record(
+      "http 页面下测试会真实发出请求并归类失败",
+      mixedResult.includes("连接失败"),
+      mixedResult.includes("跨域拦截") ? "跨域拦截" : mixedResult.includes("超时") ? "超时" : "已给出失败结论",
+    );
+  }
+
+  // 4g. 换成合法 https 地址 + 假 key，应得到鉴权类失败（真实发请求）
+  await page.locator('input[placeholder="https://api.deepseek.com/v1"]').fill("https://api.deepseek.com/v1");
+  await page.waitForTimeout(300);
+  await testBtn.click();
+  await page.waitForTimeout(9000);
+  const authText = await page.locator("body").innerText();
   record(
-    "连通性测试给出失败原因",
-    afterTest.includes("连接失败") || afterTest.includes("401") || afterTest.includes("网络错误"),
-    afterTest.includes("连接失败") ? "显示失败" : "显示错误细节",
+    "合法地址+假密钥得到鉴权失败分类",
+    authText.includes("鉴权失败") || authText.includes("401") || authText.includes("跨域拦截"),
+    authText.includes("鉴权失败") ? "鉴权失败" : authText.includes("跨域拦截") ? "跨域拦截" : "其他",
   );
 
   // 保存配置后回显
