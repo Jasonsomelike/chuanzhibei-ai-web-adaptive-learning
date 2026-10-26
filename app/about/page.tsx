@@ -48,6 +48,7 @@ export default function AboutPage() {
                 "按先修顺序出题，不会让你跳过前置知识直接做题",
                 "每答一题立即更新掌握度，并显示这一题带来的变化",
                 "掌握度带不确定度：显示「已测 3 题 · 68%（±19）」而不是一个光秃秃的百分比",
+                "9 个学科的掌握度独立计算，互不污染",
               ]}
             />
             <Feature
@@ -70,11 +71,41 @@ export default function AboutPage() {
               ]}
             />
             <Feature
+              title="自定义学习方向"
+              href="/directions"
+              points={[
+                "用一句自然语言描述想学什么，系统拆成带先修关系的知识点图谱",
+                "配了模型由大模型按 schema 生成，没配则从现有学科挑选相关知识点",
+                "生成结果必须通过严格校验：无环、边不悬空、知识点 5–20 个",
+                "可以选择公开，让其他人也能用",
+              ]}
+            />
+            <Feature
+              title="方向市场"
+              href="/market"
+              points={[
+                "浏览其他人公开的学习方向，未登录也能看",
+                "搜索标题与描述，找到相近的学习主题",
+                "选用后复制一份到自己名下，默认私有，可自行修改与公开",
+                "只有作者本人能改标题、描述与公开状态",
+              ]}
+            />
+            <Feature
+              title="账号与进度同步"
+              href="/login"
+              points={[
+                "邮箱注册即可，不需要验证邮箱",
+                "密码用 PBKDF2-HMAC-SHA256 加盐哈希存储，不存明文",
+                "登录后进度存在服务端，换设备能继续",
+                "不登录也能完整使用，进度留在本浏览器",
+              ]}
+            />
+            <Feature
               title="模型供应商设置"
               href="/settings"
               points={[
-                "地址、密钥、模型名全部自己填，支持任何 OpenAI 兼容端点",
-                "内置 DeepSeek / OpenAI / 通义 / Kimi / 智谱 / Ollama 预设",
+                "地址、密钥、模型名全部自己填，支持 OpenAI 兼容与 Anthropic 两种协议",
+                "内置 DeepSeek / OpenAI / Claude / 通义 / Kimi / 智谱 预设",
                 "一键测试连通性，会真实发一次对话请求验证 key 与模型名",
                 "密钥只存本浏览器，请求由浏览器直连供应商，不经过本项目后端",
               ]}
@@ -92,7 +123,7 @@ export default function AboutPage() {
               title="MCP 端点"
               href="/api/mcp"
               points={[
-                "实现 MCP 三种原语：tools 4 个 / resources 2 个 / prompts 2 个",
+                "实现 MCP 三种原语：tools 5 个 / resources 18 个 / prompts 2 个",
                 "任何支持 MCP 的客户端都能把本课程的知识图谱当工具调用",
                 "GET 该地址可直接看到服务能力清单",
               ]}
@@ -123,13 +154,13 @@ export default function AboutPage() {
                 大模型生成的解释必须标注引用来源。
               </p>
               <p className="mt-2 font-mono text-xs text-[var(--ink-faint)]">
-                src/lib/llm.ts
+                src/lib/direction.ts
               </p>
             </Card>
             <Card>
               <h3 className="font-medium">大模型可缺席</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                不配置任何密钥，诊断与路径仍完整可用。
+                不配置任何密钥，诊断、路径与自定义方向仍可用。
                 这是设计选择，不是降级兜底。
               </p>
               <p className="mt-2 font-mono text-xs text-[var(--ink-faint)]">
@@ -201,16 +232,10 @@ export default function AboutPage() {
 
             <div className="mt-4 border-t border-[var(--line)] pt-4">
               <p className="text-sm text-[var(--ink-soft)]">成员</p>
-              <ul className="mt-2 space-y-1.5 text-sm">
+              <ul className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm">
                 {TEAM.members.map((m) => (
-                  <li key={m.name} className="flex flex-wrap items-baseline gap-x-2">
-                    <span className="font-medium">{m.name}</span>
-                    <span className="text-[var(--ink-faint)]">{m.role}</span>
-                    {"major" in m ? (
-                      <span className="text-xs text-[var(--ink-faint)]">
-                        {m.major} · {m.grade}
-                      </span>
-                    ) : null}
+                  <li key={m.name} className="font-medium">
+                    {m.name}
                   </li>
                 ))}
               </ul>
@@ -249,9 +274,11 @@ export default function AboutPage() {
                 ["掌握度", "难度加权 Beta-Bernoulli 后验"],
                 ["路径规划", "纯函数：先修闭包 → 深度+ZPD 排序 → 预算装包"],
                 ["检索", "BM25 + 中文 bigram，进程内，无向量库"],
+                ["方向生成", "LLM 按 schema 生成 + 代码严格校验"],
+                ["认证", "PBKDF2-HMAC-SHA256 + 服务端会话"],
+                ["存储", "Postgres（Neon）；本地无库时退化为内存"],
                 ["工具协议", "MCP（JSON-RPC 2.0）"],
-                ["存储", "浏览器 localStorage（可换 Postgres）"],
-                ["测试", "Vitest 单元测试 + Playwright E2E + MCP 协议测试"],
+                ["测试", "Vitest 172 条 + Playwright E2E + MCP 协议测试"],
               ].map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-[var(--ink-soft)]">{k}</dt>
@@ -272,9 +299,10 @@ export default function AboutPage() {
               <li>· 题库与图谱未经任课教师逐条签字确认，是初始版本</li>
               <li>· 没有真实学生使用数据，掌握度数字来自自测</li>
               <li>· 教师班级视图未实现，这是当前最大的功能缺口</li>
-              <li>· 学习者状态存在浏览器本地，换设备不同步</li>
+              <li>· 自定义方向不提供题库，因此不能做该方向的诊断</li>
               <li>· 路径页是列表视图，未做图形化画布</li>
               <li>· 未做性能预算实测（Lighthouse / CWV）</li>
+              <li>· 浏览器直连供应商受 CORS 约束，部分服务需自建代理</li>
             </ul>
           </Card>
         </section>

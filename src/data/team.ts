@@ -18,9 +18,9 @@ export const TEAM = {
   school: "北京电子科技学院",
   group: "B 组",
   members: [
-    { name: "李双", role: "队长", major: "计算机科学与技术", grade: "2024 级本科", entryNo: "1767807" },
-    { name: "于凯", role: "队员" },
-    { name: "王一超", role: "队员" },
+    { name: "李双" },
+    { name: "于凯" },
+    { name: "王一超" },
   ],
   advisor: "李浩亮",
 } as const;

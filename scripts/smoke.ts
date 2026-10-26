@@ -81,10 +81,18 @@ try {
   );
   record(
     "关于页列出全部学科",
-    ["数据结构", "计算机网络", "操作系统", "线性代数", "Python"].every((s) =>
-      aboutText.includes(s),
+    ["数据结构", "计算机网络", "操作系统", "线性代数", "Python", "概率论", "离散数学", "机器学习", "学术英语"].every(
+      (s) => aboutText.includes(s),
     ),
-    "5 个学科齐全",
+    "9 个学科齐全",
+  );
+
+  // 成员信息只保留姓名，不出现专业与年级
+  const leakedProfile = ["计算机科学与技术", "2024 级本科"].filter((v) => aboutText.includes(v));
+  record(
+    "关于页不含成员专业与年级",
+    leakedProfile.length === 0,
+    leakedProfile.length === 0 ? "只显示姓名" : `仍出现：${leakedProfile.join("、")}`,
   );
 
   // ── 3. 主题切换（关键：验证浅色真的生效） ──

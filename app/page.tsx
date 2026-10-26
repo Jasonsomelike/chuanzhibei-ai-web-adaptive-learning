@@ -173,7 +173,7 @@ export default function HomePage() {
               </div>
             </div>
             <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm text-[var(--ink-soft)]">
-              成员：{TEAM.members.map((m) => `${m.name}（${m.role}）`).join(" · ")} ·{" "}
+              成员：{TEAM.members.map((m) => m.name).join(" · ")} ·{" "}
               <Link href="/about" className="text-[var(--accent)] underline">
                 了解团队与功能
               </Link>
