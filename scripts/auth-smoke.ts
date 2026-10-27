@@ -39,7 +39,22 @@ function client() {
         headers.set("Content-Type", "application/json");
       }
 
-      const res = await fetch(`${BASE}${path}`, { ...init, headers, redirect: "manual" });
+      /*
+       * 线上跑时偶发 undici 的 ConnectTimeoutError（本机网络/代理抖动），
+       * 与站点无关。重试三次，仍失败才抛，避免把网络抖动当成功能缺陷。
+       */
+      let res: Response | null = null;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          res = await fetch(`${BASE}${path}`, { ...init, headers, redirect: "manual" });
+          break;
+        } catch (err) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
+      }
+      if (!res) throw lastErr;
 
       // Node 的 fetch 把多个 Set-Cookie 折叠成一个逗号分隔的串，
       // 这里按 alp_session 单独提取，避免解析整串。
