@@ -1,12 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
-import { useAuth } from "@/lib/useAuth";
-import { loadProvider, type ProviderConfig } from "@/lib/provider";
-import type { DirectionDraft } from "@/lib/direction";
-
 /**
  * 我的自定义方向。
  *
@@ -17,7 +10,19 @@ import type { DirectionDraft } from "@/lib/direction";
  *   4. 可选公开到方向市场
  *
  * 第 3 步是刻意的：模型生成的东西不能不经确认就变成用户的课程。
+ *
+ * 生成/保存逻辑与诊断页共用 useDirectionDraft，不各写一份——
+ * 两份实现必然出现「这里能生成、那里生成不了」的错位。
  */
+
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { useAuth } from "@/lib/useAuth";
+import { useDirectionDraft } from "@/lib/useDirectionDraft";
+import { ensureAllItems, fetchItems } from "@/lib/directionItems";
+import { kcEvidenceTarget, type ItemSource } from "@/lib/itemgen";
+import type { DirectionDraft } from "@/lib/direction";
 
 interface DirectionSummary {
   id: string;
@@ -25,29 +30,34 @@ interface DirectionSummary {
   description: string;
   isPublic: boolean;
   updatedAt: string;
-  graph?: { concepts: { id: string; name: string; summary: string }[]; edges: { before: string; after: string }[] };
+  graph?: {
+    concepts: { id: string; name: string; summary: string }[];
+    edges: { before: string; after: string }[];
+  };
 }
+
+/** 每个方向的题目覆盖度。null 表示还没拉取。 */
+type Coverage = Record<
+  string,
+  { accepted: number; practice: number; sources: ItemSource[] }
+>;
 
 export default function DirectionsPage() {
   const { user, loading } = useAuth();
+  const draftState = useDirectionDraft();
 
   const [mine, setMine] = useState<DirectionSummary[]>([]);
   const [fetching, setFetching] = useState(false);
-
-  const [description, setDescription] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [draft, setDraft] = useState<DirectionDraft | null>(null);
-  const [draftSource, setDraftSource] = useState<"llm" | "existing" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [issues, setIssues] = useState<string[]>([]);
   const [publishNow, setPublishNow] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
-  const [provider, setProvider] = useState<ProviderConfig | null>(null);
+  const [coverage, setCoverage] = useState<Record<string, Coverage>>({});
+  const [genAll, setGenAll] = useState<{ id: string; done: number; total: number; name: string } | null>(
+    null,
+  );
+  const [genAllError, setGenAllError] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    setProvider(loadProvider());
-  }, []);
+  const [manualFor, setManualFor] = useState<string | null>(null);
 
   const loadMine = useCallback(async () => {
     if (!user) return;
@@ -67,109 +77,35 @@ export default function DirectionsPage() {
     void loadMine();
   }, [loadMine]);
 
-  /** 生成草稿。配了模型就走浏览器直连，否则走服务端规则。 */
-  const generate = async () => {
-    const text = description.trim();
-    if (text === "") return;
-
-    setGenerating(true);
-    setError(null);
-    setIssues([]);
-    setDraft(null);
-    setDraftSource(null);
-
-    try {
-      if (provider) {
-        // 取系统提示词，在浏览器里直连供应商
-        const metaRes = await fetch("/api/directions/generate", { cache: "no-store" });
-        const meta = (await metaRes.json()) as { systemPrompt: string };
-
-        const raw = await callProvider(provider, meta.systemPrompt, text);
-
-        const checkRes = await fetch("/api/directions/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ description: text, rawModelOutput: raw }),
-        });
-        const data = (await checkRes.json()) as {
-          draft?: DirectionDraft;
-          source?: "llm" | "existing";
-          error?: string;
-          issues?: string[];
-        };
-
-        if (!checkRes.ok) {
-          setError(data.error ?? "生成失败");
-          setIssues(data.issues ?? []);
-          // 模型生成的不可用时，退一步给规则拼装的结果
-          await generateFallback(text);
-          return;
-        }
-        setDraft(data.draft ?? null);
-        setDraftSource(data.source ?? "llm");
-      } else {
-        await generateFallback(text);
+  /** 拉每个方向的题目覆盖度。串行即可，方向数量是个位数。 */
+  const loadCoverage = useCallback(async (dirs: DirectionSummary[]) => {
+    const next: Record<string, Coverage> = {};
+    for (const d of dirs) {
+      const items = await fetchItems(d.id, "");
+      const cov: Coverage = {};
+      for (const it of items) {
+        const bucket = (cov[it.kcId] ??= { accepted: 0, practice: 0, sources: [] });
+        if (it.status === "accepted") {
+          bucket.accepted += 1;
+          bucket.sources.push(it.source);
+        } else if (it.status === "practice") bucket.practice += 1;
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      // 直连失败也退回规则拼装，保证功能不空转
-      await generateFallback(text);
-    } finally {
-      setGenerating(false);
+      next[d.id] = cov;
     }
-  };
+    setCoverage(next);
+  }, []);
 
-  async function generateFallback(text: string) {
-    try {
-      const res = await fetch("/api/directions/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: text }),
-      });
-      const data = (await res.json()) as {
-        draft?: DirectionDraft;
-        source?: "llm" | "existing";
-        error?: string;
-        issues?: string[];
-      };
-      if (res.ok && data.draft) {
-        setDraft(data.draft);
-        setDraftSource("existing");
-      } else {
-        setError((prev) => prev ?? data.error ?? "生成失败");
-        setIssues(data.issues ?? []);
-      }
-    } catch {
-      /* 已在上层处理 */
-    }
-  }
+  useEffect(() => {
+    if (mine.length > 0) void loadCoverage(mine);
+  }, [mine, loadCoverage]);
 
   const save = async () => {
-    if (!draft) return;
-    setSaving(true);
-    setError(null);
-
-    try {
-      const res = await fetch("/api/directions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description, draft, isPublic: publishNow }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string; issues?: string[] };
-      if (!res.ok || !data.ok) {
-        setError(data.error ?? "保存失败");
-        setIssues(data.issues ?? []);
-        return;
-      }
-      setDraft(null);
-      setDescription("");
-      setPublishNow(false);
-      await loadMine();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
+    setSaveMessage(null);
+    const id = await draftState.save({ isPublic: publishNow });
+    if (!id) return;
+    setSaveMessage("已保存。可以去诊断页为它出题。");
+    setPublishNow(false);
+    await loadMine();
   };
 
   const togglePublic = async (id: string, next: boolean) => {
@@ -184,6 +120,45 @@ export default function DirectionsPage() {
   const remove = async (id: string) => {
     await fetch(`/api/directions?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadMine();
+  };
+
+  /** 一次备齐某个方向的所有题目。给老师/答辩演示用，不是默认路径。 */
+  const generateAll = async (d: DirectionSummary) => {
+    if (!d.graph) return;
+    const provider = draftState.provider;
+    if (!provider) {
+      setGenAllError((prev) => ({
+        ...prev,
+        [d.id]: "未配置模型供应商，无法生成题目。到设置页配置后再试。",
+      }));
+      return;
+    }
+
+    setGenAllError((prev) => ({ ...prev, [d.id]: "" }));
+    setGenAll({ id: d.id, done: 0, total: d.graph.concepts.length, name: "" });
+
+    const result = await ensureAllItems({
+      directionId: d.id,
+      graph: {
+        version: `custom-${d.id}`,
+        concepts: d.graph.concepts.map((c) => ({ ...c, chapter: "自定义" })),
+        edges: d.graph.edges,
+      },
+      provider,
+      onProgress: (done, total, name) => setGenAll({ id: d.id, done, total, name }),
+    });
+
+    setGenAll(null);
+    if (result.failed.length > 0) {
+      setGenAllError((prev) => ({
+        ...prev,
+        [d.id]: `${result.failed.length} 个知识点生成失败：${result.failed
+          .map((f) => f.name)
+          .slice(0, 3)
+          .join("、")}${result.failed.length > 3 ? " 等" : ""}`,
+      }));
+    }
+    await loadCoverage(mine);
   };
 
   if (loading) {
@@ -232,13 +207,19 @@ export default function DirectionsPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">我的学习方向</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            描述你想学什么，系统把它拆成带先修关系的知识点图谱，可直接用于路径规划。
+            描述你想学什么，系统把它拆成带先修关系的知识点图谱，可直接用于路径规划与诊断。
           </p>
         </div>
 
         {/* ── 创建 ── */}
         <section className="mb-8">
-          <SectionTitle hint={provider ? `将使用 ${provider.label} · ${provider.model} 生成` : "未配置模型，将从现有学科中挑选相关知识点"}>
+          <SectionTitle
+            hint={
+              draftState.provider
+                ? `将使用 ${draftState.provider.label} · ${draftState.provider.model} 生成`
+                : "未配置模型，将从现有学科中挑选相关知识点"
+            }
+          >
             新建方向
           </SectionTitle>
 
@@ -249,8 +230,8 @@ export default function DirectionsPage() {
                 越具体越好。例如「我想搞懂数据库索引为什么用 B+ 树」
               </span>
               <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                value={draftState.description}
+                onChange={(e) => draftState.setDescription(e.target.value)}
                 rows={3}
                 maxLength={500}
                 className="mt-1.5 w-full resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
@@ -261,13 +242,13 @@ export default function DirectionsPage() {
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => void generate()}
-                disabled={generating || description.trim() === ""}
+                onClick={() => void draftState.generate()}
+                disabled={draftState.generating || draftState.description.trim() === ""}
                 className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {generating ? "生成中…" : "生成方向"}
+                {draftState.generating ? "生成中…" : "生成方向"}
               </button>
-              {!provider ? (
+              {!draftState.provider ? (
                 <span className="text-xs text-[var(--ink-faint)]">
                   <Link href="/settings" className="underline">
                     配置模型
@@ -277,12 +258,12 @@ export default function DirectionsPage() {
               ) : null}
             </div>
 
-            {error ? (
+            {draftState.error ? (
               <div className="mt-3 rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-3 text-sm">
-                <p className="text-[var(--bad)]">{error}</p>
-                {issues.length > 0 ? (
+                <p className="text-[var(--bad)]">{draftState.error}</p>
+                {draftState.issues.length > 0 ? (
                   <ul className="mt-1.5 space-y-0.5 text-xs text-[var(--ink-soft)]">
-                    {issues.map((i) => (
+                    {draftState.issues.map((i) => (
                       <li key={i}>· {i}</li>
                     ))}
                   </ul>
@@ -290,23 +271,32 @@ export default function DirectionsPage() {
               </div>
             ) : null}
 
+            {saveMessage ? (
+              <p className="mt-3 rounded-lg border border-[var(--good)] bg-[var(--good-soft)] p-3 text-sm text-[var(--good)]">
+                {saveMessage}
+              </p>
+            ) : null}
+
             {/* ── 预览 ── */}
-            {draft ? (
+            {draftState.draft ? (
               <div className="mt-4 border-t border-[var(--line)] pt-4">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <Pill tone={draftSource === "llm" ? "good" : "warn"}>
-                    {draftSource === "llm" ? "模型生成" : "从现有学科挑选"}
+                  <Pill tone={draftState.source === "llm" ? "good" : "warn"}>
+                    {draftState.source === "llm" ? "模型生成" : "从现有学科挑选"}
                   </Pill>
                   <span className="text-xs text-[var(--ink-faint)]">
-                    {draft.concepts.length} 个知识点 · {draft.edges.length} 条先修关系
+                    {draftState.draft.concepts.length} 个知识点 ·{" "}
+                    {draftState.draft.edges.length} 条先修关系
                   </span>
                 </div>
 
-                <p className="font-medium">{draft.title}</p>
-                <p className="mt-1 text-sm text-[var(--ink-soft)]">{draft.description}</p>
+                <p className="font-medium">{draftState.draft.title}</p>
+                <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                  {draftState.draft.description}
+                </p>
 
                 <ol className="mt-3 space-y-1.5">
-                  {draft.concepts.map((c, i) => (
+                  {draftState.draft.concepts.map((c, i) => (
                     <li key={c.id} className="flex gap-2 text-sm">
                       <span className="tabular shrink-0 text-[var(--ink-faint)]">{i + 1}.</span>
                       <span className="min-w-0">
@@ -319,15 +309,15 @@ export default function DirectionsPage() {
                   ))}
                 </ol>
 
-                {draft.edges.length > 0 ? (
+                {draftState.draft.edges.length > 0 ? (
                   <details className="mt-3 text-sm">
                     <summary className="cursor-pointer text-[var(--ink-soft)]">
-                      查看 {draft.edges.length} 条先修关系
+                      查看 {draftState.draft.edges.length} 条先修关系
                     </summary>
                     <ul className="mt-2 space-y-0.5 text-xs text-[var(--ink-soft)]">
-                      {draft.edges.map((e, i) => (
+                      {draftState.draft.edges.map((e, i) => (
                         <li key={i}>
-                          · {nameOf(draft, e.before)} → {nameOf(draft, e.after)}
+                          · {nameOf(draftState.draft!, e.before)} → {nameOf(draftState.draft!, e.after)}
                         </li>
                       ))}
                     </ul>
@@ -353,17 +343,14 @@ export default function DirectionsPage() {
                   <button
                     type="button"
                     onClick={() => void save()}
-                    disabled={saving}
+                    disabled={draftState.saving}
                     className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
                   >
-                    {saving ? "保存中…" : "保存这个方向"}
+                    {draftState.saving ? "保存中…" : "保存这个方向"}
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setDraft(null);
-                      setDraftSource(null);
-                    }}
+                    onClick={draftState.reset}
                     className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
                   >
                     重新生成
@@ -388,42 +375,112 @@ export default function DirectionsPage() {
             </Card>
           ) : (
             <div className="space-y-2">
-              {mine.map((d) => (
-                <Card key={d.id}>
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{d.title}</span>
-                        <Pill tone={d.isPublic ? "good" : "neutral"}>
-                          {d.isPublic ? "已公开" : "私有"}
-                        </Pill>
-                        {d.graph ? (
-                          <span className="tabular text-xs text-[var(--ink-faint)]">
-                            {d.graph.concepts.length} 点 / {d.graph.edges.length} 边
-                          </span>
+              {mine.map((d) => {
+                const cov = coverage[d.id] ?? {};
+                const totalKcs = d.graph?.concepts.length ?? 0;
+                /*
+                 * 门槛与诊断页共用 kcEvidenceTarget：
+                 * 生成题要 4 道、手动/借用只要 3 道。
+                 * 写死 4 会让「手动录了 3 道、已可诊断」的方向显示「未就绪」。
+                 */
+                const readyKcs = d.graph
+                  ? d.graph.concepts.filter((c) => {
+                      const bucket = cov[c.id];
+                      const accepted = bucket?.accepted ?? 0;
+                      return accepted >= kcEvidenceTarget(bucket?.sources ?? []);
+                    }).length
+                  : 0;
+                const isGenerating = genAll?.id === d.id;
+
+                return (
+                  <div key={d.id} id={d.id}>
+                    <Card>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{d.title}</span>
+                          <Pill tone={d.isPublic ? "good" : "neutral"}>
+                            {d.isPublic ? "已公开" : "私有"}
+                          </Pill>
+                          {d.graph ? (
+                            <span className="tabular text-xs text-[var(--ink-faint)]">
+                              {d.graph.concepts.length} 点 / {d.graph.edges.length} 边
+                            </span>
+                          ) : null}
+                          {d.graph ? (
+                            <Pill tone={readyKcs === totalKcs ? "good" : "warn"}>
+                              题目 {readyKcs}/{totalKcs} 个知识点就绪
+                            </Pill>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 text-sm text-[var(--ink-soft)]">{d.description}</p>
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Link
+                            href={`/diagnose?direction=${encodeURIComponent(d.id)}`}
+                            className="rounded-lg bg-[var(--accent)] px-3 py-1 text-xs font-medium text-[var(--on-accent)]"
+                          >
+                            开始诊断
+                          </Link>
+                          <Link
+                            href={`/path?direction=${encodeURIComponent(d.id)}`}
+                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
+                          >
+                            查看路径
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => void generateAll(d)}
+                            disabled={isGenerating}
+                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs disabled:opacity-40"
+                          >
+                            {isGenerating
+                              ? `生成中 ${genAll.done}/${genAll.total}${genAll.name ? ` · ${genAll.name}` : ""}`
+                              : "生成全部题目"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setManualFor(manualFor === d.id ? null : d.id)}
+                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
+                          >
+                            手动录题
+                          </button>
+                        </div>
+
+                        {genAllError[d.id] ? (
+                          <p className="mt-2 text-xs text-[var(--bad)]">{genAllError[d.id]}</p>
                         ) : null}
                       </div>
-                      <p className="mt-1 text-sm text-[var(--ink-soft)]">{d.description}</p>
+
+                      <div className="flex shrink-0 flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void togglePublic(d.id, !d.isPublic)}
+                          className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs"
+                        >
+                          {d.isPublic ? "设为私有" : "公开"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void remove(d.id)}
+                          className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--bad)]"
+                        >
+                          删除
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex shrink-0 flex-wrap gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => void togglePublic(d.id, !d.isPublic)}
-                        className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs"
-                      >
-                        {d.isPublic ? "设为私有" : "公开"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void remove(d.id)}
-                        className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--bad)]"
-                      >
-                        删除
-                      </button>
-                    </div>
+
+                    {manualFor === d.id && d.graph ? (
+                      <ManualItemForm
+                        directionId={d.id}
+                        concepts={d.graph.concepts}
+                        onSaved={() => void loadCoverage(mine)}
+                      />
+                    ) : null}
+                    </Card>
                   </div>
-                </Card>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -436,73 +493,182 @@ function nameOf(draft: DirectionDraft, id: string): string {
   return draft.concepts.find((c) => c.id === id)?.name ?? id;
 }
 
-/** 浏览器直连供应商生成方向草稿。失败抛错，由调用方降级。 */
-async function callProvider(
-  provider: ProviderConfig,
-  systemPrompt: string,
-  userDescription: string,
-): Promise<string> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+/** 手动录题。只跑 L2 结构检查（用户自己保证答案正确），source=manual。 */
+function ManualItemForm({
+  directionId,
+  concepts,
+  onSaved,
+}: {
+  directionId: string;
+  concepts: readonly { id: string; name: string }[];
+  onSaved: () => void;
+}) {
+  const [kcId, setKcId] = useState(concepts[0]?.id ?? "");
+  const [stem, setStem] = useState("");
+  const [options, setOptions] = useState(["", "", "", ""]);
+  const [answerText, setAnswerText] = useState("");
+  const [explanation, setExplanation] = useState("");
+  const [difficulty, setDifficulty] = useState<"basic" | "advanced" | "challenge">("advanced");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  if (provider.kind === "anthropic") {
-    headers["x-api-key"] = provider.apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-    headers["anthropic-dangerous-direct-browser-access"] = "true";
-  } else {
-    headers.Authorization = `Bearer ${provider.apiKey}`;
-  }
-  if (provider.extraHeaders) {
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
     try {
-      Object.assign(headers, JSON.parse(provider.extraHeaders) as Record<string, string>);
-    } catch {
-      /* 忽略 */
-    }
-  }
-
-  const isAnthropic = provider.kind === "anthropic";
-  const endpoint = isAnthropic
-    ? `${provider.baseUrl}/messages`
-    : `${provider.baseUrl}/chat/completions`;
-
-  const body = isAnthropic
-    ? {
-        model: provider.model,
-        max_tokens: 2000,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userDescription }],
-      }
-    : {
-        model: provider.model,
-        temperature: 0.4,
-        max_tokens: 2000,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userDescription },
-        ],
+      const res = await fetch("/api/directions/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          directionId,
+          kcId,
+          items: [
+            {
+              difficulty,
+              stem,
+              options,
+              answerText,
+              explanation,
+              source: "manual",
+              status: "accepted",
+            },
+          ],
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        inserted?: number;
+        rejected?: { issues: string[] }[];
+        error?: string;
       };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60000);
-
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}${t ? ` · ${t.slice(0, 120)}` : ""}`);
+      if (!res.ok || !data.ok) {
+        setError(data.error ?? "保存失败");
+        return;
+      }
+      if ((data.inserted ?? 0) === 0) {
+        const issues = data.rejected?.[0]?.issues ?? ["未通过结构检查"];
+        setError(`未保存：${issues.join("；")}`);
+        return;
+      }
+      setMessage("已保存。手动录入的题不做机器答案校验，请自行确认正确性。");
+      setStem("");
+      setOptions(["", "", "", ""]);
+      setAnswerText("");
+      setExplanation("");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-      content?: { text?: string }[];
-    };
-    const text = json.choices?.[0]?.message?.content ?? json.content?.[0]?.text ?? "";
-    if (!text.trim()) throw new Error("模型返回空内容");
-    return text;
-  } finally {
-    clearTimeout(timer);
-  }
+  };
+
+  return (
+    <div className="mt-4 border-t border-[var(--line)] pt-4">
+      <p className="text-sm font-medium">手动录入题目</p>
+      <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
+        手动题只做结构检查，不做答案校验——正确性由你保证，界面上会如实标注。
+      </p>
+
+      <label className="mt-3 block text-sm">
+        <span>知识点</span>
+        <select
+          value={kcId}
+          onChange={(e) => setKcId(e.target.value)}
+          className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+        >
+          {concepts.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="mt-2 block text-sm">
+        <span>题干</span>
+        <textarea
+          value={stem}
+          onChange={(e) => setStem(e.target.value)}
+          rows={2}
+          className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+        />
+      </label>
+
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        {options.map((o, i) => (
+          <label key={i} className="block text-sm">
+            <span className="text-xs text-[var(--ink-faint)]">选项 {String.fromCharCode(65 + i)}</span>
+            <input
+              value={o}
+              onChange={(e) => {
+                const next = [...options];
+                next[i] = e.target.value;
+                setOptions(next);
+              }}
+              className="mt-0.5 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-1.5 text-sm"
+            />
+          </label>
+        ))}
+      </div>
+
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <label className="block text-sm">
+          <span>正确答案（从上面四个选项里选）</span>
+          <select
+            value={answerText}
+            onChange={(e) => setAnswerText(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+          >
+            <option value="">请选择</option>
+            {options
+              .filter((o) => o.trim() !== "")
+              .map((o, i) => (
+                <option key={`${o}-${i}`} value={o}>
+                  {o}
+                </option>
+              ))}
+          </select>
+        </label>
+
+        <label className="block text-sm">
+          <span>难度</span>
+          <select
+            value={difficulty}
+            onChange={(e) => setDifficulty(e.target.value as typeof difficulty)}
+            className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+          >
+            <option value="basic">基础</option>
+            <option value="advanced">进阶</option>
+            <option value="challenge">挑战</option>
+          </select>
+        </label>
+      </div>
+
+      <label className="mt-2 block text-sm">
+        <span>解析（至少 20 字）</span>
+        <textarea
+          value={explanation}
+          onChange={(e) => setExplanation(e.target.value)}
+          rows={2}
+          className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+        />
+      </label>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={busy || stem.trim() === "" || answerText === ""}
+          className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
+        >
+          {busy ? "保存中…" : "保存这道题"}
+        </button>
+        {message ? <span className="text-xs text-[var(--good)]">{message}</span> : null}
+        {error ? <span className="text-xs text-[var(--bad)]">{error}</span> : null}
+      </div>
+    </div>
+  );
 }

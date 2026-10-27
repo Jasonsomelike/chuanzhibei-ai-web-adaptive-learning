@@ -3,11 +3,14 @@ import {
   difficultyWeight,
   initialMastery,
   updateMastery,
+  updateMasteryScaled,
   masteryMean,
   masterySd,
+  masteryProbAbove,
+  predictCorrect,
   hasEnoughEvidence,
-  describeConfidence,
   priorMastery,
+  EVIDENCE_TARGET,
   type Difficulty,
 } from "@/lib/mastery";
 
@@ -112,17 +115,99 @@ describe("掌握度与不确定度", () => {
     for (let i = 0; i < 2; i += 1) s = updateMastery(s, true, 2 as Difficulty);
     expect(hasEnoughEvidence(s)).toBe(false);
   });
+
+  it("hasEnoughEvidence 同时要求条数与 sd，可指定生成题的门槛 4", () => {
+    // 用 depth=13（先验 0.10）复现 EVIDENCE_TARGET 的推导：
+    // 生成题按 weightScale=0.8 打折后，3 题 sd=0.2116 不达标、4 题 sd=0.1911 达标。
+    let s = initialMastery("c01", 13);
+    for (let i = 0; i < 3; i += 1) s = updateMasteryScaled(s, true, 2 as Difficulty, 0.8);
+    // 条数够 3，但 sd 仍 > 0.20 → 不算充分（这正是 sd 判据在起作用）
+    expect(s.evidenceN).toBe(3);
+    expect(masterySd(s)).toBeCloseTo(0.2116, 3);
+    expect(hasEnoughEvidence(s)).toBe(false);
+    expect(hasEnoughEvidence(s, EVIDENCE_TARGET.generated)).toBe(false);
+
+    s = updateMasteryScaled(s, true, 2 as Difficulty, 0.8);
+    expect(hasEnoughEvidence(s, EVIDENCE_TARGET.generated)).toBe(true);
+    expect(masterySd(s)).toBeCloseTo(0.1911, 3);
+    expect(masterySd(s)).toBeLessThanOrEqual(0.2);
+  });
+
+  it("weightScale=0 的练习不改变状态", () => {
+    const s = initialMastery("c01", 0);
+    expect(updateMasteryScaled(s, true, 3, 0)).toEqual(s);
+  });
+
+  it("weightScale=0.8 的增量是默认的八成", () => {
+    const s = initialMastery("c01", 0);
+    const full = updateMastery(s, true, 3);
+    const scaled = updateMasteryScaled(s, true, 3, 0.8);
+    expect(scaled.alpha - s.alpha).toBeCloseTo((full.alpha - s.alpha) * 0.8, 10);
+    expect(scaled.evidenceN).toBe(1);
+  });
 });
 
-describe("置信描述", () => {
-  it("以观测次数为主信息，而不是只给档位", () => {
-    let s = initialMastery("c01", 0);
-    expect(describeConfidence(s)).toBe("尚未测评");
+describe("预测正确率", () => {
+  /**
+   * 数值表固定住 logit 口径。改动 beta 或加入猜测率下限都会让这些数变，
+   * 而它们直接决定诊断页选哪道题，所以必须显式锁定。
+   */
+  it("掌握度 0.35 时，难度 1..5 的预测值固定", () => {
+    const expected = [0.641, 0.495, 0.35, 0.228, 0.14];
+    for (let d = 1; d <= 5; d += 1) {
+      expect(predictCorrect(0.35, d as Difficulty)).toBeCloseTo(expected[d - 1], 3);
+    }
+  });
 
-    s = updateMastery(s, true, 2);
-    const text = describeConfidence(s);
-    expect(text).toContain("已测 1 题");
-    expect(text).toContain("%");
-    expect(text).toContain("±");
+  it("掌握度 0.70 时，难度 1..5 的预测值固定", () => {
+    const expected = [0.886, 0.81, 0.7, 0.562, 0.413];
+    for (let d = 1; d <= 5; d += 1) {
+      expect(predictCorrect(0.7, d as Difficulty)).toBeCloseTo(expected[d - 1], 3);
+    }
+  });
+
+  it("难度 3 时预测值等于掌握度本身", () => {
+    expect(predictCorrect(0.42, 3)).toBeCloseTo(0.42, 10);
+  });
+
+  it("随难度单调递减，且落在 (0,1) 内", () => {
+    let prev = 1;
+    for (let d = 1; d <= 5; d += 1) {
+      const p = predictCorrect(0.5, d as Difficulty);
+      expect(p).toBeLessThan(prev);
+      expect(p).toBeGreaterThan(0);
+      expect(p).toBeLessThan(1);
+      prev = p;
+    }
+  });
+});
+
+describe("P(掌握度 > 阈值)", () => {
+  it("Beta(1,1) 在 0.6 处等于 0.4（均匀分布）", () => {
+    const s = { kcId: "k", alpha: 1, beta: 1, evidenceN: 0 };
+    expect(masteryProbAbove(s, 0.6)).toBeCloseTo(0.4, 8);
+  });
+
+  it("Beta(6,3) 在 0.5 处等于 0.855469", () => {
+    const s = { kcId: "k", alpha: 6, beta: 3, evidenceN: 5 };
+    expect(masteryProbAbove(s, 0.5)).toBeCloseTo(0.855469, 5);
+  });
+
+  it("Beta(2,2) 在 0.5 处等于 0.5（对称）", () => {
+    const s = { kcId: "k", alpha: 2, beta: 2, evidenceN: 0 };
+    expect(masteryProbAbove(s, 0.5)).toBeCloseTo(0.5, 8);
+  });
+
+  it("Beta(10,2) 在 0.6 处等于 0.969767（数值积分独立核过）", () => {
+    const s = { kcId: "k", alpha: 10, beta: 2, evidenceN: 0 };
+    expect(masteryProbAbove(s, 0.6)).toBeCloseTo(0.969767, 5);
+  });
+
+  it("3 题全对后 P(p>0.6) 仍不到 0.9 —— 这正是不拿它当停测准则的原因", () => {
+    let s = initialMastery("c01", 0);
+    for (let i = 0; i < 3; i += 1) s = updateMastery(s, true, 2 as Difficulty);
+    const p = masteryProbAbove(s, 0.6);
+    expect(p).toBeGreaterThan(0.5);
+    expect(p).toBeLessThan(0.9);
   });
 });

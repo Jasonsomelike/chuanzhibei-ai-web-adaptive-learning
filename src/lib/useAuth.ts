@@ -82,6 +82,22 @@ export function useAuth() {
       body: JSON.stringify({ action: "logout" }),
     });
     setUser(null);
+
+    /*
+     * 必须清掉本浏览器的进度与密钥。
+     *
+     * 不清的后果是真实的：同一台机器上 A 登出、B 注册登录后，
+     * B 会把 A 留在 localStorage 的进度合并进来，看到「历史累计作答 3 题」，
+     * 下一次写回还可能把 A 的数据写进 B 的账号；A 的模型 key 也留在浏览器里。
+     * 会话是服务端的，本地残留却是浏览器级的，两者必须一起清。
+     */
+    try {
+      window.localStorage.removeItem("alp.learner.v2");
+      window.localStorage.removeItem("alp.provider.v1");
+      window.localStorage.removeItem("alp.subject");
+    } catch {
+      /* 隐私模式下可能不可用，忽略 */
+    }
   }, []);
 
   return { user, loading, login, register, logout, refresh };

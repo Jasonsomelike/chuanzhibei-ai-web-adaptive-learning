@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
-import { useSubject, SubjectPicker } from "@/lib/subject";
+import { useSubject } from "@/lib/subject";
+import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { loadLearner, progressOf, type LearnerState } from "@/lib/learner";
 import { loadProvider, maskKey, type ProviderConfig } from "@/lib/provider";
+import { callChat } from "@/lib/chat";
 import { search, buildIndex, type Bm25Index } from "@/lib/rag";
 import { masteryMean, masterySd } from "@/lib/mastery";
 import type { MasteryState } from "@/lib/mastery";
@@ -39,7 +41,7 @@ const SYSTEM_PROMPT = `你是一门大学课程的助教。回答必须遵守：
 5. 中文回答，200 字以内，不要用「首先/其次/最后」这种套话。`;
 
 export default function TutorPage() {
-  const { subject, subjectId, setSubject, ready } = useSubject();
+  const { target, targetId, setTargetId, ready, loadingTarget } = useSubject();
   const [learner, setLearner] = useState<LearnerState | null>(null);
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -57,21 +59,27 @@ export default function TutorPage() {
   }, []);
 
   useEffect(() => {
-    // 每个知识点一篇文档：名称 + 章节 + 要掌握什么 + 题目解析
-    const docs = subject.graph.concepts.map((c) => {
-      const qs = subject.questions.filter((q) => q.kcId === c.id);
+    if (!target) return;
+    /*
+     * 每个知识点一篇文档：名称 + 章节 + 要掌握什么 + 题目解析。
+     * 自定义方向没有内置题库（题目要按需生成），所以只用名称与摘要建索引，
+     * 界面会如实标注「该方向暂无题库解析」。
+     */
+    const questions = target.kind === "subject" ? target.questions : [];
+    const docs = target.graph.concepts.map((c) => {
+      const qs = questions.filter((q) => q.kcId === c.id);
       const qa = qs
         .map((q, i) => `第${i + 1}题（难度${q.difficulty}）：${q.stem} 解析：${q.explanation}`)
         .join(" ");
       return {
         kcId: c.id,
         title: c.name,
-        text: `${c.chapter}。${c.summary}。常见考点与解析：${qa}`,
+        text: `${c.chapter}。${c.summary}。${qa ? `常见考点与解析：${qa}` : ""}`,
       };
     });
     setIndex(buildIndex(docs));
     setMessages([]);
-  }, [subject]);
+  }, [target]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -79,7 +87,7 @@ export default function TutorPage() {
 
   const masteryOf = (): readonly MasteryState[] => {
     if (!learner) return [];
-    return progressOf(learner, subjectId).mastery;
+    return progressOf(learner, targetId, target?.graph).mastery;
   };
 
   const send = async (text: string) => {
@@ -116,14 +124,23 @@ export default function TutorPage() {
     // 配置了供应商：浏览器直连
     try {
       const reply = await callProvider(provider, question, docs, mastery);
+      /*
+       * 引用不是「检索到了什么」，而是「回复里真的引用了什么」。
+       * 旧实现把 docs 全部列为 citations，模型不引用或引错时界面仍显示 3 个知识点，
+       * 等于把提示词里的要求当成已满足的事实。
+       */
+      const cited = extractCitedKcIds(reply, docs);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           text: reply,
-          citations: docs.map((d) => ({ kcId: d.kcId, title: d.title })),
+          citations: cited,
           generatedByLlm: true,
-          note: `${provider.label} · ${provider.model}`,
+          note:
+            cited.length === 0
+              ? `${provider.label} · ${provider.model} · 本次回复未包含可核对的 [知识点ID] 引用`
+              : `${provider.label} · ${provider.model}`,
         },
       ]);
     } catch (err) {
@@ -144,12 +161,14 @@ export default function TutorPage() {
     }
   };
 
-  if (!ready) {
+  if (!ready || !target) {
     return (
       <>
         <Nav />
         <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-          <p className="text-[var(--ink-soft)]">正在加载…</p>
+          <p className="text-[var(--ink-soft)]">
+            {loadingTarget ? "正在加载自定义方向…" : "正在加载…"}
+          </p>
         </main>
       </>
     );
@@ -166,10 +185,13 @@ export default function TutorPage() {
           </p>
         </div>
 
-        {/* 学科切换 */}
+        {/* 目标切换 */}
         <Card className="mb-4">
-          <p className="mb-2 text-sm font-medium">当前学科</p>
-          <SubjectPicker current={subjectId} onChange={setSubject} />
+          <p className="mb-2 text-sm font-medium">当前学习目标</p>
+          <TargetPicker current={targetId} onChange={setTargetId} />
+          {target ? (
+            <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
+          ) : null}
         </Card>
 
         {/* 当前模式 */}
@@ -207,8 +229,8 @@ export default function TutorPage() {
               <div className="flex flex-wrap gap-2">
                 {[
                   "为什么给我排这一步？",
-                  `${subject.graph.concepts[0]?.name ?? ""}是什么`,
-                  `${subject.graph.concepts[1]?.name ?? ""}的重点是什么`,
+                  `${target?.graph.concepts[0]?.name ?? ""}是什么`,
+                  `${target?.graph.concepts[1]?.name ?? ""}的重点是什么`,
                   "我现在的薄弱点在哪",
                 ].map((s) => (
                   <button
@@ -308,6 +330,33 @@ export default function TutorPage() {
   );
 }
 
+/**
+ * 从模型回复里抽出真正被引用的知识点。
+ *
+ * 只保留「回复里出现过 [kcId]、且该 kcId 确实在本次检索结果里」的项：
+ * 前者防止把没引用说成引用，后者防止模型编造一个不在资料里的 id。
+ * 顺序按回复里首次出现的顺序，不按检索得分——引用列表应当复现回复的结构。
+ */
+function extractCitedKcIds(
+  reply: string,
+  docs: readonly { kcId: string; title: string }[],
+): { kcId: string; title: string }[] {
+  const byId = new Map(docs.map((d) => [d.kcId, d]));
+  const seen = new Set<string>();
+  const out: { kcId: string; title: string }[] = [];
+
+  for (const match of reply.matchAll(/\[([a-z][a-z0-9_]{0,15})\]/gi)) {
+    const id = match[1].toLowerCase();
+    if (seen.has(id)) continue;
+    const doc = byId.get(id);
+    if (!doc) continue;
+    seen.add(id);
+    out.push({ kcId: doc.kcId, title: doc.title });
+  }
+
+  return out;
+}
+
 /** 无模型时的回答：检索结果 + 掌握度数值 + 题库解析。 */
 function composeDeterministic(
   question: string,
@@ -360,76 +409,12 @@ async function callProvider(
           .join("\n\n")
       : "（没有检索到相关资料，请直接说明资料里没有）";
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (provider.kind === "anthropic") {
-    headers["x-api-key"] = provider.apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-    // Anthropic 官方要求浏览器直连时显式声明，否则会被拒
-    headers["anthropic-dangerous-direct-browser-access"] = "true";
-  } else {
-    headers.Authorization = `Bearer ${provider.apiKey}`;
-  }
-  if (provider.extraHeaders) {
-    try {
-      Object.assign(headers, JSON.parse(provider.extraHeaders) as Record<string, string>);
-    } catch {
-      /* 忽略非法 JSON */
-    }
-  }
-
-  const isAnthropic = provider.kind === "anthropic";
-  const endpoint = isAnthropic
-    ? `${provider.baseUrl}/messages`
-    : `${provider.baseUrl}/chat/completions`;
-
-  const userPrompt = `学生的问题：${question}\n\n可用资料：\n${context}`;
-
-  const body = isAnthropic
-    ? {
-        model: provider.model,
-        max_tokens: 600,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userPrompt }],
-      }
-    : {
-        model: provider.model,
-        temperature: 0.3,
-        max_tokens: 600,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-      };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000);
-
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}${t ? ` · ${t.slice(0, 120)}` : ""}`);
-    }
-
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-      content?: { text?: string }[];
-    };
-    const text = json.choices?.[0]?.message?.content ?? json.content?.[0]?.text ?? "";
-    if (!text.trim()) throw new Error("模型返回空内容");
-    return text.trim();
-  } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw new Error("请求超时（45 秒）");
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+  const { text } = await callChat(provider, {
+    system: SYSTEM_PROMPT,
+    user: `学生的问题：${question}\n\n可用资料：\n${context}`,
+    maxTokens: 600,
+    temperature: 0.3,
+    timeoutMs: 45000,
+  });
+  return text;
 }

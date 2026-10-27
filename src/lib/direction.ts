@@ -18,7 +18,7 @@
  */
 
 import type { KnowledgeGraph, PrerequisiteEdge, KnowledgeConcept } from "@/lib/graph";
-import { validateGraph } from "@/lib/graph";
+import { validateGraph, topologicalOrder } from "@/lib/graph";
 import type { Question } from "@/data/questions";
 import { SUBJECTS } from "@/data/subjects";
 
@@ -61,6 +61,12 @@ export function validateDraft(draft: DirectionDraft): string[] {
   if (n > MAX_CONCEPTS) issues.push(`知识点太多（${n} 个，最多 ${MAX_CONCEPTS} 个）`);
 
   const ids = new Set<string>();
+  /*
+   * 名称也要去重：两个 id 不同但同名的知识点，在诊断页会显示成两个一模一样的
+   * 「栈」，学生无法判断自己在测哪个；路径页的步骤也分不清。
+   * 用归一化后的名称比对，避免「栈 」与「栈」逃过检查。
+   */
+  const names = new Map<string, string>();
   for (const c of draft.concepts) {
     if (!/^[a-z][a-z0-9_]{0,15}$/.test(c.id)) {
       issues.push(`知识点 id「${c.id}」不合规（需小写字母开头，只含小写字母数字下划线，≤16 字符）`);
@@ -69,6 +75,28 @@ export function validateDraft(draft: DirectionDraft): string[] {
     ids.add(c.id);
     if (c.name.trim().length === 0) issues.push(`知识点 ${c.id} 名称为空`);
     if (c.name.length > 40) issues.push(`知识点 ${c.id} 名称过长`);
+
+    const nameKey = c.name.replace(/\s+/g, "").toLowerCase();
+    if (nameKey !== "") {
+      const dup = names.get(nameKey);
+      if (dup !== undefined) {
+        issues.push(`知识点名称重复：「${c.name}」同时用于 ${dup} 与 ${c.id}`);
+      } else {
+        names.set(nameKey, c.id);
+      }
+    }
+  }
+
+  /*
+   * 边不能为空：0 条边的图没有先修约束，路径规划会退化成「按 id 排序」，
+   * 与「带先修关系的小型知识图谱」这个承诺不符。
+   *
+   * 不要求边数达到 n−1：从学科里挑选相关知识点时，选中的子图本来就可能不连通
+   * （比如「哈希表」只命中一个点，其余是补进来的基础点）。要求连通会把
+   * 合法的降级结果判成不合格，反而逼用户去改一个他无法改的图。
+   */
+  if (draft.edges.length === 0) {
+    issues.push("没有任何先修关系：请至少给出一条「不掌握前者，后者就学不动」的边");
   }
 
   // 边必须两端都存在，且不能自环
@@ -187,27 +215,52 @@ export function composeFromExisting(description: string): DirectionDraft | null 
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_CONCEPTS);
 
-  // 命中的点太少就取该学科前若干基础点，保证至少 MIN_CONCEPTS 个
-  const chosen = picked.length >= MIN_CONCEPTS
-    ? picked
-    : scored.slice(0, Math.max(MIN_CONCEPTS, picked.length + 3));
+  /*
+   * 命中不足 MIN_CONCEPTS 时补基础点，但两条约束：
+   *   1. **命中的点必须全部保留**。旧实现直接取 `scored.slice(0, N)`（图谱顺序），
+   *      实测「哈希表」时命中的 c34 被挤出前 5，描述却写「其中 1 个与哈希直接相关」，
+   *      5 个里 0 个相关——这是把 bug 写进了文案。
+   *   2. 补进来的点不能说成「相关」，描述里要如实区分。
+   */
+  const hitCount = picked.length;
+  const supplemented = hitCount < MIN_CONCEPTS;
+  const targetSize = supplemented ? Math.max(MIN_CONCEPTS, hitCount + 3) : hitCount;
+  const pickedIds = new Set(picked.map((x) => x.concept.id));
+  // 先放命中的点，再按图谱顺序补 score=0 的基础点，直到凑够 targetSize
+  const chosen = supplemented
+    ? [...picked, ...scored.filter((x) => !pickedIds.has(x.concept.id))].slice(0, targetSize)
+    : picked;
 
   const idMap = new Map<string, string>();
-  chosen.forEach((x, i) => idMap.set(x.concept.id, `k${i + 1}`));
+  /*
+   * 输出顺序按拓扑序，不按关键词得分。
+   * 下游（诊断页的懒生成）会按数组顺序兜底选第一个待测点，
+   * 按得分排会让「多级反馈队列调度」(depth 7) 排在「进程的概念」(depth 0) 前面。
+   */
+  const ordered = topologicalOrder(subject.graph, new Set(chosen.map((x) => x.concept.id)));
+  const byId = new Map(chosen.map((x) => [x.concept.id, x]));
+  ordered.forEach((id, i) => idMap.set(id, `k${i + 1}`));
 
   // 只保留两端都在选中集合里的边
   const edges = subject.graph.edges
     .filter((e) => idMap.has(e.before) && idMap.has(e.after))
     .map((e) => ({ before: idMap.get(e.before)!, after: idMap.get(e.after)! }));
 
+  const summary = supplemented
+    ? `从「${subject.name}」中挑选了 ${chosen.length} 个知识点：其中 ${hitCount} 个与「${matchedWords.join("、")}」直接相关，其余是学习该主题所需的基础知识点（按图谱顺序补充）。`
+    : `从「${subject.name}」中挑选了 ${chosen.length} 个与「${matchedWords.join("、")}」相关的知识点。`;
+
   return {
     title: `${subject.name} · 自选专题`,
-    description: `从「${subject.name}」中挑选了 ${chosen.length} 个与「${matchedWords.join("、")}」相关的知识点。`,
-    concepts: chosen.map((x) => ({
-      id: idMap.get(x.concept.id)!,
-      name: x.concept.name,
-      summary: x.concept.summary,
-    })),
+    description: summary,
+    concepts: ordered
+      .map((id) => byId.get(id))
+      .filter((x): x is NonNullable<typeof x> => x !== undefined)
+      .map((x) => ({
+        id: idMap.get(x.concept.id)!,
+        name: x.concept.name,
+        summary: x.concept.summary,
+      })),
     edges,
   };
 }
@@ -235,7 +288,9 @@ export const DIRECTION_SYSTEM_PROMPT = `你是课程设计助手。用户会描�
 3. edges 的 before/after 必须是 concepts 里存在的 id，不能自环，不能成环。
 4. 先修关系必须是真实的「不掌握前者，后者就学不动」，不要按列表顺序硬连。
 5. 不要生成与主题无关的知识点。宁可少而准，不要多而杂。
-6. 如果用户描述太模糊，就按最合理的理解生成，不要反问。`;
+6. 如果用户描述太模糊，就按最合理的理解生成，不要反问。
+7. concepts 数组请按先修顺序排列：没有前置的排前面，依赖越深的排越后面。
+   这个顺序会被用作「先测哪个知识点」的兜底依据，乱序会让诊断从最难的点开始。`;
 
 /** 从 LLM 返回的文本里抽出 JSON。模型常包代码块或加解释，需要容错。 */
 export function extractJson(text: string): unknown | null {

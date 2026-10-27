@@ -17,7 +17,8 @@
     "bench": "node bench/bench-path.mjs",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:mcp": "tsx scripts/mcp-smoke.ts",
-    "verify": "npm run typecheck && npm run test && npm run kg:validate && npm run check:secrets"
+    "verify": "npm run typecheck && npm run test && npm run kg:validate && npm run check:secrets",
+    "path:hash": "tsx scripts/path-hash.ts"
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.152",

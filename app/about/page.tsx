@@ -57,7 +57,7 @@ export default function AboutPage() {
               points={[
                 "按时间预算生成路径，改预算立刻重算，无需等待",
                 "反事实对比：选一个对照预算，标出哪些步骤会被推迟",
-                "手动改写：可以拖动或删除任何一步，系统实时标出是否违反先修约束",
+                "手动改写：可以用 ↑ / ↓ 调整顺序或删除任何一步，系统实时标出是否违反先修约束",
                 "路径指纹：对输出取 SHA-256，同一输入永远得到同一指纹",
               ]}
             />
@@ -278,7 +278,7 @@ export default function AboutPage() {
                 ["认证", "PBKDF2-HMAC-SHA256 + 服务端会话"],
                 ["存储", "Postgres（Neon）；本地无库时退化为内存"],
                 ["工具协议", "MCP（JSON-RPC 2.0）"],
-                ["测试", "Vitest 172 条 + Playwright E2E + MCP 协议测试"],
+                ["测试", "Vitest 270 条 + Playwright E2E + MCP 协议测试"],
               ].map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-[var(--ink-soft)]">{k}</dt>

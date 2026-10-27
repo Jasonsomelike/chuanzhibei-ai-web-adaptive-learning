@@ -66,7 +66,24 @@ export function updateMastery(
   correct: boolean,
   difficulty: Difficulty,
 ): MasteryState {
-  const w = difficultyWeight(difficulty);
+  return updateMasteryScaled(state, correct, difficulty, 1);
+}
+
+/**
+ * 带证据折扣的更新。weightScale=0.8 表示「这条证据只算八成」。
+ *
+ * 生成题的难度标签来自模型，可信度低于人工校准的内置题，
+ * 所以打折而不是直接采信；weightScale=0 用于「仅练习」题（完全不进证据）。
+ */
+export function updateMasteryScaled(
+  state: MasteryState,
+  correct: boolean,
+  difficulty: Difficulty,
+  weightScale: number,
+): MasteryState {
+  // 0 权重 = 这条证据不算数，连 evidenceN 也不该涨
+  if (weightScale <= 0) return state;
+  const w = difficultyWeight(difficulty) * weightScale;
   return {
     kcId: state.kcId,
     alpha: state.alpha + (correct ? w : 0),
@@ -97,21 +114,130 @@ export function masterySd(state: MasteryState): number {
 export const CONFIDENCE_SD_THRESHOLD = 0.2;
 
 /**
+ * 每个知识点要多少条证据才算「测够了」。
+ *
+ * 内置题 3 条即可：实测 360 个 KC 全对 3 题后 sd 最大 0.196（≤0.20）。
+ * 生成题按 weightScale=0.8 打折后需要 4 条：depth=13、d=2、4 题全对 sd=0.1911，
+ * 3 题只有 0.2116（不达标）。这个差别不是审美，是 sd 阈值算出来的。
+ */
+export const EVIDENCE_TARGET = { builtin: 3, generated: 4 } as const;
+
+/**
  * 是否已经「观测足够」——只用来决定还要不要继续出题，
  * 不要用它表达学生学得好不好。
+ *
+ * 两个条件都要满足：
+ *   1. 证据条数 ≥ target（防止「一道题答对就停」）
+ *   2. sd ≤ CONFIDENCE_SD_THRESHOLD（防止「条数够但答案分裂」——
+ *      同一知识点对错各半时 sd 反而更大，条数达标不等于精度达标）
+ *
+ * 第 2 条曾经只写在 README 里、代码里没调用（CONFIDENCE_SD_THRESHOLD 全仓库无引用）。
+ * 现在它是真实判据：diagnose 页的停测与结果卡的「证据不足」提示都走这里。
+ * 实测 360 个 KC 全对 3 题 sd 最大 0.196，所以内置题不会因为第 2 条被卡住。
  */
-export function hasEnoughEvidence(state: MasteryState): boolean {
-  return masterySd(state) <= CONFIDENCE_SD_THRESHOLD;
+export function hasEnoughEvidence(
+  state: MasteryState,
+  target: number = EVIDENCE_TARGET.builtin,
+): boolean {
+  return state.evidenceN >= target && masterySd(state) <= CONFIDENCE_SD_THRESHOLD;
 }
 
 /**
- * 界面上展示的置信描述。以观测次数为主信息，sd 只作为精度注记。
- * 这样避免了「答对 2 题反而掉档」的观感问题。
+ * 给定掌握度 p 与题目难度 d，预测答对的概率。
+ *
+ * 逻辑斯蒂：logit(q) = logit(p) − β·(d − 3)，即难度每升一档，答对几率乘以 e^-β。
+ * 用 logit 而不是直接减，是因为 p 接近 0/1 时概率不能越界。
+ *
+ * 不叠加猜测率下限：四选一有 0.25 的瞎猜概率，理论上应写成
+ * floor + (1−floor)·q，但那样 d=3 时预测值变成 0.51，
+ * 与「难度 3 对应掌握度本身」的直觉冲突，也让选题的 0.65 目标失去意义。
+ * 本项目选择保留「预测值可直接与掌握度比较」这个性质，代价是低掌握度时略低估。
+ * 这是产品假设，不是文献结论。
  */
-export function describeConfidence(state: MasteryState): string {
-  const n = state.evidenceN;
-  if (n === 0) return "尚未测评";
-  const pct = Math.round(masteryMean(state) * 100);
-  const margin = Math.round(masterySd(state) * 100);
-  return `已测 ${n} 题 · 掌握度 ${pct}%（±${margin}）`;
+export function predictCorrect(p: number, d: Difficulty, beta = 0.6): number {
+  const clamped = Math.min(0.999, Math.max(0.001, p));
+  const logit = Math.log(clamped / (1 - clamped)) - beta * (d - 3);
+  return 1 / (1 + Math.exp(-logit));
+}
+
+/**
+ * P(真实掌握度 > threshold)，即 Beta 后验的生存函数。
+ *
+ * 用于界面展示（MasteryBar 的第二行小字），**不作为停测准则**：
+ * 实测 360 个知识点「3 题全对」后 P(p>0.6) 最高只有 0.848，
+ * 达不到常见的 0.90；要达标得把每题数从 3 提到 4–5，会破坏题库设计。
+ */
+export function masteryProbAbove(state: MasteryState, threshold: number): number {
+  return 1 - regularizedIncompleteBeta(threshold, state.alpha, state.beta);
+}
+
+/**
+ * 正则化不完全 Beta 函数 I_x(a,b)。
+ *
+ * 用连分式（Lentz 算法）实现，只依赖 Math.exp / Math.log，
+ * 浏览器与 Node 结果一致——这是它必须自己写而不引库的原因：
+ * 引一个数值库会把「同一个数在任何环境都一样」变成依赖。
+ */
+function regularizedIncompleteBeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+
+  // 对称性：x > (a+1)/(a+b+2) 时用 1 − I_{1−x}(b,a) 收敛更快
+  if (x > (a + 1) / (a + b + 2)) {
+    return 1 - regularizedIncompleteBeta(1 - x, b, a);
+  }
+
+  const logBeta = logGamma(a + b) - logGamma(a) - logGamma(b);
+  const front = Math.exp(logBeta + a * Math.log(x) + b * Math.log(1 - x));
+
+  // Lentz 连分式
+  const TINY = 1e-30;
+  let c = 1;
+  let d = 1 - ((a + b) * x) / (a + 1);
+  if (Math.abs(d) < TINY) d = TINY;
+  d = 1 / d;
+  let h = d;
+
+  for (let m = 1; m <= 200; m += 1) {
+    const m2 = 2 * m;
+    let aa = (m * (b - m) * x) / ((a + m2 - 1) * (a + m2));
+    d = 1 + aa * d;
+    if (Math.abs(d) < TINY) d = TINY;
+    c = 1 + aa / c;
+    if (Math.abs(c) < TINY) c = TINY;
+    d = 1 / d;
+    h *= d * c;
+
+    aa = -((a + m) * (a + b + m) * x) / ((a + m2) * (a + m2 + 1));
+    d = 1 + aa * d;
+    if (Math.abs(d) < TINY) d = TINY;
+    c = 1 + aa / c;
+    if (Math.abs(c) < TINY) c = TINY;
+    d = 1 / d;
+    const del = d * c;
+    h *= del;
+
+    if (Math.abs(del - 1) < 1e-12) break;
+  }
+
+  return (front * h) / a;
+}
+
+/** Lanczos 近似的 ln Γ(x)，只用于 Beta 归一化常数。 */
+function logGamma(x: number): number {
+  const g = 7;
+  const coef = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ];
+  if (x < 0.5) {
+    // 反射公式
+    return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  }
+  const z = x - 1;
+  let sum = coef[0];
+  for (let i = 1; i < g + 2; i += 1) sum += coef[i] / (z + i);
+  const t = z + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(sum);
 }

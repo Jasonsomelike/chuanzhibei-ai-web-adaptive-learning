@@ -18,7 +18,7 @@ import {
 import { masteryMean, masterySd, type MasteryState } from "./mastery";
 
 /** 算法版本号。改了排序规则必须改它，否则历史路径的 hash 会误导人。 */
-export const ALGO_VERSION = "plan-v1";
+export const ALGO_VERSION = "plan-v2";
 
 /** 一个学习步骤。 */
 export interface PathStep {
@@ -45,16 +45,28 @@ export interface PlanInput {
   readonly masteryTarget?: number;
 }
 
+/**
+ * 一个被阻塞的知识点。
+ *
+ * `by` 列出导致它排不进来的先修点。语义只有一种：
+ * 「先修点自己没装进预算（deferred）或先修点也被阻塞（blocked）」。
+ * 先修点不在候选集里（未被要求学）不算阻塞——那是目标范围之外，不是排不下。
+ */
+export interface BlockedStep {
+  readonly kcId: string;
+  readonly by: readonly string[];
+}
+
 /** 规划结果。 */
 export interface PlanResult {
   readonly steps: readonly PathStep[];
   /** 总用时。 */
   readonly totalMinutes: number;
-  /** 因为预算不足被跳过的知识点。 */
+  /** 自己装不进预算的知识点。 */
   readonly deferred: readonly string[];
-  /** 因为先修未达标被阻塞的知识点。 */
-  readonly blocked: readonly string[];
-  /** 输入指纹与输出指纹，用于复现性校验。 */
+  /** 因先修被推迟而无法排入的知识点。 */
+  readonly blocked: readonly BlockedStep[];
+  /** 输出指纹。只覆盖 steps + 版本号，不含题目与模型信息。 */
   readonly pathHash: string;
   readonly algoVersion: string;
   readonly kgVersion: string;
@@ -106,29 +118,14 @@ export function planPath(input: PlanInput): PlanResult {
 
   // 2. 已掌握的点不需要再排；未达标的都要排
   const needsWork = [...candidateSet].filter((id) => meanOf(id) < masteryTarget);
+  const needsWorkSet = new Set(needsWork);
 
-  // 3. 硬约束检查：某点的先修里只要还有未掌握的，该点就 blocked
-  const blocked: string[] = [];
-  const eligible: string[] = [];
-  for (const id of needsWork) {
-    const preds = idx.predecessors.get(id) ?? [];
-    const blockedBy = preds.filter((p) => candidateSet.has(p) && meanOf(p) < masteryTarget);
-    if (blockedBy.length > 0) {
-      // 先修点本身也在 needsWork 里，会被排进路径，所以这里只是记录依赖
-      eligible.push(id);
-    } else {
-      eligible.push(id);
-    }
-  }
-  void blocked;
-
-  // 4. 排序：先修深度升序 → ZPD 距离升序 → id 字典序（保证确定性）
-  const eligibleSet = new Set(eligible);
-  const topo = topologicalOrder(graph, eligibleSet);
+  // 3. 排序：先修深度升序 → ZPD 距离升序 → id 字典序（保证确定性）
+  const topo = topologicalOrder(graph, needsWorkSet);
   const topoIndex = new Map<string, number>();
   topo.forEach((id, i) => topoIndex.set(id, i));
 
-  const sorted = [...eligible].sort((a, b) => {
+  const sorted = [...needsWork].sort((a, b) => {
     const da = depths.get(a) ?? 0;
     const db = depths.get(b) ?? 0;
     if (da !== db) return da - db;
@@ -150,18 +147,41 @@ export function planPath(input: PlanInput): PlanResult {
     return a < b ? -1 : a > b ? 1 : 0;
   });
 
-  // 5. 装包
+  /*
+   * 4. 装包：按排序贪心，但先修必须已装进路径（或已掌握）。
+   *
+   * 贪心顺序不等于拓扑序——ZPD 更近的后继可能排到先修前面。
+   * 因此这里显式检查：先修落在 deferred 或 blocked 时，该点也必须阻塞。
+   * 否则会产出「先修不在路径、后继却在路径」的非法结果，
+   * 而 checkPrereqOrder 把「先修不在路径」当已掌握，校验不出来。
+   */
   const steps: PathStep[] = [];
   const deferred: string[] = [];
+  const blocked: BlockedStep[] = [];
+  const deferredSet = new Set<string>();
+  const blockedSet = new Set<string>();
   let used = 0;
 
+  /*
+   * sorted 按深度升序，而深度严格递增，所以任何先修都排在它的后继之前。
+   * 这一条保证了「处理到某点时，先修的去向（装进/推迟/阻塞）已经确定」。
+   */
   for (const id of sorted) {
+    const preds = (idx.predecessors.get(id) ?? []).filter((p) => needsWorkSet.has(p));
+    const hardBlocked = preds.filter((p) => deferredSet.has(p) || blockedSet.has(p));
+    if (hardBlocked.length > 0) {
+      blockedSet.add(id);
+      blocked.push({ kcId: id, by: [...hardBlocked].sort() });
+      continue;
+    }
+
     const m = stateById.get(id);
     const n = m?.evidenceN ?? 0;
     const kind: PathStep["kind"] = n === 0 ? "learn" : "review";
     const cost = kind === "learn" ? MINUTES_PER_LEARN : MINUTES_PER_REVIEW;
 
     if (used + cost > budgetMinutes) {
+      deferredSet.add(id);
       deferred.push(id);
       continue;
     }
@@ -229,6 +249,44 @@ export async function sha256Hex(text: string): Promise<string> {
   const bytes = new TextEncoder().encode(text);
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * 输入指纹：对「影响排序的全部输入」取规范化 JSON 再哈希。
+ *
+ * 与 pathHash 分开是为了定位问题：两个指纹都相同 → 路径必然相同；
+ * inputHash 相同而 pathHash 不同 → 算法或图谱变了；
+ * inputHash 不同 → 输入变了（学生又答了题，这是正常现象）。
+ *
+ * 只纳入 planPath 真正读的字段。题目的难度与内容不在其中——
+ * 它们通过「学生答对/答错」影响 mastery，而 mastery 已经在输入里。
+ */
+export function computeInputHash(input: PlanInput): string {
+  const mastery = [...input.mastery]
+    .map((m) => ({ kcId: m.kcId, alpha: m.alpha, beta: m.beta, evidenceN: m.evidenceN }))
+    .sort((a, b) => (a.kcId < b.kcId ? -1 : a.kcId > b.kcId ? 1 : 0));
+
+  /*
+   * 图谱必须按内容纳入，不能只放 version。
+   *
+   * 只放版本号时，改了边却没 bump version，inputHash 不变而 pathHash 变了，
+   * 界面上「输入指纹相同 → 路径指纹必然相同」的提示就是假的。
+   * 排序后再序列化，保证边的书写顺序不影响指纹。
+   */
+  const concepts = input.graph.concepts.map((c) => c.id).sort();
+  const edges = input.graph.edges.map((e) => `${e.before}>${e.after}`).sort();
+
+  return sha256Sync(
+    JSON.stringify({
+      budgetMinutes: input.budgetMinutes,
+      target: input.masteryTarget ?? DEFAULT_MASTERY_TARGET,
+      targets: [...(input.targets ?? [])].sort(),
+      mastery,
+      kgVersion: input.graph.version,
+      concepts,
+      edges,
+    }),
+  );
 }
 
 /**
@@ -304,12 +362,24 @@ function rotr(x: number, n: number): number {
   return ((x >>> n) | (x << (32 - n))) >>> 0;
 }
 
-/** 校验路径是否满足先修约束。返回违反项，空数组表示合法。 */
+/**
+ * 校验路径是否满足先修约束。返回违反项，空数组表示合法。
+ *
+ * 先修既不在路径里、也不在 mastered 里 → 报违规。
+ * 旧版把「先修不在路径」一律当作已掌握，于是「先修被预算推迟、后继却在路径」
+ * 这种真实违规会被放过；传 mastered 才能区分「学过了」与「漏排了」。
+ *
+ * opts 不传 = 旧宽松语义（未出现在路径中的先修视为已掌握），保留给只想查顺序的调用方；
+ * 传 opts（哪怕 mastered 为空集）= 严格语义。路径页与诊断页必须传严格模式。
+ */
 export function checkPrereqOrder(
   graph: KnowledgeGraph,
   steps: readonly PathStep[],
+  opts?: { readonly mastered?: ReadonlySet<string> },
 ): string[] {
   const idx = indexGraph(graph);
+  const strict = opts !== undefined;
+  const mastered = opts?.mastered ?? new Set<string>();
   const position = new Map<string, number>();
   steps.forEach((s, i) => position.set(s.kcId, i));
 
@@ -319,12 +389,107 @@ export function checkPrereqOrder(
     if (pos === undefined) continue;
     for (const p of idx.predecessors.get(s.kcId) ?? []) {
       const predPos = position.get(p);
-      // 先修不在路径里 → 说明已掌握，合法
-      if (predPos === undefined) continue;
+      if (predPos === undefined) {
+        if (strict && !mastered.has(p)) {
+          violations.push(`${p} 是 ${s.kcId} 的先修，但不在路径中，也未标记为已掌握`);
+        }
+        continue;
+      }
       if (predPos > pos) {
         violations.push(`${p} 应先于 ${s.kcId}，实际排在其后（位置 ${predPos} > ${pos}）`);
       }
     }
   }
   return violations;
+}
+
+/** 由掌握度快照算出「已达阈值」的 kcId 集合，供 checkPrereqOrder 使用。 */
+export function masteredSet(
+  mastery: readonly MasteryState[],
+  threshold = DEFAULT_MASTERY_TARGET,
+): Set<string> {
+  return new Set(mastery.filter((m) => masteryMean(m) >= threshold).map((m) => m.kcId));
+}
+
+/** 用户对路径的手动改动：调整过的顺序 + 显式移除的点。 */
+export interface ManualEdit {
+  /** 调整后的 kcId 顺序。不在当前 plan 里的 id 会被忽略。 */
+  readonly order: readonly string[];
+  /** 被用户显式移除的 kcId。重放时必须排除，否则「移除」等于空操作。 */
+  readonly removed: readonly string[];
+}
+
+/**
+ * 把用户手动改动重放到当前算法的步骤集合上。
+ *
+ * 用途：手动改写只存 kcId 顺序与移除集合，不存整份 steps。预算变化后算法会给出
+ * 新的步骤集合，这时用这里重放——用户调整过的相对次序保留，新预算下装不下的点
+ * 自动消失，新装进来的点追加在末尾。
+ *
+ * 两条必须遵守的语义：
+ *   1. `removed` 里的点绝不出现。旧实现只从 order 里删掉它，第二个循环又会把
+ *      plan.steps 里「不在 order」的步骤全部追加回来，于是「移除」什么也没做。
+ *   2. **不改写 `source`**。旧实现给 order 里的每个点都标 manual，
+ *      点一次上移后整条路径都显示「已手动调整」。哪些点真的动了由调用方比较位置得出。
+ */
+export function applyManualOrder(
+  steps: readonly PathStep[],
+  edit: ManualEdit | null,
+): readonly PathStep[] {
+  if (!edit) return steps;
+
+  const removed = new Set(edit.removed);
+  const pool = steps.filter((s) => !removed.has(s.kcId));
+  const byId = new Map(pool.map((s) => [s.kcId, s]));
+
+  const ordered: PathStep[] = [];
+  for (const kcId of edit.order) {
+    const step = byId.get(kcId);
+    if (!step) continue;
+    ordered.push(step);
+    byId.delete(kcId);
+  }
+  // 新预算下才装得下的点（或用户没排到的点）：追加在末尾，保持算法给的相对次序
+  for (const step of pool) {
+    if (byId.has(step.kcId)) ordered.push(step);
+  }
+  return ordered;
+}
+
+/**
+ * 相对算法顺序，哪些点被用户真的挪动过。
+ *
+ * 判据是**相对次序**而不是绝对下标：删掉一步会让后面所有点的下标都变，
+ * 按「位置是否变化」判断会把整条路径都标成手动。
+ * 这里比较的是「在共同出现的点上，相对顺序是否被打破」。
+ *
+ * 只标参与顺序变化的点；被移除的点不在结果里（它们不显示）。
+ */
+export function movedKcIds(
+  displayed: readonly PathStep[],
+  planSteps: readonly PathStep[],
+): Set<string> {
+  const planIndex = new Map(planSteps.map((s, i) => [s.kcId, i]));
+  const common = displayed.filter((s) => planIndex.has(s.kcId));
+
+  const moved = new Set<string>();
+  /*
+   * 对每个点，检查它相对其它共同点的次序是否与算法一致。
+   * 只要有一个点的相对关系反了，两端都算「被动过」——
+   * 用户看到的就是这两个点交换了位置。
+   */
+  for (let i = 0; i < common.length; i += 1) {
+    for (let j = i + 1; j < common.length; j += 1) {
+      const a = common[i].kcId;
+      const b = common[j].kcId;
+      const pa = planIndex.get(a)!;
+      const pb = planIndex.get(b)!;
+      // 显示顺序是 a 在 b 前；算法顺序却是 b 在 a 前 → 两者相对次序被打破
+      if (pa > pb) {
+        moved.add(a);
+        moved.add(b);
+      }
+    }
+  }
+  return moved;
 }

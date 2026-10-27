@@ -54,8 +54,9 @@ export default function HomePage() {
             <Card>
               <h3 className="font-medium">路径可复现</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                同一输入 + 同一版本 → 同一路径。`path_hash` 对输出取 SHA-256，
-                算法或图谱一改，hash 立刻变，CI 会红。
+                同一个 attempt 快照 + 同一算法版本 → 同一条路径。
+                `path_hash` 对输出取 SHA-256，算法或图谱一改，hash 立刻变，
+                `npm test` 里的 golden 字面量会失败。
               </p>
               <p className="mt-3 font-mono text-xs text-[var(--ink-faint)]">
                 src/lib/plan.ts · {ALGO_VERSION}
@@ -68,7 +69,7 @@ export default function HomePage() {
                 大模型生成的解释必须标注引用了哪个知识点。
               </p>
               <p className="mt-3 font-mono text-xs text-[var(--ink-faint)]">
-                src/lib/llm.ts · 引用强制带 kcId
+                app/tutor/page.tsx · 引用从回复里解析
               </p>
             </Card>
             <Card>
@@ -112,7 +113,7 @@ export default function HomePage() {
 
         {/* 主题与个性化 */}
         <section className="mb-12">
-          <SectionTitle hint="配色不是拍脑袋定的：每套都实算过对比度，全部达到 WCAG AAA。">
+          <SectionTitle hint="配色不是拍脑袋定的：每套都实算过对比度。正文与次要文字达到 WCAG AAA（≥7:1），分隔线等非文本元素达到 AA（≥3:1）。">
             个性化
           </SectionTitle>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -123,7 +124,7 @@ export default function HomePage() {
               </p>
               <p className="mt-2 text-xs text-[var(--ink-faint)]">
                 配浅色 / 深色 / 跟随系统三种模式，共 {THEMES.length * 2} 个组合。
-                正文对比度最低 15.5:1。
+                正文对比度最低 15.50:1，次要文字最低 7.24:1。
               </p>
               <Link href="/settings" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
                 切换主题
@@ -132,8 +133,8 @@ export default function HomePage() {
             <Card>
               <h3 className="font-medium">自带模型供应商</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                地址、密钥、模型名自己填，支持任何 OpenAI 兼容端点。
-                内置 DeepSeek / OpenAI / 通义 / Kimi / 智谱 / Ollama 预设。
+                地址、密钥、模型名自己填，支持 OpenAI 兼容与 Anthropic 两种协议。
+                内置 DeepSeek / OpenAI / Claude / 通义 / Kimi / 智谱 预设，也可填任意自建端点。
               </p>
               <p className="mt-2 text-xs text-[var(--ink-faint)]">
                 密钥只存本浏览器，请求由浏览器直连供应商，不经过本项目后端。

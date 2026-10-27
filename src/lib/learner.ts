@@ -8,8 +8,13 @@
  * 存储：localStorage。换成 Postgres 只需替换读写函数，业务代码不用动。
  */
 
-import { initialMastery, updateMastery, type MasteryState, type Difficulty } from "@/lib/mastery";
-import { computeDepths } from "@/lib/graph";
+import {
+  initialMastery,
+  updateMasteryScaled,
+  type MasteryState,
+  type Difficulty,
+} from "@/lib/mastery";
+import { computeDepths, type KnowledgeGraph } from "@/lib/graph";
 import { getSubject, DEFAULT_SUBJECT_ID } from "@/data/subjects";
 import type { Question } from "@/data/questions";
 
@@ -23,6 +28,11 @@ export interface AttemptRecord {
   readonly correct: boolean;
   /** ISO 时间戳。 */
   readonly at: string;
+  /**
+   * 这次作答是否计入掌握度。缺省（旧存档）视为 true。
+   * false 的两种来源：同一题重复作答、仅练习题（校验未通过，weightScale=0）。
+   */
+  readonly counted?: boolean;
 }
 
 /** 手动改写路径时的一条记录。 */
@@ -49,12 +59,15 @@ export interface LearnerState {
 }
 
 /** 新建一个学科进度。掌握度按图谱深度给先验。 */
-export function createSubjectProgress(subjectId: string): SubjectProgress {
+export function createSubjectProgress(
+  subjectId: string,
+  graph?: KnowledgeGraph,
+): SubjectProgress {
   const subject = getSubject(subjectId);
-  const depths = computeDepths(subject.graph);
-  const mastery = subject.graph.concepts.map((c) =>
-    initialMastery(c.id, depths.get(c.id) ?? 0),
-  );
+  // 自定义方向没有 Subject 记录，必须把图传进来；缺省才走内置学科
+  const g = graph ?? subject.graph;
+  const depths = computeDepths(g);
+  const mastery = g.concepts.map((c) => initialMastery(c.id, depths.get(c.id) ?? 0));
   return { mastery, attempts: [], pathEdits: [], lastStepIndex: 0 };
 }
 
@@ -68,23 +81,48 @@ export function createLearner(learnerId = "demo-learner"): LearnerState {
 }
 
 /** 取某学科的进度；不存在则新建（不写回，由调用方决定）。 */
-export function progressOf(state: LearnerState, subjectId: string): SubjectProgress {
-  return state.subjects[subjectId] ?? createSubjectProgress(subjectId);
+export function progressOf(
+  state: LearnerState,
+  subjectId: string,
+  graph?: KnowledgeGraph,
+): SubjectProgress {
+  return state.subjects[subjectId] ?? createSubjectProgress(subjectId, graph);
 }
 
-/** 记录一次作答，返回新的学习者状态（纯函数）。 */
+/**
+ * 记录一次作答，返回新的学习者状态（纯函数）。
+ *
+ * 同一道题在同一学科里重复作答只记录、不重复计证据。
+ * 否则把一道题连点 5 次就能把掌握度推到 0.77——那不是测评，是刷分。
+ * 重复作答仍然入 attempts（`counted: false`），界面上能看到「这题做过」。
+ *
+ * opts.weightScale 用于「仅练习」的题（生成题未过答案校验）：传 0 表示不计证据。
+ * 折扣不在这里做——折扣要改的是 α/β 的增量，而 updateMastery 不认识折扣，
+ * 所以由调用方把 difficulty 折算后传入，或在 mastery 层用 updateMasteryScaled。
+ */
 export function recordAttempt(
   state: LearnerState,
   subjectId: string,
   question: Question,
   correct: boolean,
   now: string,
+  opts?: { readonly graph?: KnowledgeGraph; readonly weightScale?: number },
 ): LearnerState {
-  const progress = progressOf(state, subjectId);
+  const progress = progressOf(state, subjectId, opts?.graph);
 
-  const mastery = progress.mastery.map((m) =>
-    m.kcId === question.kcId ? updateMastery(m, correct, question.difficulty) : m,
+  const alreadyCounted = progress.attempts.some(
+    (a) => a.questionId === question.id && a.kcId === question.kcId && a.counted !== false,
   );
+  const weightScale = opts?.weightScale ?? 1;
+  const counted = !alreadyCounted && weightScale > 0;
+
+  const mastery = counted
+    ? progress.mastery.map((m) =>
+        m.kcId === question.kcId
+          ? updateMasteryScaled(m, correct, question.difficulty, weightScale)
+          : m,
+      )
+    : progress.mastery;
 
   const attempt: AttemptRecord = {
     questionId: question.id,
@@ -92,6 +130,7 @@ export function recordAttempt(
     difficulty: question.difficulty,
     correct,
     at: now,
+    ...(counted ? {} : { counted: false }),
   };
 
   return {
@@ -107,14 +146,21 @@ export function recordAttempt(
   };
 }
 
-/** 记录一次手动改路径。 */
+/**
+ * 记录一次手动改路径。
+ *
+ * 必须传 graph：自定义方向没有 Subject 记录，不传会按内置学科建出
+ * c01–c40 的掌握度，把方向自己的 k1/k2… 覆盖掉——诊断页随后会认为
+ * 「这个方向没有任何知识点」，显示成「诊断完成」。
+ */
 export function recordPathEdit(
   state: LearnerState,
   subjectId: string,
   edit: Omit<PathEdit, "at">,
   now: string,
+  graph?: KnowledgeGraph,
 ): LearnerState {
-  const progress = progressOf(state, subjectId);
+  const progress = progressOf(state, subjectId, graph);
   return {
     ...state,
     subjects: {
@@ -132,16 +178,21 @@ export function attemptedQuestionIds(
   state: LearnerState,
   subjectId: string,
   kcId: string,
+  graph?: KnowledgeGraph,
 ): Set<string> {
-  const progress = progressOf(state, subjectId);
+  const progress = progressOf(state, subjectId, graph);
   return new Set(
     progress.attempts.filter((a) => a.kcId === kcId).map((a) => a.questionId),
   );
 }
 
 /** 某学科的总作答数。 */
-export function attemptCount(state: LearnerState, subjectId: string): number {
-  return progressOf(state, subjectId).attempts.length;
+export function attemptCount(
+  state: LearnerState,
+  subjectId: string,
+  graph?: KnowledgeGraph,
+): number {
+  return progressOf(state, subjectId, graph).attempts.length;
 }
 
 // ── 持久化 ──────────────────────────────────────────────────────────

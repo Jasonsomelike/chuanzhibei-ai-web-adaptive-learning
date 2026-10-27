@@ -37,17 +37,36 @@ export function SectionTitle({
   );
 }
 
-/** 掌握度条。同时显示点估计与不确定度——这是本项目与普通进度条的区别。 */
+/**
+ * 掌握度条。同时显示点估计与不确定度——这是本项目与普通进度条的区别。
+ *
+ * probabilityAbove 是 P(真实掌握度 > 阈值)，与 sd 含义不同：
+ * sd 是「我们有多不确定」，P 是「达标有多可能」。两者都显示，
+ * 因为它们回答的问题不一样（精度 vs 决策）。
+ *
+ * evidenceShortfall 描述「为什么证据不算充分」，两种原因要分开说：
+ *   count —— 题目数量不够（还能继续测）
+ *   precision —— 题数够了但 sd 仍 > 0.20（对错分裂，题库可能已经出完）
+ * 混成一句「未达 N 题门槛」会在 n 已经等于 N 时自相矛盾。
+ */
 export function MasteryBar({
   mean,
   sd,
   evidenceN,
   label,
+  probabilityAbove,
+  evidenceShortfall,
+  evidenceTarget,
 }: {
   mean: number;
   sd: number;
   evidenceN: number;
   label?: string;
+  probabilityAbove?: number;
+  /** 证据不足的原因；null/undefined 表示已充分。 */
+  evidenceShortfall?: "count" | "precision" | null;
+  /** 条数不足时的门槛值，用于文案。 */
+  evidenceTarget?: number;
 }) {
   const pct = Math.round(mean * 100);
   const margin = Math.round(sd * 100);
@@ -86,6 +105,24 @@ export function MasteryBar({
           style={{ width: `${pct}%` }}
         />
       </div>
+      {evidenceN > 0 ? (
+        <p className="mt-1 text-xs text-[var(--ink-faint)]">
+          {probabilityAbove !== undefined
+            ? `P(已掌握) = ${Math.round(probabilityAbove * 100)}%`
+            : null}
+          {evidenceShortfall === "count" ? (
+            <span className="ml-2 text-[var(--warn)]">
+              已测 {evidenceN} 题
+              {evidenceTarget ? `，未达 ${evidenceTarget} 题门槛` : ""}，掌握度仅供参考
+            </span>
+          ) : evidenceShortfall === "precision" ? (
+            <span className="ml-2 text-[var(--warn)]">
+              已测 {evidenceN} 题，题数够了但答案对错分裂，不确定度仍偏大（±
+              {Math.round(sd * 100)}），掌握度仅供参考
+            </span>
+          ) : null}
+        </p>
+      ) : null}
     </div>
   );
 }

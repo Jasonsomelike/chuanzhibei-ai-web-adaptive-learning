@@ -10,8 +10,9 @@ import {
   type LearnerState,
 } from "@/lib/learner";
 import { questions } from "@/data/questions";
-import { masteryMean, masterySd } from "@/lib/mastery";
+import { difficultyWeight, initialMastery, masteryMean, masterySd } from "@/lib/mastery";
 import { knowledgeGraph } from "@/data/knowledge-graph";
+import type { KnowledgeGraph } from "@/lib/graph";
 import { DEFAULT_SUBJECT_ID, SUBJECTS } from "@/data/subjects";
 
 const NOW = "2026-10-22T10:00:00.000Z";
@@ -142,6 +143,87 @@ describe("记录作答", () => {
     expect(masterySd(m)).toBeLessThanOrEqual(0.2);
   });
 
+  it("同一题重复作答不改变均值与 evidenceN，但 attempts 长度增加", () => {
+    let s: LearnerState = createLearner();
+    s = recordAttempt(s, DS, q, true, NOW);
+    const first = progressOf(s, DS).mastery.find((m) => m.kcId === "c09")!;
+
+    // 同一题连答 4 次
+    for (let i = 0; i < 4; i += 1) s = recordAttempt(s, DS, q, true, NOW);
+
+    const progress = progressOf(s, DS);
+    const after = progress.mastery.find((m) => m.kcId === "c09")!;
+    expect(after.alpha).toBe(first.alpha);
+    expect(after.beta).toBe(first.beta);
+    expect(after.evidenceN).toBe(1);
+
+    expect(progress.attempts).toHaveLength(5);
+    expect(progress.attempts.slice(1).every((a) => a.counted === false)).toBe(true);
+  });
+
+  it("重复作答即使答错也不改变掌握度", () => {
+    let s: LearnerState = createLearner();
+    s = recordAttempt(s, DS, q, true, NOW);
+    const before = progressOf(s, DS).mastery.find((m) => m.kcId === "c09")!;
+    s = recordAttempt(s, DS, q, false, NOW);
+    const after = progressOf(s, DS).mastery.find((m) => m.kcId === "c09")!;
+    expect(after).toEqual(before);
+  });
+
+  it("weightScale=0 的练习题记录作答但不进证据", () => {
+    let s: LearnerState = createLearner();
+    s = recordAttempt(s, DS, q, true, NOW, { weightScale: 0 });
+    const progress = progressOf(s, DS);
+    const m = progress.mastery.find((x) => x.kcId === "c09")!;
+    expect(m.evidenceN).toBe(0);
+    expect(m.alpha).toBeCloseTo(initialMastery("c09", 3).alpha, 10);
+    expect(progress.attempts).toHaveLength(1);
+    expect(progress.attempts[0].counted).toBe(false);
+  });
+
+  it("weightScale=0.8 只计八成证据", () => {
+    const s = recordAttempt(createLearner(), DS, q, true, NOW, { weightScale: 0.8 });
+    const m = progressOf(s, DS).mastery.find((x) => x.kcId === "c09")!;
+    const before = initialMastery("c09", 3);
+    expect(m.alpha - before.alpha).toBeCloseTo(0.8 * difficultyWeight(q.difficulty), 10);
+    expect(m.evidenceN).toBe(1);
+  });
+
+  it("自定义方向按传入的图建进度，不再回落数据结构", () => {
+    const fakeGraph: KnowledgeGraph = {
+      version: "kg-custom-x",
+      concepts: [
+        { id: "k1", name: "栈", summary: "", chapter: "自定义" },
+        { id: "k2", name: "队列", summary: "", chapter: "自定义" },
+        { id: "k3", name: "树", summary: "", chapter: "自定义" },
+      ],
+      edges: [
+        { before: "k1", after: "k2" },
+        { before: "k2", after: "k3" },
+      ],
+    };
+    const progress = createSubjectProgress("custom-x", fakeGraph);
+    expect(progress.mastery).toHaveLength(fakeGraph.concepts.length);
+    expect(progress.mastery.map((m) => m.kcId).sort()).toEqual(["k1", "k2", "k3"]);
+
+    // 不传图时仍然回落内置学科（向后兼容）
+    const legacy = createSubjectProgress("custom-x");
+    expect(legacy.mastery).toHaveLength(knowledgeGraph.concepts.length);
+  });
+
+  it("progressOf 透传 graph：未访问过的自定义方向也按图建", () => {
+    const fakeGraph: KnowledgeGraph = {
+      version: "kg-custom-y",
+      concepts: [
+        { id: "a", name: "A", summary: "", chapter: "自定义" },
+        { id: "b", name: "B", summary: "", chapter: "自定义" },
+      ],
+      edges: [{ before: "a", after: "b" }],
+    };
+    const p = progressOf(createLearner(), "custom-y", fakeGraph);
+    expect(p.mastery.map((m) => m.kcId)).toEqual(["a", "b"]);
+  });
+
   it("同一知识点的三题难度有梯度，恰好覆盖易中难", () => {
     const kcQuestions = questions.filter((x) => x.kcId === "c09");
     const difficulties = kcQuestions.map((q2) => q2.difficulty).sort();
@@ -195,6 +277,60 @@ describe("手动改路径的记录", () => {
       detail: "把 c05 移到前面",
       at: NOW,
     });
+  });
+
+  it("自定义方向记路径编辑时，不能把进度写成数据结构", () => {
+    /*
+     * 回归：recordPathEdit 曾不传 graph，progressOf 回落到 getSubject(uuid)
+     * → SUBJECTS[0]，于是给方向写出 c01–c40 的掌握度，覆盖掉 k1/k2…。
+     * 诊断页随后找不到任何 mastery，显示「诊断完成」。
+     */
+    const fakeGraph: KnowledgeGraph = {
+      version: "kg-custom-z",
+      concepts: [
+        { id: "k1", name: "栈", summary: "", chapter: "自定义" },
+        { id: "k2", name: "队列", summary: "", chapter: "自定义" },
+        { id: "k3", name: "树", summary: "", chapter: "自定义" },
+      ],
+      edges: [
+        { before: "k1", after: "k2" },
+        { before: "k2", after: "k3" },
+      ],
+    };
+
+    // 先按图建好方向进度（模拟诊断过几题）
+    let s: LearnerState = {
+      ...createLearner(),
+      subjects: { ...createLearner().subjects, "custom-z": createSubjectProgress("custom-z", fakeGraph) },
+    };
+    s = recordAttempt(s, "custom-z", { id: "di-1", kcId: "k1", difficulty: 2, stem: "s", options: ["a", "b"], answerIndex: 0, explanation: "e" }, true, NOW, { graph: fakeGraph });
+
+    const before = progressOf(s, "custom-z", fakeGraph);
+    expect(before.mastery.map((m) => m.kcId)).toEqual(["k1", "k2", "k3"]);
+
+    // 记一次路径编辑
+    s = recordPathEdit(s, "custom-z", { kind: "reorder", detail: "调序" }, NOW, fakeGraph);
+    const after = progressOf(s, "custom-z", fakeGraph);
+
+    expect(after.mastery.map((m) => m.kcId)).toEqual(["k1", "k2", "k3"]);
+    expect(after.mastery).toEqual(before.mastery);
+    expect(after.attempts).toEqual(before.attempts);
+    expect(after.pathEdits).toHaveLength(1);
+  });
+
+  it("自定义方向没有 graph 时也不会静默写成 c01–c40（显式暴露给调用方）", () => {
+    /*
+     * 不传 graph 时仍会回落内置学科——这是向后兼容的既有行为，
+     * 但至少不能「悄悄成功」。这里断言的是：调用方拿到的是内置学科形状，
+     * 因此任何新代码漏传 graph 都能被这条测试的对照发现。
+     */
+    const fakeGraph: KnowledgeGraph = {
+      version: "kg-custom-w",
+      concepts: [{ id: "k1", name: "栈", summary: "", chapter: "自定义" }],
+      edges: [],
+    };
+    const s = recordPathEdit(createLearner(), "custom-w", { kind: "add", detail: "x" }, NOW, fakeGraph);
+    expect(progressOf(s, "custom-w", fakeGraph).mastery.map((m) => m.kcId)).toEqual(["k1"]);
   });
 
   it("支持三种编辑类型，且只影响当前学科", () => {

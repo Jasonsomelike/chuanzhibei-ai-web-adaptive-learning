@@ -42,17 +42,69 @@ function rowToDirection(row: DirectionRow): CustomDirection {
 
 /**
  * GET：
+ *   ?id=<uuid>    单个方向（作者本人或已公开），含完整图谱与各 KC 的题量
  *   ?scope=mine   我的方向（需登录）
  *   ?scope=market 公开的方向（含搜索 q、学科筛选 subject）
  *   默认 market
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
+  const id = (url.searchParams.get("id") ?? "").trim();
   const scope = url.searchParams.get("scope") ?? "market";
   const q = (url.searchParams.get("q") ?? "").trim();
   const subject = (url.searchParams.get("subject") ?? "").trim();
 
   const db = await getDb();
+
+  if (id !== "") {
+    const row = await db.one<DirectionRow>("SELECT * FROM directions WHERE id = $1", [id]);
+    if (!row) return NextResponse.json({ error: "方向不存在" }, { status: 404 });
+
+    const isOwner = (await getCurrentUser())?.id === row.user_id;
+    if (!row.is_public && !isOwner) {
+      return NextResponse.json({ error: "该方向未公开" }, { status: 403 });
+    }
+
+    const direction = rowToDirection(row);
+
+    /*
+     * 题目覆盖度：每 KC 的 accepted/practice 计数，诊断页据此决定要不要生成。
+     * 刻意不用 GROUP BY：内存实现只支持固定几种查询模式，
+     * 多一条聚合查询就要在两处实现里各写一遍，出错面更大。
+     */
+    const itemRows = await db.all<{ kc_id: string; status: string; source: string }>(
+      "SELECT kc_id, status, source FROM direction_items WHERE direction_id = $1",
+      [id],
+    );
+    /*
+     * 每 KC 的 accepted/practice 计数 + accepted 的来源构成。
+     * 来源是必需的：门槛按来源区分（生成题 4 道、手动/借用 3 道），
+     * 只给总数会让方向页无法判断「就绪」。
+     */
+    const coverage: Record<
+      string,
+      { accepted: number; practice: number; sources: string[] }
+    > = {};
+    for (const r of itemRows) {
+      const bucket = (coverage[r.kc_id] ??= { accepted: 0, practice: 0, sources: [] });
+      if (r.status === "accepted") {
+        bucket.accepted += 1;
+        if (typeof r.source === "string") bucket.sources.push(r.source);
+      } else if (r.status === "practice") bucket.practice += 1;
+    }
+
+    return NextResponse.json({
+      id: direction.id,
+      title: direction.title,
+      description: direction.description,
+      subjectId: direction.subjectId,
+      graph: direction.graph,
+      isPublic: direction.isPublic,
+      isOwner,
+      updatedAt: direction.updatedAt,
+      coverage,
+    });
+  }
 
   if (scope === "mine") {
     const user = await getCurrentUser();
@@ -166,7 +218,13 @@ export async function POST(request: Request) {
     );
 
     await db.run(
-      "INSERT INTO direction_picks (user_id, direction_id, created_at) VALUES ($1, $2, $3)",
+      /*
+       * ON CONFLICT：同一用户再次选用同一个公开方向时，
+       * 主键 (user_id, direction_id) 会冲突。没有这一句在 Postgres 下会抛错，
+       * 而此时 directions 行已插入且无事务，会留下孤儿副本。
+       */
+      `INSERT INTO direction_picks (user_id, direction_id, created_at)
+       VALUES ($1, $2, $3) ON CONFLICT (user_id, direction_id) DO NOTHING`,
       [user.id, body.copyFrom, now],
     );
 

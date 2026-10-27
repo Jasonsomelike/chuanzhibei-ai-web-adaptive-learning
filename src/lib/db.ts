@@ -8,7 +8,7 @@
  * 而 SQLite 需要原生模块、在 serverless 里不可用。内存实现让本地零依赖，
  * 代价是重启即丢失——这对开发与测试是可接受的。
  *
- * 表结构见 migrations/001_init.sql。启动时自动执行建表语句（幂等）。
+ * 表结构定义在本文件末尾的 SCHEMA 常量里，启动时自动执行建表语句（幂等）。
  */
 
 import { neon } from "@neondatabase/serverless";
@@ -25,23 +25,45 @@ export interface Db {
 
 // ── Postgres 实现 ──────────────────────────────────────────────────
 
+/**
+ * Neon 的 HTTP 驱动默认只返回「行数组」。
+ * INSERT/UPDATE/DELETE 无 RETURNING 时那是空数组，`rows.length` 恒为 0——
+ * 用它判断「插入是否成功」在 Postgres 上永远为假，而内存实现返回 1，
+ * 于是本地全绿、线上「写入成功却报失败」。
+ *
+ * 这里用 fullResults: true 拿 rowCount。它是驱动文档承诺的字段
+ * （node_modules/@neondatabase/serverless/index.d.ts 的 fullResults 说明），
+ * 与 node-postgres 的 result.rowCount 同义。
+ */
 function createPostgresDb(url: string): Db {
-  const sql = neon(url);
+  const sql = neon(url, { fullResults: true });
+
+  interface FullResult {
+    rows?: unknown[];
+    rowCount?: number | null;
+  }
+
+  const query = async (text: string, params: unknown[]): Promise<FullResult> => {
+    // neon 的模板标签接口不接受动态 SQL，这里用 query 方法
+    return (await sql.query(text, params)) as unknown as FullResult;
+  };
 
   return {
     async run(text, params = []) {
-      // neon 的模板标签接口不接受动态 SQL，这里用 query 方法
-      const rows = (await sql.query(text, params)) as unknown[];
-      // INSERT/UPDATE 无 RETURNING 时返回空数组
-      return Array.isArray(rows) ? rows.length : 0;
+      const result = await query(text, params);
+      // 优先 rowCount；个别语句（如 DDL）驱动可能给 null，退回行数
+      if (typeof result.rowCount === "number") return result.rowCount;
+      return Array.isArray(result.rows) ? result.rows.length : 0;
     },
     async all<T>(text: string, params: unknown[] = []) {
-      const rows = (await sql.query(text, params)) as T[];
-      return Array.isArray(rows) ? rows : [];
+      const result = await query(text, params);
+      return Array.isArray(result.rows) ? (result.rows as T[]) : [];
     },
     async one<T>(text: string, params: unknown[] = []) {
-      const rows = (await sql.query(text, params)) as T[];
-      return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+      const result = await query(text, params);
+      return Array.isArray(result.rows) && result.rows.length > 0
+        ? (result.rows[0] as T)
+        : null;
     },
   };
 }
@@ -62,6 +84,8 @@ function createMemoryDb(): Db {
   const sessions = new Map<string, Record<string, unknown>>();
   const progress = new Map<string, Record<string, unknown>>();
   const directions = new Map<string, Record<string, unknown>>();
+  /** key = `${direction_id}|${content_hash}`，对应 Postgres 的唯一约束。 */
+  const directionItems = new Map<string, Record<string, unknown>>();
 
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -139,6 +163,10 @@ function createMemoryDb(): Db {
         const existing = directions.get(id);
         if (!existing || existing.user_id !== user_id) return 0;
         directions.delete(id);
+        // 模拟 ON DELETE CASCADE：方向删掉，它的题也不该留着
+        for (const [key, row] of directionItems) {
+          if (row.direction_id === id) directionItems.delete(key);
+        }
         return 1;
       }
 
@@ -146,11 +174,84 @@ function createMemoryDb(): Db {
         return 1;
       }
 
+      /*
+       * 题目批量落库。Postgres 侧用 ON CONFLICT DO NOTHING，内存侧按唯一键跳过，
+       * 两边都是「重复提交不报错、不新增行」。
+       */
+      if (q.startsWith("insert into direction_items")) {
+        const [
+          id,
+          direction_id,
+          kc_id,
+          difficulty,
+          stem,
+          options_json,
+          answer_index,
+          explanation,
+          content_hash,
+          source,
+          status,
+          checks_json,
+          created_at,
+        ] = params as (string | number)[];
+        const key = `${direction_id}|${content_hash}`;
+        if (directionItems.has(key)) return 0;
+        directionItems.set(key, {
+          id,
+          direction_id,
+          kc_id,
+          difficulty,
+          stem,
+          options_json,
+          answer_index,
+          explanation,
+          content_hash,
+          source,
+          status,
+          checks_json,
+          created_at,
+        });
+        return 1;
+      }
+
+      // 方向被删时级联删题，对应 Postgres 的 ON DELETE CASCADE
+      // （directions 的 DELETE 分支已处理；这里保留供显式清理调用）
+      if (q.startsWith("delete from direction_items")) {
+        if (q.includes("direction_id =")) {
+          const dirId = params[0] as string;
+          let n = 0;
+          for (const [key, row] of directionItems) {
+            if (row.direction_id === dirId) {
+              directionItems.delete(key);
+              n += 1;
+            }
+          }
+          return n;
+        }
+        return 0;
+      }
+
       return 0;
     },
 
     async all<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
+
+      if (q.includes("from direction_items")) {
+        let rows = [...directionItems.values()];
+        // 参数顺序固定：direction_id 永远第一个；kc_id 可选第二个。
+        // 状态过滤在调用方做——这里只认这两种查询，多一种就要多一处双实现。
+        if (q.includes("direction_id =")) {
+          const dirId = params[0] as string;
+          rows = rows.filter((r) => r.direction_id === dirId);
+        }
+        if (q.includes("kc_id =")) {
+          const kcId = params[1] as string;
+          rows = rows.filter((r) => r.kc_id === kcId);
+        }
+        rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        return rows as T[];
+      }
 
       if (q.includes("from directions") && q.includes("is_public = true")) {
         let rows = [...directions.values()].filter((d) => d.is_public === true);
@@ -179,6 +280,17 @@ function createMemoryDb(): Db {
         const rows = [...directions.values()]
           .filter((d) => d.user_id === uid)
           .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+        return rows as T[];
+      }
+
+      /*
+       * 全量进度（GET /api/progress）。没有 user_id 过滤时按用户分组取全部，
+       * 有过滤时只取该用户。缺这条分支会让内存模式下「写入成功、读回为空」，
+       * 而写入返回 200 不会报错——是最难查的那类缺口。
+       */
+      if (q.includes("from progress")) {
+        const uid = q.includes("user_id =") ? (params[0] as string) : null;
+        const rows = [...progress.values()].filter((r) => uid === null || r.user_id === uid);
         return rows as T[];
       }
 
@@ -222,6 +334,12 @@ function createMemoryDb(): Db {
       if (q.includes("from directions") && q.includes("id =")) {
         const found = directions.get(params[0] as string);
         return (found ?? null) as T | null;
+      }
+
+      if (q.includes("count(*)") && q.includes("from direction_items")) {
+        const dirId = params[0] as string;
+        const n = [...directionItems.values()].filter((r) => r.direction_id === dirId).length;
+        return { count: String(n) } as T;
       }
 
       if (q.includes("count(*)") && q.includes("from directions")) {
@@ -296,6 +414,28 @@ const SCHEMA = [
     created_at TEXT NOT NULL,
     PRIMARY KEY (user_id, direction_id)
   )`,
+  /*
+   * 自定义方向的题目。按 KC 懒生成、落库永久缓存。
+   * UNIQUE(direction_id, content_hash) 让「同一题重复落库」变成幂等操作，
+   * 生成重试与「生成全部题目」重复点击都不会产生重复行。
+   */
+  `CREATE TABLE IF NOT EXISTS direction_items (
+    id TEXT PRIMARY KEY,
+    direction_id TEXT NOT NULL REFERENCES directions(id) ON DELETE CASCADE,
+    kc_id TEXT NOT NULL,
+    difficulty INTEGER NOT NULL,
+    stem TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    answer_index INTEGER NOT NULL,
+    explanation TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    checks_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (direction_id, content_hash)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_direction_items_kc ON direction_items(direction_id, kc_id)`,
 ];
 
 async function ensureSchema(db: Db): Promise<void> {
@@ -317,4 +457,15 @@ async function ensureSchema(db: Db): Promise<void> {
 export function __resetMemoryDbForTests(): void {
   cached = null;
   initialized = false;
+}
+
+/**
+ * 测试用：注入一个 Db 实现，跳过建表。
+ *
+ * 用途是验证「调用方如何解释 run() 的返回值」，不依赖真实 Postgres。
+ * 生产代码不应调用它。
+ */
+export function __setDbForTests(db: Db): void {
+  cached = db;
+  initialized = true;
 }

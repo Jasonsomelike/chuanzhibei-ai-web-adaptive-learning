@@ -69,7 +69,7 @@ export default function SettingsPage() {
     } else {
       applyPreset("deepseek");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // 只在挂载时回显一次；applyPreset 是稳定的纯 setter，放进依赖会重复覆盖用户输入
   }, []);
 
   function applyPreset(id: string) {

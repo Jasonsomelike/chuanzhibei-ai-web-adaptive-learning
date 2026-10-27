@@ -9,6 +9,7 @@ import {
   MAX_CONCEPTS,
   type DirectionDraft,
 } from "@/lib/direction";
+import { computeDepths } from "@/lib/graph";
 
 /** 构造一个合法的最小草稿。 */
 function validDraft(overrides: Partial<DirectionDraft> = {}): DirectionDraft {
@@ -76,6 +77,37 @@ describe("方向草稿校验", () => {
     const concepts = [...d.concepts, { id: "k1", name: "重复", summary: "" }];
     const issues = validateDraft({ ...d, concepts });
     expect(issues.some((i) => i.includes("重复"))).toBe(true);
+  });
+
+  it("拒绝重名的知识点（id 不同但名字相同）", () => {
+    /*
+     * 两个 id 不同、名字都是「栈」的点，诊断页会显示两个一模一样的选项，
+     * 学生无法判断自己在测哪个。
+     */
+    const d = validDraft();
+    const concepts = d.concepts.map((c, i) =>
+      i === 1 ? { ...c, name: d.concepts[0].name } : c,
+    );
+    const issues = validateDraft({ ...d, concepts });
+    expect(issues.some((i) => i.includes("名称重复"))).toBe(true);
+  });
+
+  it("重名检查忽略空白差异", () => {
+    const d = validDraft();
+    const concepts = d.concepts.map((c, i) =>
+      i === 1 ? { ...c, name: `${d.concepts[0].name} ` } : c,
+    );
+    const issues = validateDraft({ ...d, concepts });
+    expect(issues.some((i) => i.includes("名称重复"))).toBe(true);
+  });
+
+  it("拒绝没有任何先修关系的图", () => {
+    /*
+     * 0 条边的图没有先修约束，路径规划会退化成按 id 排序，
+     * 与「带先修关系的小型知识图谱」的承诺不符。
+     */
+    const issues = validateDraft(validDraft({ edges: [] }));
+    expect(issues.some((i) => i.includes("没有任何先修关系"))).toBe(true);
   });
 
   it("拒绝悬空的边", () => {
@@ -188,6 +220,68 @@ describe("从现有学科拼装（无模型时的降级）", () => {
       const d = composeFromExisting(desc);
       if (d) expect(validateDraft(d)).toEqual([]);
     }
+  });
+
+  it("输出按先修顺序排列，第一个点不是最深的", () => {
+    /*
+     * 下游诊断页按数组顺序兜底选第一个待测点。
+     * 关键词得分排序会把「多级反馈队列调度」(depth 7) 排到最前，
+     * 于是第一题测的是最难的点，违反「不跳级」。
+     */
+    const d = composeFromExisting("进程调度");
+    expect(d).not.toBeNull();
+
+    const graph = { version: "t", concepts: d!.concepts.map((c) => ({ ...c, chapter: "x" })), edges: d!.edges };
+    const depths = computeDepths(graph);
+    const first = d!.concepts[0].id;
+    const maxDepth = Math.max(...d!.concepts.map((c) => depths.get(c.id) ?? 0));
+
+    // 第一个点的深度必须是全图最小（根层），且不可能是最深点
+    const minDepth = Math.min(...d!.concepts.map((c) => depths.get(c.id) ?? 0));
+    expect(depths.get(first)).toBe(minDepth);
+    if (maxDepth > minDepth) expect(depths.get(first)).not.toBe(maxDepth);
+  });
+
+  it("命中不足时如实说明「其余是基础知识点」，不谎报全部相关", () => {
+    /*
+     * 「哈希表」只命中一个关键词，补足到 5 个会带上数据结构基本概念等。
+     * 旧描述写「与哈希相关的 5 个知识点」——实测 5 个里没有哈希表。
+     */
+    const d = composeFromExisting("哈希表");
+    expect(d).not.toBeNull();
+    expect(d!.description).toContain("基础知识点");
+    expect(d!.description).not.toMatch(/^\D*挑选了 \d+ 个与「哈希」相关的知识点。$/);
+  });
+
+  it("命中不足时，命中的知识点必须保留在结果里", () => {
+    /*
+     * 旧实现用 `scored.slice(0, N)` 取图谱前 N 个补点，
+     * 命中的 c34 哈希表被挤出前 5——于是「5 个里 0 个相关」，
+     * 而描述写「其中 1 个直接相关」。
+     * 这里直接锁住「命中的点一个都不能丢」。
+     */
+    const d = composeFromExisting("哈希表");
+    expect(d).not.toBeNull();
+    const names = d!.concepts.map((c) => c.name);
+    expect(names.some((n) => n.includes("哈希"))).toBe(true);
+  });
+
+  it("命中不足时，描述的「直接相关」数量与实际命中数一致", () => {
+    const d = composeFromExisting("哈希表");
+    expect(d).not.toBeNull();
+    const m = /其中 (\d+) 个与/.exec(d!.description);
+    expect(m).not.toBeNull();
+    const claimed = Number(m![1]);
+    // 实际含「哈希」的点数必须 ≥ 声称数（描述不能多报）
+    const actual = d!.concepts.filter((c) => c.name.includes("哈希")).length;
+    expect(actual).toBeGreaterThanOrEqual(claimed);
+    expect(claimed).toBeGreaterThanOrEqual(1);
+  });
+
+  it("命中充足时仍用「相关」措辞", () => {
+    const d = composeFromExisting("树 图 排序 查找 栈 队列 链表");
+    expect(d).not.toBeNull();
+    expect(d!.description).toContain("相关");
   });
 });
 

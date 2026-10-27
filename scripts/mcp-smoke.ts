@@ -77,8 +77,8 @@ const subjectsData = JSON.parse(
   (subjectsCall.result as { content?: { text?: string }[] })?.content?.[0]?.text ?? "[]",
 ) as { id: string; concepts: number; edges: number; questions: number }[];
 check(
-  "list_subjects 返回 5 个学科且规模正确",
-  subjectsData.length === 5 &&
+  "list_subjects 返回全部学科且规模正确",
+  subjectsData.length >= 9 &&
     subjectsData.every((s) => s.concepts === 40 && s.edges === 60 && s.questions === 120),
   subjectsData.map((s) => `${s.id}(${s.concepts}/${s.edges}/${s.questions})`).join(" "),
 );
@@ -142,8 +142,8 @@ check(
 const resList = await rpc("resources/list");
 const resources = (resList.result as { resources?: { uri: string }[] })?.resources ?? [];
 check(
-  "resources/list 返回全学科资源（5 学科 x 2）",
-  resources.length === 10 &&
+  "resources/list 返回全学科资源（学科数 x 2）",
+  resources.length >= 18 &&
     resources.some((r) => r.uri === "kg://network/graph") &&
     resources.some((r) => r.uri === "kg://python/questions"),
   `${resources.length} 个资源`,

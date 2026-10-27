@@ -20,6 +20,7 @@ import {
   type LearnerState,
   type SubjectProgress,
 } from "@/lib/learner";
+import type { KnowledgeGraph } from "@/lib/graph";
 import { useAuth } from "@/lib/useAuth";
 
 const PUSH_DEBOUNCE_MS = 800;
@@ -40,9 +41,11 @@ export interface UseLearnerResult {
 /**
  * 读取并同步学习者状态。
  *
- * @param subjectId 当前学科，用于取 progress 与推送到服务端
+ * @param subjectId 当前学科或自定义方向 id，用于取 progress 与推送到服务端
+ * @param graph 自定义方向的图。不传则按内置学科建进度（向后兼容）；
+ *              传了才能保证进度里的 kcId 属于这张图，而不是回落到数据结构。
  */
-export function useLearner(subjectId: string): UseLearnerResult {
+export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearnerResult {
   const { user } = useAuth();
   const [learner, setLearnerState] = useState<LearnerState | null>(null);
   const [ready, setReady] = useState(false);
@@ -108,7 +111,7 @@ export function useLearner(subjectId: string): UseLearnerResult {
 
       if (!user) return;
 
-      pending.current = { subjectId, progress: progressOf(next, subjectId) };
+      pending.current = { subjectId, progress: progressOf(next, subjectId, graph) };
 
       if (pushTimer.current) clearTimeout(pushTimer.current);
       pushTimer.current = setTimeout(() => {
@@ -126,7 +129,7 @@ export function useLearner(subjectId: string): UseLearnerResult {
         });
       }, PUSH_DEBOUNCE_MS);
     },
-    [user, subjectId],
+    [user, subjectId, graph],
   );
 
   const resetSubject = useCallback(() => {
@@ -136,11 +139,11 @@ export function useLearner(subjectId: string): UseLearnerResult {
       ...learner,
       subjects: {
         ...learner.subjects,
-        [subjectId]: progressOf(fresh, subjectId),
+        [subjectId]: progressOf(fresh, subjectId, graph),
       },
     };
     setLearner(next);
-  }, [learner, subjectId, setLearner]);
+  }, [learner, subjectId, graph, setLearner]);
 
   // 卸载前把待推送的写掉，避免最后一次变更丢失
   useEffect(() => {
@@ -164,7 +167,7 @@ export function useLearner(subjectId: string): UseLearnerResult {
   return {
     learner,
     ready,
-    progress: learner ? progressOf(learner, subjectId) : null,
+    progress: learner ? progressOf(learner, subjectId, graph) : null,
     setLearner,
     synced,
     resetSubject,

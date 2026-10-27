@@ -64,11 +64,26 @@ try {
     missing.length === 0 ? `${teamChecks.length} 项齐全` : `缺少：${missing.map(([n]) => n).join("、")}`,
   );
 
-  const privacyLeaks = ["18010730140", "2838955944@qq.com"].filter((v) => bodyText.includes(v));
+  /*
+   * 联系方式泄露检查：用正则匹配「像手机号」「像邮箱」的串，而不是把真实号码写进仓库。
+   * 旧写法把真实手机号与邮箱硬编码在这里做比对，本身就构成一次泄露——
+   * 与 README「仓库不存联系方式」的声明直接矛盾。
+   */
+  const phonePattern = /(?<!\d)1[3-9]\d{9}(?!\d)/;
+  const emailPattern = /[\w.+-]+@[\w-]+\.[\w.-]+/;
+  // 示例邮箱（example.com / test.local）是允许出现在界面说明里的
+  const emails = bodyText.match(new RegExp(emailPattern, "g")) ?? [];
+  const suspiciousEmails = emails.filter(
+    (e) => !/example\.(com|org)|test\.local|@example/i.test(e),
+  );
+  const leaks: string[] = [];
+  if (phonePattern.test(bodyText)) leaks.push("疑似手机号");
+  if (suspiciousEmails.length > 0) leaks.push(`疑似邮箱 ${suspiciousEmails.join("、")}`);
+
   record(
     "首页未泄露联系方式",
-    privacyLeaks.length === 0,
-    privacyLeaks.length === 0 ? "电话与邮箱均未出现" : `泄露：${privacyLeaks.join("、")}`,
+    leaks.length === 0,
+    leaks.length === 0 ? "未出现手机号或真实邮箱" : `泄露：${leaks.join("、")}`,
   );
 
   // ── 2. 关于页 ──
@@ -434,6 +449,355 @@ try {
   } else {
     record("生成方向草稿并预览", false, "未找到输入框");
   }
+
+  // ── 9b. 自定义方向进诊断：核心功能 ──
+  /*
+   * 用 API 建方向 + 手动录题，再走 ?direction= 打开诊断页。
+   * 不用模型，所以这条用例在无 key 环境也能跑——这正是要保证的最低可用路径。
+   */
+  const created = await page.evaluate(async () => {
+    const r = await fetch("/api/directions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ description: "我想系统学一遍树结构" }),
+    });
+    return (await r.json()) as { id?: string; conceptCount?: number };
+  });
+
+  if (created.id) {
+    const detail = await page.evaluate(async (id: string) => {
+      const r = await fetch(`/api/directions?id=${id}`);
+      return (await r.json()) as {
+        graph?: { concepts: { id: string; name: string }[] };
+        coverage?: Record<string, unknown>;
+      };
+    }, created.id);
+
+    const firstKc = detail.graph?.concepts?.[0];
+    const manual = firstKc
+      ? await page.evaluate(
+          async ({ id, kcId, kcName }: { id: string; kcId: string; kcName: string }) => {
+            const items = [1, 2, 3].map((n) => ({
+              difficulty: n === 1 ? "basic" : n === 2 ? "advanced" : "challenge",
+              stem: `关于「${kcName}」的第 ${n} 个判断，下列哪一项成立？`,
+              options: [
+                `${kcName}与先修约束无关`,
+                `必须先掌握${kcName}的前置概念才能继续`,
+                `${kcName}只能用于图算法`,
+                `${kcName}是排序算法的一种`,
+              ],
+              answerText: `必须先掌握${kcName}的前置概念才能继续`,
+              explanation: `必须先掌握${kcName}的前置概念才能继续，这是图谱排序与路径规划的硬约束；其余三项都与先修关系无关。`,
+              source: "manual",
+              status: "accepted",
+            }));
+            const r = await fetch("/api/directions/items", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ directionId: id, kcId, items }),
+            });
+            return (await r.json()) as { inserted?: number; rejected?: unknown[] };
+          },
+          { id: created.id, kcId: firstKc.id, kcName: firstKc.name },
+        )
+      : null;
+
+    record(
+      "自定义方向可手动录题并落库",
+      (manual?.inserted ?? 0) >= 3,
+      `${manual?.inserted ?? 0} 题入库，拒 ${manual?.rejected?.length ?? 0} 题`,
+    );
+
+    await page.goto(`${BASE}/diagnose?direction=${created.id}`, { waitUntil: "networkidle" });
+    await page.waitForSelector('fieldset input[type="radio"]', { timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(800);
+
+    const dirDiagText = await page.locator("body").innerText();
+    const dirFieldsets = await page.locator("fieldset").count();
+    record(
+      "?direction= 能真的出题",
+      dirFieldsets > 0,
+      dirFieldsets > 0 ? `fieldset=${dirFieldsets}` : "没有题目",
+    );
+    record(
+      "诊断页识别自定义方向",
+      dirDiagText.includes("自定义方向") && dirDiagText.includes("我的方向"),
+      dirDiagText.includes("自定义方向") ? "显示方向标识与分组" : "未识别",
+    );
+    record(
+      "手动题标注来源",
+      dirDiagText.includes("手动录入"),
+      dirDiagText.includes("手动录入") ? "已标注" : "未标注",
+    );
+
+    // 路径页：自定义方向也能规划，且显示输入指纹
+    await page.goto(`${BASE}/path?direction=${created.id}`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1200);
+    const dirPathText = await page.locator("body").innerText();
+    const dirHashes = dirPathText.match(/[0-9a-f]{64}/g) ?? [];
+    record(
+      "自定义方向可规划路径且输入/路径指纹都在",
+      (await page.locator("ol li").count()) > 0 && new Set(dirHashes).size >= 2,
+      `${await page.locator("ol li").count()} 步 · ${new Set(dirHashes).size} 个不同指纹`,
+    );
+
+    /*
+     * 回归：路径页点「上移」曾经用 recordPathEdit 时不传 graph，
+     * 于是 progressOf 回落到内置学科，给方向写出 c01–c40 的掌握度，
+     * 回诊断页就变成「这个方向没有可出的题」。
+     */
+    const upButtons = page.getByRole("button", { name: /上移一位/ });
+    if ((await upButtons.count()) > 1) {
+      await upButtons.nth(1).click();
+      await page.waitForTimeout(600);
+    }
+    const storedKcIds = await page.evaluate((id: string) => {
+      const raw = window.localStorage.getItem("alp.learner.v2");
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        subjects?: Record<string, { mastery?: { kcId: string }[] }>;
+      };
+      return parsed.subjects?.[id]?.mastery?.map((m) => m.kcId) ?? null;
+    }, created.id);
+    const polluted = (storedKcIds ?? []).some((k) => /^c\d{2}$/.test(k));
+    record(
+      "路径页手动改写不会把方向进度写成数据结构",
+      storedKcIds !== null && storedKcIds.length > 0 && !polluted,
+      storedKcIds ? `${storedKcIds.length} 个知识点，含 c01 式 id：${polluted}` : "没有方向进度",
+    );
+
+    await page.goto(`${BASE}/diagnose?direction=${created.id}`, { waitUntil: "networkidle" });
+    await page.waitForSelector('fieldset input[type="radio"]', { timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(700);
+    const afterEditFieldsets = await page.locator("fieldset").count();
+    const afterEditText = await page.locator("body").innerText();
+    record(
+      "手动改写后回诊断页仍有题",
+      afterEditFieldsets > 0 && !afterEditText.includes("诊断完成"),
+      afterEditFieldsets > 0 ? `fieldset=${afterEditFieldsets}` : "没有题目",
+    );
+
+    /*
+     * 回归：手动改写后改预算，页面必须按新预算收缩。
+     * 旧实现显示的是 manualSteps，预算只重算 plan，页面停在旧步数。
+     */
+    await page.goto(`${BASE}/path?direction=${created.id}`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(900);
+    await page.getByRole("button", { name: "把本周预算设为 240 分钟" }).click();
+    await page.waitForTimeout(500);
+    const bigSteps = await page.locator("ol li").count();
+    const up2 = page.getByRole("button", { name: /上移一位/ });
+    if ((await up2.count()) > 1) {
+      await up2.nth(1).click();
+      await page.waitForTimeout(500);
+    }
+    await page.getByRole("button", { name: "把本周预算设为 30 分钟" }).click();
+    await page.waitForTimeout(600);
+    const smallSteps = await page.locator("ol li").count();
+    record(
+      "手动改写后改预算仍会重算",
+      smallSteps < bigSteps && smallSteps <= 2,
+      `240 分 ${bigSteps} 步 → 30 分 ${smallSteps} 步`,
+    );
+
+    /*
+     * 回归：「移除」曾经是空操作——只从 order 里删掉 kcId，
+     * applyManualOrder 的第二个循环又把 plan 里「不在 order」的它追加回末尾。
+     */
+    await page.getByRole("button", { name: "把本周预算设为 240 分钟" }).click();
+    await page.waitForTimeout(600);
+    const beforeRemove = await page.locator("ol li").count();
+    const removedName = await page.locator("ol li").nth(1).innerText().catch(() => "");
+    const removeBtns = page.getByRole("button", { name: /移除/ });
+    if ((await removeBtns.count()) > 1) {
+      await removeBtns.nth(1).click();
+      await page.waitForTimeout(700);
+    }
+    const afterRemove = await page.locator("ol li").count();
+    const afterRemoveText = await page.locator("ol").first().innerText();
+    record(
+      "「移除」真的减少一步且不再回来",
+      afterRemove === beforeRemove - 1 && !afterRemoveText.includes(removedName.slice(0, 10)),
+      `${beforeRemove} → ${afterRemove} 步`,
+    );
+
+    /*
+     * 回归：点一次「上移」不该把整条路径都标成「已手动调整」。
+     * 只标相对次序真的被打破的点。
+     * 注意：移除不改变相对次序，所以标记数应为 0——这里先做一次上移再检查。
+     */
+    const removeBadges = await page.locator("text=已手动调整").count();
+    const upForBadge = page.getByRole("button", { name: /上移一位/ });
+    if ((await upForBadge.count()) > 1) {
+      await upForBadge.nth(1).click();
+      await page.waitForTimeout(600);
+    }
+    const movedBadgeCount = await page.locator("text=已手动调整").count();
+    const stepCount = await page.locator("ol li").count();
+    record(
+      "只标记真的挪动过的步骤",
+      removeBadges === 0 && movedBadgeCount > 0 && movedBadgeCount < stepCount,
+      `移除后 ${removeBadges} 个 / 上移后 ${movedBadgeCount} 个 / 共 ${stepCount} 步`,
+    );
+
+    /*
+     * 回归：有题但不够门槛时曾经空白死锁——pickNext 无题可出、
+     * kcNeedingItems 只认 accepted===0、canPickMore 说还有工作，
+     * 于是三张卡都不渲染，页面只剩进度条。
+     */
+    const stuckDir = await page.evaluate(async () => {
+      const r = await fetch("/api/directions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ description: "我想系统学一遍树结构" }),
+      });
+      return (await r.json()) as { id?: string };
+    });
+    if (stuckDir.id) {
+      const stuckDetail = await page.evaluate(async (id: string) => {
+        const r = await fetch(`/api/directions?id=${id}`);
+        return (await r.json()) as { graph: { concepts: { id: string; name: string }[] } };
+      }, stuckDir.id);
+      const skc = stuckDetail.graph.concepts[0];
+
+      // 录 3 道「生成题」：门槛是 4，答完后应出现「题目不够」卡
+      await page.evaluate(
+        async ({ id, kcId, kcName }: { id: string; kcId: string; kcName: string }) => {
+          const items = [1, 2, 3].map((n) => ({
+            difficulty: n === 1 ? "basic" : n === 2 ? "advanced" : "challenge",
+            difficultyReason: n === 1 ? "基础记忆题" : n === 2 ? "需要理解并应用" : "综合推导题",
+            stem: `关于「${kcName}」的生成题 ${n}，下列哪一项成立？`,
+            options: [
+              `${kcName}与先修无关`,
+              `必须先掌握${kcName}的前置概念才能继续`,
+              `${kcName}只能用于图算法`,
+              `${kcName}是排序算法`,
+            ],
+            answerText: `必须先掌握${kcName}的前置概念才能继续`,
+            explanation: `必须先掌握${kcName}的前置概念才能继续，这是图谱排序的硬约束；其余三项都与先修关系无关。`,
+            source: "generated",
+            status: "accepted",
+          }));
+          await fetch("/api/directions/items", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ directionId: id, kcId, items }),
+          });
+        },
+        { id: stuckDir.id, kcId: skc.id, kcName: skc.name },
+      );
+
+      await page.goto(`${BASE}/diagnose?direction=${stuckDir.id}`, { waitUntil: "networkidle" });
+      await page.waitForSelector('fieldset input[type="radio"]', { timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(700);
+      for (let i = 0; i < 4; i += 1) {
+        const radios = page.locator('input[type="radio"]');
+        if ((await radios.count()) === 0) break;
+        await radios.first().check();
+        const submit = page.getByRole("button", { name: "提交答案" });
+        if ((await submit.count()) === 0) break;
+        await submit.click();
+        await page.waitForTimeout(350);
+        const next = page.getByRole("button", { name: "下一题" });
+        if ((await next.count()) === 0) break;
+        await next.click();
+        await page.waitForTimeout(500);
+      }
+      const stuckText = await page.locator("body").innerText();
+      record(
+        "题不够门槛时给出明确出口而不是空白",
+        stuckText.includes("的题目不够") &&
+          stuckText.includes("手动补题") &&
+          stuckText.includes("只规划路径"),
+        stuckText.includes("的题目不够") ? "显示补题卡" : "页面空白",
+      );
+    } else {
+      record("题不够门槛时给出明确出口而不是空白", false, "创建方向失败");
+    }
+
+    /*
+     * 回归：无模型时「跳过这个知识点」曾经点了没反应（kcId 取到空串），
+     * 页面永远到不了「诊断完成」。
+     */
+    const noModelDir = await page.evaluate(async () => {
+      const r = await fetch("/api/directions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ description: "我想学一遍操作系统进程调度" }),
+      });
+      return (await r.json()) as { id?: string };
+    });
+    if (noModelDir.id) {
+      await page.goto(`${BASE}/diagnose?direction=${noModelDir.id}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(2200);
+      /*
+       * 无模型时页面会先走「题不够 / 无题」的补题卡（它信息更全，
+       * 且同时提供「手动补题 / 只规划路径 / 跳过」）。
+       * 这里断言的是「有可点的跳过按钮，且点完不再停在空白」，
+       * 不绑定具体是哪一张卡。
+       */
+      const beforeText = await page.locator("body").innerText();
+      const skipBtn = page.getByRole("button", { name: /跳过(这个|所有缺题)的知识点/ });
+      const hadCard =
+        beforeText.includes("未配置模型供应商") || beforeText.includes("的题目不够");
+      if ((await skipBtn.count()) > 0) {
+        await skipBtn.first().click();
+        await page.waitForTimeout(1500);
+        const afterSkip = await page.locator("body").innerText();
+        const stillStuck =
+          afterSkip.includes("未配置模型供应商") || afterSkip.includes("的题目不够");
+        record(
+          "无模型时「跳过这个知识点」真的生效",
+          hadCard && (!stillStuck || afterSkip.includes("诊断完成")),
+          `卡片曾出现=${hadCard} · 跳过后仍卡住=${stillStuck} · 到完成=${afterSkip.includes("诊断完成")}`,
+        );
+      } else {
+        record("无模型时「跳过这个知识点」真的生效", false, "没有找到跳过按钮");
+      }
+    } else {
+      record("无模型时「跳过这个知识点」真的生效", false, "创建方向失败");
+    }
+  } else {
+    record("自定义方向可手动录题并落库", false, "创建方向失败");
+    record("?direction= 能真的出题", false, "无方向 id");
+    record("诊断页识别自定义方向", false, "无方向 id");
+    record("手动题标注来源", false, "无方向 id");
+    record("自定义方向可规划路径且输入/路径指纹都在", false, "无方向 id");
+    record("路径页手动改写不会把方向进度写成数据结构", false, "无方向 id");
+    record("手动改写后回诊断页仍有题", false, "无方向 id");
+    record("手动改写后改预算仍会重算", false, "无方向 id");
+    record("「移除」真的减少一步且不再回来", false, "无方向 id");
+    record("只标记真的挪动过的步骤", false, "无方向 id");
+    record("题不够门槛时给出明确出口而不是空白", false, "无方向 id");
+    record("无模型时「跳过这个知识点」真的生效", false, "无方向 id");
+  }
+
+  // ── 9c. 未登录时「我的方向」分组必须可见且有登录提示 ──
+  /*
+   * 隐藏该分组会让用户不知道有这个功能，所以这条断言的是「可见 + 提示」，
+   * 而不是「不可用」。用独立 context 保证没有登录 cookie。
+   */
+  const anonCtx = await browser.newContext();
+  const anonPage = await anonCtx.newPage({ viewport: { width: 1280, height: 900 } });
+  await anonPage.goto(`${BASE}/diagnose`, { waitUntil: "networkidle" });
+  await anonPage.waitForTimeout(1200);
+  const anonText = await anonPage.locator("body").innerText();
+  record(
+    "未登录时「我的方向」分组仍可见",
+    anonText.includes("我的方向"),
+    anonText.includes("我的方向") ? "分组可见" : "分组被隐藏",
+  );
+  record(
+    "未登录时该分组显示登录提示",
+    anonText.includes("后可保存并诊断自定义方向"),
+    anonText.includes("后可保存并诊断自定义方向") ? "已提示" : "无提示",
+  );
+  record(
+    "未登录仍能用内置学科做题",
+    (await anonPage.locator("fieldset").count()) > 0,
+    `fieldset=${await anonPage.locator("fieldset").count()}`,
+  );
+  await anonCtx.close();
 
   // ── 10. 方向市场 ──
   await page.goto(`${BASE}/market`, { waitUntil: "networkidle" });
