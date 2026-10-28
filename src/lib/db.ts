@@ -126,9 +126,27 @@ function createMemoryDb(): Db {
         return 1;
       }
 
+      /*
+       * 两种删除形状，按 WHERE 里有没有 subject_id 区分：
+       *   - 带 subject_id：删 (user_id, subject_id) 这一行；
+       *   - 不带：清空该用户的全部学科，返回真实删除数。
+       * 返回值必须是真的删了几行——调用方（清空进度）据此判断是否成功，
+       * 旧实现无条件返回 1，行还在却报成功。
+       */
       if (q.startsWith("delete from progress")) {
-        progress.delete(`${params[0]}:${params[1]}`);
-        return 1;
+        if (q.includes("subject_id")) {
+          const [user_id, subject_id] = params as string[];
+          return progress.delete(`${user_id}:${subject_id}`) ? 1 : 0;
+        }
+        const user_id = params[0] as string;
+        let n = 0;
+        for (const [key, row] of progress) {
+          if (row.user_id === user_id) {
+            progress.delete(key);
+            n += 1;
+          }
+        }
+        return n;
       }
 
       if (q.startsWith("insert into directions")) {

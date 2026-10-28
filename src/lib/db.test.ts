@@ -158,4 +158,50 @@ describe("progress 内存实现", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].user_id).toBe("u1");
   });
+
+  /*
+   * 以下三条对应「清空进度」与「按目标重置」两种删除形状。
+   * 旧实现不看 WHERE 条件，一律按 (params[0], params[1]) 删一格并返回 1，
+   * 于是按 user_id 清空时行还在、返回值却是 1——线上表现为「点了清空，刷新又回来」。
+   */
+  it("按 user_id 删除返回真实行数且读回为空", async () => {
+    const db = await seedUser();
+    const sql = `INSERT INTO progress (user_id, subject_id, data, updated_at) VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id, subject_id) DO UPDATE SET data = $3, updated_at = $4`;
+    await db.run(sql, ["u1", "data-structures", "{}", "t"]);
+    await db.run(sql, ["u1", "algorithms", "{}", "t"]);
+
+    const affected = await db.run("DELETE FROM progress WHERE user_id = $1", ["u1"]);
+    expect(affected).toBe(2);
+
+    const rows = await db.all("SELECT * FROM progress WHERE user_id = $1", ["u1"]);
+    expect(rows).toEqual([]);
+  });
+
+  it("按 user_id + subject_id 只删一行", async () => {
+    const db = await seedUser();
+    const sql = `INSERT INTO progress (user_id, subject_id, data, updated_at) VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id, subject_id) DO UPDATE SET data = $3, updated_at = $4`;
+    await db.run(sql, ["u1", "data-structures", "{}", "t"]);
+    await db.run(sql, ["u1", "algorithms", "{}", "t"]);
+
+    const affected = await db.run("DELETE FROM progress WHERE user_id = $1 AND subject_id = $2", [
+      "u1",
+      "data-structures",
+    ]);
+    expect(affected).toBe(1);
+
+    const rows = await db.all<{ subject_id: string }>("SELECT * FROM progress WHERE user_id = $1", ["u1"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].subject_id).toBe("algorithms");
+  });
+
+  it("删除不存在的键返回 0", async () => {
+    const db = await seedUser();
+
+    expect(
+      await db.run("DELETE FROM progress WHERE user_id = $1 AND subject_id = $2", ["u1", "nope"]),
+    ).toBe(0);
+    expect(await db.run("DELETE FROM progress WHERE user_id = $1", ["u1"])).toBe(0);
+  });
 });

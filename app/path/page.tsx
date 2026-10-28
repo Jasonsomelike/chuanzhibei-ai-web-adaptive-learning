@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
+import { ChapterGoals } from "@/components/chapter-goals";
 import { useSubject } from "@/lib/subject";
 import { recordPathEdit } from "@/lib/learner";
 import { useLearner } from "@/lib/useLearner";
@@ -22,17 +23,61 @@ import {
 } from "@/lib/plan";
 import { masteryMean, masterySd } from "@/lib/mastery";
 import { computeDepths } from "@/lib/graph";
+import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf } from "@/lib/chapters";
+import { summarizeCounterfactual } from "@/lib/planDiff";
 
 /**
- * 路径页的三个能力，对应评分表里的「交互模式创新」：
+ * 路径页的四个能力，对应评分表里的「交互模式创新」：
  *   1. 看路径：每一步都带理由，理由引用具体数值
- *   2. 反事实：改时间预算，立刻看到路径怎么变、哪几步被推迟
+ *   2. 反事实：改时间预算，立刻看到路径怎么变、哪几步被推迟或阻塞
  *   3. 手动改写：学生可以删掉或提前某一步，系统会标出是否违反先修
+ *   4. 章节范围：按教材章节收窄候选，但跨章先修点必须一起带上
  *
  * 全部计算在本地完成（纯函数），没有网络请求，所以改预算的反馈是即时的。
  */
 
 const BUDGET_OPTIONS = [30, 60, 90, 120, 180, 240];
+
+/** 切目标后的第一帧不拿上一科的选择去算；用共享空数组保持引用稳定。 */
+const EMPTY_CHAPTERS: readonly string[] = [];
+
+/** 一个 localStorage 键里按目标 id 存章名列表。 */
+type ChapterStore = Record<string, readonly string[]>;
+
+/*
+ * 章节选择按目标存进同一个键（登出清理只需 removeItem 一次）。
+ * 读不出来或格式损坏时一律当「没选」：宁可回到整科，也不让坏数据缩窄范围。
+ */
+function readChapterSelection(targetId: string): readonly string[] {
+  try {
+    const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const value = (parsed as Record<string, unknown>)[targetId];
+    if (!Array.isArray(value)) return [];
+    return value.filter((name): name is string => typeof name === "string");
+  } catch {
+    return [];
+  }
+}
+
+function writeChapterSelection(targetId: string, names: readonly string[]): void {
+  try {
+    const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    const store: ChapterStore =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as ChapterStore)
+        : {};
+    window.localStorage.setItem(
+      CHAPTERS_STORAGE_KEY,
+      JSON.stringify({ ...store, [targetId]: [...names] }),
+    );
+  } catch {
+    /* 隐私模式或配额满时存不进去，不影响当前会话 */
+  }
+}
 
 export default function PathPage() {
   const { target, targetId, setTargetId, ready, loadingTarget, targetError } = useSubject();
@@ -57,6 +102,15 @@ export default function PathPage() {
    */
   const [manualEdit, setManualEdit] = useState<ManualEdit | null>(null);
 
+  /*
+   * 章节选择跟着目标走：state 里带上所属 targetId，切目标后的第一帧
+   * 不会拿上一科的选择去算 planPath；实际生效的 chapters 只在 id 匹配时使用。
+   */
+  const [chapterSelection, setChapterSelection] = useState<{
+    readonly targetId: string;
+    readonly names: readonly string[];
+  }>({ targetId: "", names: [] });
+
   const graph = target?.graph;
   const depths = useMemo(() => (graph ? computeDepths(graph) : new Map<string, number>()), [graph]);
   const kcById = useMemo(
@@ -64,9 +118,56 @@ export default function PathPage() {
     [graph],
   );
 
+  const chapters =
+    chapterSelection.targetId === targetId ? chapterSelection.names : EMPTY_CHAPTERS;
+
+  // 切目标时重新读取该目标的章节选择；图谱里已不存在的章名直接丢弃
+  useEffect(() => {
+    if (!graph || !target) return;
+    if (target.kind === "direction") {
+      setChapterSelection({ targetId, names: [] });
+      return;
+    }
+    const known = new Set(chaptersOf(graph).map((c) => c.name));
+    const names = readChapterSelection(targetId).filter((name) => known.has(name));
+    setChapterSelection({ targetId, names });
+  }, [graph, target, targetId]);
+
+  const updateChapters = useCallback(
+    (names: readonly string[]) => {
+      setChapterSelection({ targetId, names });
+      writeChapterSelection(targetId, names);
+    },
+    [targetId],
+  );
+
+  /*
+   * 章节只收窄 targets，图谱始终完整——跨章先修点必须留在候选集里，
+   * 否则严格先修校验会把「先修不在路径」判成违规。
+   */
+  const scope = useMemo(
+    () => (graph ? chapterScope(graph, chapters) : null),
+    [graph, chapters],
+  );
+  /*
+   * 没选章节、或把全部章节都选上时，都等价于整科：统一不传 targets。
+   * 否则「全选」与「清空」会得到不同的输入指纹，而界面却写着两者都是整科。
+   */
+  const wholeSubject =
+    scope !== null && graph !== undefined && scope.targets.length === graph.concepts.length;
+  const chapterTargets =
+    scope && scope.targets.length > 0 && !wholeSubject ? scope.targets : undefined;
+
   // 切换目标时清掉手动改写，避免把上一科的顺序带过来
   useEffect(() => {
     setManualEdit(null);
+  }, [targetId, chapters]);
+
+  /*
+   * 对照预算只跟目标走：换章节时保留它，
+   * 才能比较「同一对照预算下，章节范围变化让路径怎么变」。
+   */
+  useEffect(() => {
     setCompareBudget(null);
   }, [targetId]);
 
@@ -76,8 +177,9 @@ export default function PathPage() {
       graph,
       mastery: progress.mastery,
       budgetMinutes: budget,
+      targets: chapterTargets,
     });
-  }, [progress, graph, budget]);
+  }, [progress, graph, budget, chapterTargets]);
 
   const counterfactual: PlanResult | null = useMemo(() => {
     if (!progress || !graph || compareBudget === null) return null;
@@ -85,8 +187,9 @@ export default function PathPage() {
       graph,
       mastery: progress.mastery,
       budgetMinutes: compareBudget,
+      targets: chapterTargets,
     });
-  }, [progress, graph, compareBudget]);
+  }, [progress, graph, compareBudget, chapterTargets]);
 
   const inputHash = useMemo(() => {
     if (!progress || !graph) return null;
@@ -94,8 +197,9 @@ export default function PathPage() {
       graph,
       mastery: progress.mastery,
       budgetMinutes: budget,
+      targets: chapterTargets,
     });
-  }, [progress, graph, budget]);
+  }, [progress, graph, budget, chapterTargets]);
   /**
    * 实际显示的顺序：以当前预算的算法 plan 为集合，按用户调整过的相对次序重放。
    *
@@ -112,6 +216,15 @@ export default function PathPage() {
   const moved = useMemo(
     () => movedKcIds(displayed, plan?.steps ?? []),
     [displayed, plan],
+  );
+
+  /*
+   * 对照预算的汇总：推迟与阻塞分开计数。
+   * blockedNotInPath 以「当前显示的路径」为准，所以手动移除的点也会重新出现在清单里。
+   */
+  const counterfactualSummary = useMemo(
+    () => summarizeCounterfactual(counterfactual, displayed),
+    [counterfactual, displayed],
   );
 
   /*
@@ -210,7 +323,7 @@ export default function PathPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">学习路径</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            排序由纯函数算出，不调用大模型。改预算或用 ↑ / ↓ 调整步骤都会立刻重算，无需等待。
+            排序由纯函数算出，不调用大模型。切换章节、改预算或用 ↑ / ↓ 调整步骤都会立刻重算，无需等待。
           </p>
         </div>
 
@@ -225,6 +338,26 @@ export default function PathPage() {
             </p>
           ) : null}
         </Card>
+
+        {/* 章节范围：只收窄 targets，不裁剪图谱 */}
+        {target.kind === "direction" ? (
+          <Card className="mb-5">
+            <p className="text-sm font-medium">教材章节</p>
+            <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
+              自定义方向没有教材章节，路径覆盖方向里的全部 {graph.concepts.length} 个知识点；
+              用下方预算控制这周能学多少。
+            </p>
+          </Card>
+        ) : scope ? (
+          <ChapterGoals
+            target={target}
+            selected={chapters}
+            scope={scope}
+            budgetMinutes={budget}
+            plannedSteps={plan?.steps.length ?? 0}
+            onChange={updateChapters}
+          />
+        ) : null}
 
         {/* 预算控制 */}
         <Card className="mb-5">
@@ -260,7 +393,7 @@ export default function PathPage() {
             <div>
               <p className="text-sm font-medium">反事实：如果时间不一样</p>
               <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
-                选一个对照预算，标出哪些步骤会被推迟
+                选一个对照预算，标出哪些步骤会被推迟或因先修阻塞
               </p>
             </div>
             <div className="flex flex-wrap gap-1.5">
@@ -295,23 +428,47 @@ export default function PathPage() {
             </div>
           </div>
           {counterfactual ? (
-            <p className="mt-3 border-t border-[var(--line)] pt-3 text-sm text-[var(--ink-soft)]">
-              改成{" "}
-              <span className="tabular font-medium text-[var(--ink)]">{compareBudget}</span> 分后，
-              可排{" "}
-              <span className="tabular font-medium text-[var(--ink)]">
-                {counterfactual.steps.length}
-              </span>{" "}
-              步、共{" "}
-              <span className="tabular font-medium text-[var(--ink)]">
-                {counterfactual.totalMinutes}
-              </span>{" "}
-              分钟；另有{" "}
-              <span className="tabular font-medium text-[var(--ink)]">
-                {counterfactual.deferred.length}
-              </span>{" "}
-              个知识点因时间不足被推迟。
-            </p>
+            <div className="mt-3 border-t border-[var(--line)] pt-3">
+              <p className="text-sm text-[var(--ink-soft)]">
+                改成{" "}
+                <span className="tabular font-medium text-[var(--ink)]">{compareBudget}</span>{" "}
+                分后，可排{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactual.steps.length}
+                </span>{" "}
+                步、共{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactual.totalMinutes}
+                </span>{" "}
+                分钟；因时间不足推迟{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactualSummary.deferred.length}
+                </span>{" "}
+                个知识点，因先修阻塞{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactualSummary.blocked.length}
+                </span>{" "}
+                个知识点。
+              </p>
+              {counterfactualSummary.blockedNotInPath.length > 0 ? (
+                <div className="mt-2 text-xs text-[var(--ink-faint)]">
+                  <p>其中不在当前路径、因先修阻塞的点：</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {counterfactualSummary.blockedNotInPath.map((kcId) => {
+                      const name = kcById.get(kcId)?.name ?? kcId;
+                      const by = counterfactualSummary
+                        .blockedByOf(kcId)
+                        .map((id) => kcById.get(id)?.name ?? id);
+                      return (
+                        <li key={kcId}>
+                          · {name} ← {by.join("、")}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </Card>
 
@@ -357,14 +514,28 @@ export default function PathPage() {
 
           {displayed.length === 0 ? (
             <Card>
-              <p className="text-sm text-[var(--ink-soft)]">
-                当前没有需要学习的知识点——所有候选点的掌握度都已达标。
-                可以去{" "}
-                <Link href={`/diagnose${target.kind === "direction" ? `?direction=${target.id}` : ""}`} className="underline">
-                  诊断页
-                </Link>{" "}
-                测更多知识点，或切换学习目标。
-              </p>
+              {plan && plan.steps.length > 0 ? (
+                <p className="text-sm text-[var(--ink-soft)]">
+                  你已手动移除本周路径的全部 {plan.steps.length} 步。这不是算法排不出东西——
+                  点上方「恢复算法排序」即可重新看到它们。
+                </p>
+              ) : (
+                <>
+                  <p className="text-sm text-[var(--ink-soft)]">
+                    {chapters.length > 0
+                      ? `选中的 ${chapters.length} 个章节（含未掌握的跨章先修）已没有待学点。可以清空章节，看看整科是否还有其它未达标的知识点。`
+                      : `整科 ${graph.concepts.length} 个知识点已全部达标，没有需要学习的点。`}
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--ink-faint)]">
+                    路径为空不是预算不够，而是候选范围内没有掌握度低于阈值的新点；
+                    预算调大也不会把已掌握的点重新排进来。可以去{" "}
+                    <Link href={`/diagnose${target.kind === "direction" ? `?direction=${target.id}` : ""}`} className="underline">
+                      诊断页
+                    </Link>{" "}
+                    复测，或切换学习目标。
+                  </p>
+                </>
+              )}
             </Card>
           ) : (
             <ol className="space-y-2">
@@ -375,6 +546,7 @@ export default function PathPage() {
                 const sd = m ? masterySd(m) : 1;
                 const deferredInCounterfactual =
                   counterfactual?.deferred.includes(step.kcId) ?? false;
+                const blockedByInCounterfactual = counterfactualSummary.blockedByOf(step.kcId);
 
                 return (
                   <li key={`${step.kcId}-${i}`}>
@@ -392,6 +564,19 @@ export default function PathPage() {
                             {moved.has(step.kcId) ? <Pill tone="warn">已手动调整</Pill> : null}
                             {deferredInCounterfactual ? (
                               <Pill tone="bad">对照预算下会被推迟</Pill>
+                            ) : null}
+                            {/*
+                              Pill 只接受 children/tone，title 必须挂在外层 span 上，
+                              否则浏览器不会给这个标记任何悬浮说明。
+                            */}
+                            {blockedByInCounterfactual.length > 0 ? (
+                              <span
+                                title={`对照预算下因先修阻塞：${blockedByInCounterfactual
+                                  .map((id) => kcById.get(id)?.name ?? id)
+                                  .join("、")}`}
+                              >
+                                <Pill tone="warn">对照预算下因先修阻塞</Pill>
+                              </span>
                             ) : null}
                           </div>
                           {/*

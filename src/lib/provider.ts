@@ -278,7 +278,12 @@ function buildRequest(config: ProviderConfig): { endpoint: string; body: unknown
       endpoint: `${config.baseUrl}/messages`,
       body: {
         model: config.model,
-        max_tokens: 16,
+        /*
+         * 不能只给 16：推理模型（deepseek-v4、o 系列等）的思考 token 也计入
+         * max_tokens，16 会被推理吃光、content 为空，于是连通性被误判成失败。
+         * 64 仍是一个可以忽略的成本，但足够让多数推理模型走到正文。
+         */
+        max_tokens: 64,
         messages: [{ role: "user", content: "回复两个字：可用" }],
       },
     };
@@ -287,7 +292,7 @@ function buildRequest(config: ProviderConfig): { endpoint: string; body: unknown
     endpoint: `${config.baseUrl}/chat/completions`,
     body: {
       model: config.model,
-      max_tokens: 16,
+      max_tokens: 64,
       stream: false,
       messages: [{ role: "user", content: "回复两个字：可用" }],
     },
@@ -388,12 +393,27 @@ export async function testConnection(
     }
 
     const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
       content?: { text?: string }[];
+      stop_reason?: string;
       usage?: unknown;
     };
 
     const reply = json.choices?.[0]?.message?.content ?? json.content?.[0]?.text ?? "";
+    const finishReason = json.choices?.[0]?.finish_reason ?? json.stop_reason ?? "";
+
+    /*
+     * 200 + 合法响应体 + finish_reason=length 但正文为空，说明端点、密钥、模型名都对，
+     * 只是 token 预算被推理内容吃掉。这属于「连得上」，不能报成响应异常——
+     * 否则每个推理模型第一次测连通性都会红，用户会以为地址填错了。
+     */
+    if (!reply.trim() && finishReason === "length") {
+      return {
+        ok: true,
+        latencyMs,
+        detail: "连接成功（模型把 token 先用在了推理上，未输出正文；提问不受影响）",
+      };
+    }
 
     if (!reply.trim()) {
       return {

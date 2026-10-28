@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useState } from "react";
-import { callChat } from "@/lib/chat";
+import { callChat, ChatError } from "@/lib/chat";
 import { extractJson, type DirectionDraft } from "@/lib/direction";
 import { loadProvider, type ProviderConfig } from "@/lib/provider";
 
@@ -93,14 +93,28 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
         const metaRes = await fetch("/api/directions/generate", { cache: "no-store" });
         const meta = (await metaRes.json()) as { systemPrompt: string };
 
-        const { text: raw } = await callChat(provider, {
-          system: meta.systemPrompt,
-          user: text,
-          maxTokens: 2000,
-          temperature: 0.4,
-          jsonMode: true,
-          timeoutMs: 60000,
-        });
+        /*
+         * 推理模型的思考 token 也计入 max_tokens。实测 2000 会被推理吃光、
+         * finish_reason=length，整条链路退化成规则拼装，用户以为模型不会用。
+         * 先给 4096；真遇到截断就加倍重试一次——截断是可恢复的，直接降级才是浪费。
+         */
+        const ask = (maxTokens: number) =>
+          callChat(provider, {
+            system: meta.systemPrompt,
+            user: text,
+            maxTokens,
+            temperature: 0.4,
+            jsonMode: true,
+            timeoutMs: 120000,
+          });
+
+        let raw = "";
+        try {
+          ({ text: raw } = await ask(4096));
+        } catch (err) {
+          if (!(err instanceof ChatError) || err.kind !== "truncated") throw err;
+          ({ text: raw } = await ask(8192));
+        }
 
         // 抽不出 JSON 时不必浪费一次服务端往返
         if (!extractJson(raw)) {

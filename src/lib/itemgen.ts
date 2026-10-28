@@ -337,8 +337,66 @@ export function buildSolverPrompt(
 
 ${blocks.join("\n\n")}
 
+index 表示这是第几题，从 1 开始；answers 必须覆盖每一题，顺序不限。
 严格输出 JSON，不要解释文字：
 {"answers":[{"index":1,"answerText":"与你选中的选项逐字相同的文本"}]}`;
+}
+
+/** 一次批解落槽后的结果。answers 长度恒为题数，未作答的位置是空串。 */
+export interface SolverAnswers {
+  readonly answers: readonly string[];
+  readonly issues: readonly string[];
+}
+
+/**
+ * 把模型返回的批解按 1-based index 落到槽位。
+ *
+ * 不能按 answers 数组的顺序取：两次批解是并发发出的，模型也没有义务
+ * 按题目顺序作答，数组顺序与题号之间没有任何约定。按下标落槽是唯一
+ * 可靠的对应方式；顺序一旦错位，正确答案会被判成不一致。
+ *
+ * 缺失留空（调用方据此判该题未通过），重复 index 取最后一条并记 issue，
+ * 越界（含非整数 index）丢弃并记 issue。
+ */
+export function parseSolverAnswers(raw: unknown, count: number): SolverAnswers {
+  const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const answers: string[] = new Array(total).fill("");
+  const issues: string[] = [];
+
+  const obj =
+    typeof raw === "object" && raw !== null ? (raw as { answers?: unknown }) : null;
+  if (!obj || !Array.isArray(obj.answers)) {
+    issues.push("批解输出缺少 answers 数组");
+    return { answers, issues };
+  }
+
+  const seen = new Set<number>();
+  for (const entry of obj.answers) {
+    const e =
+      typeof entry === "object" && entry !== null
+        ? (entry as { index?: unknown; answerText?: unknown })
+        : {};
+    /*
+     * 模型经常把下标写成字符串（"1"）。按数字判会把它当越界丢掉，
+     * 整批答案落空、全部降级成 practice，错误文案还会说「index 1 越界」——
+     * 值明明在范围内，用户看到的是一句假原因。
+     */
+    const index =
+      typeof e.index === "number" && Number.isInteger(e.index)
+        ? e.index
+        : typeof e.index === "string" && /^\d+$/.test(e.index.trim())
+          ? Number(e.index.trim())
+          : NaN;
+    if (!Number.isInteger(index) || index < 1 || index > total) {
+      issues.push(`index ${String(e.index)} 越界（本次共 ${total} 题），已丢弃`);
+      continue;
+    }
+    if (seen.has(index)) issues.push(`第 ${index} 题重复出现，取最后一条`);
+    seen.add(index);
+    answers[index - 1] = typeof e.answerText === "string" ? e.answerText : "";
+  }
+
+  return { answers, issues };
 }
 
 /**

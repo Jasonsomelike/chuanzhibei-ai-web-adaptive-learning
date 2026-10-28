@@ -325,3 +325,60 @@ describe("testConnection 的请求构造", () => {
     expect(result.failure).toBe("response");
   });
 });
+
+describe("推理模型的连通性判定（回归）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const base: ProviderConfig = {
+    label: "test",
+    kind: "openai-compatible",
+    baseUrl: "https://api.example.com/v1",
+    apiKey: "key",
+    model: "reasoning-model",
+  };
+
+  /*
+   * 实测：deepseek 推理模型会把 16 个 token 全用在 reasoning_content 上，
+   * content 为空、finish_reason=length。旧逻辑判成「响应异常」，
+   * 用户第一次测连通性就看到红框，以为地址填错了。
+   */
+  it("200 + finish_reason=length + 正文为空，判为连通而不是失败", async () => {
+    let sentBody = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: string }) => {
+        sentBody = init.body;
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "", reasoning_content: "先想一想" }, finish_reason: "length" }],
+            usage: { total_tokens: 64 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    const result = await testConnection(base);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain("推理");
+    // 请求本身要留出足够预算，否则连通性永远测不出正文
+    expect(JSON.parse(sentBody).max_tokens).toBe(64);
+  });
+
+  it("正常 stop 但正文为空仍判失败（不放松真正的异常）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: "  " }, finish_reason: "stop" }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    const result = await testConnection(base);
+    expect(result.ok).toBe(false);
+    expect(result.failure).toBe("response");
+  });
+});

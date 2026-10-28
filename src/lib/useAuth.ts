@@ -15,12 +15,40 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { LearnerState } from "@/lib/learner";
+import { MATERIALS_STORAGE_KEY } from "@/lib/materials";
+import { CHAPTERS_STORAGE_KEY } from "@/lib/chapters";
+import { MATERIALS_CHANGED_EVENT } from "@/lib/materialStore";
 
 export interface AuthUser {
   readonly id: string;
   readonly email: string;
   readonly displayName: string;
   readonly createdAt: string;
+}
+
+/**
+ * 资料存档属于谁。
+ *
+ * 教材、口径选择、讲义正文与章节勾选都是浏览器级的键，不分账号。
+ * 只在登出时清不够：A 不登出、B 直接在登录页登录时，A 的笔记会被 B 的
+ * 出题与导师讲解读到。所以登录时也要比对上一次的账号。
+ */
+const MATERIALS_OWNER_KEY = "alp.materials.owner";
+
+/** 清掉资料存档并通知已挂载的面板重读；同标签页的 removeItem 不会触发 storage 事件。 */
+function clearMaterialsAndChapters(): void {
+  window.localStorage.removeItem(MATERIALS_STORAGE_KEY);
+  window.localStorage.removeItem(CHAPTERS_STORAGE_KEY);
+  window.dispatchEvent(new Event(MATERIALS_CHANGED_EVENT));
+}
+
+/** 登录成功后调：换了账号就丢弃上一位用户的资料，并把归属改成当前账号。 */
+function adoptAccount(email: string | null): void {
+  const owner = window.localStorage.getItem(MATERIALS_OWNER_KEY);
+  const next = email ?? "";
+  if (owner !== null && owner !== next) clearMaterialsAndChapters();
+  if (next === "") window.localStorage.removeItem(MATERIALS_OWNER_KEY);
+  else window.localStorage.setItem(MATERIALS_OWNER_KEY, next);
 }
 
 export function useAuth() {
@@ -51,6 +79,7 @@ export function useAuth() {
     });
     const data = (await res.json()) as { ok?: boolean; user?: AuthUser; error?: string };
     if (!res.ok || !data.ok) throw new Error(data.error ?? "登录失败");
+    adoptAccount(data.user?.email ?? null);
     setUser(data.user ?? null);
     return data.user!;
   }, []);
@@ -69,6 +98,7 @@ export function useAuth() {
         field?: string;
       };
       if (!res.ok || !data.ok) throw new Error(data.error ?? "注册失败");
+      adoptAccount(data.user?.email ?? null);
       setUser(data.user ?? null);
       return data.user!;
     },
@@ -95,6 +125,9 @@ export function useAuth() {
       window.localStorage.removeItem("alp.learner.v2");
       window.localStorage.removeItem("alp.provider.v1");
       window.localStorage.removeItem("alp.subject");
+      // 教材正文与章节勾选同样是浏览器级的：不清的话下一位用户会直接看到上一位的笔记
+      clearMaterialsAndChapters();
+      window.localStorage.removeItem(MATERIALS_OWNER_KEY);
     } catch {
       /* 隐私模式下可能不可用，忽略 */
     }

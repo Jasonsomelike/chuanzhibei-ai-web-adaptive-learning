@@ -132,6 +132,11 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     [user, subjectId, graph],
   );
 
+  /*
+   * 只清当前目标（subjectId）这一格进度，别的学科与方向不动。
+   * 仅供「清空当前目标记录」使用；「重新诊断」不得调用它——
+   * 重新诊断应该保留已有掌握度当先验，而不是把当前目标的进度抹掉。
+   */
   const resetSubject = useCallback(() => {
     if (!learner) return;
     const fresh = createLearner();

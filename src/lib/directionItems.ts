@@ -22,6 +22,7 @@ import {
   parseBatch,
   buildSolverPrompt,
   compareSolverAnswers,
+  parseSolverAnswers,
   normalizeText,
   kcEvidenceTarget,
   type DirectionItem,
@@ -29,6 +30,12 @@ import {
 } from "@/lib/itemgen";
 import type { KnowledgeGraph, KnowledgeConcept } from "@/lib/graph";
 import { borrowItems } from "@/lib/borrow";
+import {
+  buildMaterialContext,
+  materialCheckLabel,
+  type MaterialPack,
+  type MaterialSelection,
+} from "@/lib/materials";
 
 export const ITEM_SYSTEM_PROMPT = `你是大学课程的出题老师。根据给定的知识点，出一批四选一选择题。
 
@@ -71,6 +78,51 @@ export interface EnsureItemsOptions {
   readonly signal?: AbortSignal;
   /** 已存在的题，传了就跳过网络请求（缓存命中）。 */
   readonly cached?: readonly DirectionItem[];
+  /**
+   * 教材 / 讲义口径。context 拼进提示词作为出题依据，
+   * checkLabel 随题落进 checks 供界面展示出处。
+   * 两者都不参与 source / status / 证据折扣的判定。
+   */
+  readonly material?: EnsureItemsMaterial;
+}
+
+/** 注入生成链路的资料口径。详见 materials.ts 的 buildMaterialContext。 */
+export interface EnsureItemsMaterial {
+  /** 已拼好的原文片段（含引用抬头）。 */
+  readonly context: string;
+  /** 展示用的依据标注，如「依据：[教材·《…》·第3章·第45–46页]」。 */
+  readonly checkLabel: string;
+}
+
+/** 整批生成题目时的资料输入：数据包 + 用户对来源与口径的选择。 */
+export interface EnsureAllItemsMaterial {
+  readonly pack: MaterialPack;
+  readonly selection: MaterialSelection;
+}
+
+/**
+ * 单个知识点的资料口径。
+ *
+ * 这里是「资料怎么拼」的唯一实现：ensureAllItems 逐点调用它，
+ * 诊断页的懒生成也按同一判据（citations 非空才注入）。
+ *
+ * 没有可引用的片段时返回 undefined，而不是空上下文：
+ * 空上下文只会让提示词多一个空的「教材原文」小节，
+ * 题卡也会多一行没有定位点的「依据」。
+ */
+export function materialForConcept(
+  material: EnsureAllItemsMaterial | undefined,
+  concept: KnowledgeConcept,
+): EnsureItemsMaterial | undefined {
+  if (!material) return undefined;
+
+  const context = buildMaterialContext(material.pack, [concept], material.selection);
+  if (context.citations.length === 0) return undefined;
+
+  return {
+    context: context.text,
+    checkLabel: materialCheckLabel(context.citations),
+  };
 }
 
 /** 拉取某 KC 已落库的题。 */
@@ -87,18 +139,30 @@ export async function fetchItems(
   return data.items ?? [];
 }
 
+/** 一次批解的结果。ordered 与传入题目等长，按 index 归位，未作答为空串。 */
+export interface SolverBatchResult {
+  readonly ordered: readonly string[];
+  /** 模型没有给出答案的题号（1-based）。 */
+  readonly missing: readonly number[];
+  /** 解析层面的问题：缺 answers 数组、重复 index、越界。 */
+  readonly issues: readonly string[];
+}
+
 /**
  * 批解校验（L4）。
  *
  * 只给题干与选项，不给答案与解析——给了就是让模型复述。
  * 两次独立调用，第二次反转选项顺序：模型若在猜，位置一换就会露馅。
+ *
+ * 返回的 ordered 必须按 index 归位后再比较：两次调用是 Promise.all 并发的，
+ * 模型返回的数组顺序不可依赖。missing 是留空的题号，调用方据此判断哪些题没答。
  */
-async function solveBatch(
+export async function solveBatch(
   provider: ProviderConfig,
   items: readonly RawItem[],
   reverseOptions: boolean,
   signal?: AbortSignal,
-): Promise<string[]> {
+): Promise<SolverBatchResult> {
   const { text } = await callChat(provider, {
     system: "你是严格的考试阅卷人，只依据题干与选项作答。",
     user: buildSolverPrompt(items, reverseOptions),
@@ -109,13 +173,28 @@ async function solveBatch(
     signal,
   });
 
-  const parsed = extractJson(text) as { answers?: unknown } | null;
-  if (!parsed || !Array.isArray(parsed.answers)) return [];
+  const { answers, issues } = parseSolverAnswers(extractJson(text), items.length);
+  const missing: number[] = [];
+  for (let i = 0; i < answers.length; i += 1) {
+    if (answers[i].trim() === "") missing.push(i + 1);
+  }
 
-  return parsed.answers.map((a) => {
-    const o = a as { answerText?: unknown };
-    return typeof o.answerText === "string" ? o.answerText : "";
-  });
+  return { ordered: answers, missing, issues };
+}
+
+/**
+ * 把资料口径拼到提示词末尾。
+ *
+ * 只注入原文与引用抬头，不注入结论：题目必须能在这段原文里找到依据。
+ * 没有上下文时原样返回，避免提示词里出现空的「教材原文」小节。
+ */
+function withMaterialContext(user: string, material: EnsureItemsMaterial | undefined): string {
+  const context = material?.context.trim() ?? "";
+  if (context === "") return user;
+  return `${user}
+
+教材原文（题目必须与下列口径一致；引用只能使用这里出现的书目、章节与页码，不要编造出处）：
+${context}`;
 }
 
 /**
@@ -126,6 +205,7 @@ async function solveBatch(
  */
 export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItemsResult> {
   const { directionId, concept, provider, cached } = opts;
+  const checkLabel = opts.material?.checkLabel.trim() ?? "";
 
   const existing = cached ?? (await fetchItems(directionId, concept.id));
   const accepted = existing.filter((i) => i.status === "accepted");
@@ -212,11 +292,14 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
   try {
     ({ text: raw } = await callChat(provider, {
       system: ITEM_SYSTEM_PROMPT,
-      user: `知识点：${concept.name}
+      user: withMaterialContext(
+        `知识点：${concept.name}
 说明：${concept.summary}
 所属章节：${concept.chapter}
 
 请出 ${Math.max(need, 3)} 道题，覆盖三个难度档。`,
+        opts.material,
+      ),
       maxTokens: 3500,
       temperature: 0.3,
       jsonMode: true,
@@ -237,11 +320,14 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
     try {
       const { text: retry } = await callChat(provider, {
         system: ITEM_SYSTEM_PROMPT,
-        user: `知识点：${concept.name}
+        user: withMaterialContext(
+          `知识点：${concept.name}
 说明：${concept.summary}
 
 上一次输出有结构问题：${parsed.reason}
 请严格按 JSON schema 重新输出 ${Math.max(need, 3)} 道题，不要任何解释文字。`,
+          opts.material,
+        ),
         maxTokens: 3500,
         temperature: 0.2,
         jsonMode: true,
@@ -288,11 +374,21 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
         solveBatch(provider, raws, false, opts.signal),
         solveBatch(provider, raws, true, opts.signal),
       ]);
+      // 两次都按下标归位后再比文本；数组顺序不可信（并发返回顺序不定）
       l4Pass = compareSolverAnswers(
         raws.map((r) => r.answerText),
-        first,
-        reversed,
+        first.ordered,
+        reversed.ordered,
       );
+      /*
+       * 两次批解各自的问题都要报出来，去重后拼成一条。
+       * 缺 answers 数组、重复 index、越界都意味着「对齐可能不可靠」，
+       * 不能让界面只显示「题量不足」而把真实原因藏起来。
+       */
+      const solverIssues = [...new Set([...first.issues, ...reversed.issues])];
+      if (solverIssues.length > 0) {
+        l4Error = `双解校验有问题：${solverIssues.join("；")}`;
+      }
     } catch (err) {
       l4Error = `双解校验未能完成：${err instanceof Error ? err.message : String(err)}`;
     }
@@ -305,7 +401,10 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
     if (item.status === "accepted") solvableIndex += 1;
 
     const status = item.status === "rejected" ? "rejected" : passed ? "accepted" : "practice";
-    const checks = passed ? [...item.checks, "双解校验"] : [...item.checks];
+    const checks = [...item.checks];
+    if (passed) checks.push("双解校验");
+    // 依据只用于展示出处，不参与 status 与证据折扣；空标注不落库
+    if (checkLabel !== "") checks.push(checkLabel);
 
     return {
       difficulty: raw?.difficulty ?? "advanced",
@@ -356,16 +455,29 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
      * 生成成功但通过校验的题仍不够门槛时，也要如实报出来。
      * 否则界面会静默停在「没有题目」，用户不知道是模型质量差还是系统坏了；
      * 诊断页也据此把该 KC 标为已尝试，避免反复计费。
+     *
+     * 门槛要按「生成之后这一池子的来源」重算：空库时 threshold 是 3，
+     * 沿用它会认为 3 道生成题已达标，而诊断页与方向页对同一批生成题按 4 判未就绪。
      */
+    const finalThreshold = kcEvidenceTarget([
+      ...accepted.map((i) => i.source),
+      ...saved.map((i) => i.source),
+    ]);
     const shortfall =
-      totalAccepted < threshold
-        ? `本次只生成 ${saved.length} 题、其中 ${totalAccepted} 题通过校验，未达到 ${threshold} 题门槛。可以重试、换模型，或手动补题。`
+      totalAccepted < finalThreshold
+        ? `本次只生成 ${saved.length} 题、其中 ${totalAccepted} 题通过校验，未达到 ${finalThreshold} 题门槛。可以重试、换模型，或手动补题。`
         : null;
+
+    /*
+     * 两条降级原因可以同时成立：双解对齐有疑问 + 通过校验的题不够门槛。
+     * 只显示其中一条会让另一半原因在界面上消失，所以拼接而不是二选一。
+     */
+    const errorParts = [l4Error, shortfall].filter((e): e is string => e !== null);
 
     return {
       items: [...existing, ...saved],
       generated: saved.length,
-      error: l4Error ?? shortfall,
+      error: errorParts.length > 0 ? errorParts.join("；") : null,
     };
   } catch (err) {
     return {
@@ -381,6 +493,9 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
  *
  * 串行而不是并行：多数供应商对并发有限制，而且串行能给稳定的进度数字。
  * onProgress 在每 KC 完成后调用，界面据此显示 x/y。
+ *
+ * material 是整批共用的资料包与选择，逐点用 materialForConcept 拼成该点的口径：
+ * 与诊断页的懒生成一致，没有可引用片段的知识点不带资料，提示词与旧行为相同。
  */
 export async function ensureAllItems(opts: {
   readonly directionId: string;
@@ -388,6 +503,8 @@ export async function ensureAllItems(opts: {
   readonly provider: ProviderConfig | null;
   readonly onProgress?: (done: number, total: number, kcName: string) => void;
   readonly signal?: AbortSignal;
+  /** 资料口径。不传时与旧行为完全一致（只用模型通用知识出题）。 */
+  readonly material?: EnsureAllItemsMaterial;
 }): Promise<{ generated: number; failed: { kcId: string; name: string; error: string }[] }> {
   const { directionId, graph, provider, onProgress } = opts;
   const all = await fetchItems(directionId, "");
@@ -411,6 +528,7 @@ export async function ensureAllItems(opts: {
       provider,
       cached: byKc.get(concept.id) ?? [],
       signal: opts.signal,
+      material: materialForConcept(opts.material, concept),
     });
     generated += r.generated;
     if (r.error) failed.push({ kcId: concept.id, name: concept.name, error: r.error });

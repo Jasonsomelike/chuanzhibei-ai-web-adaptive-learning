@@ -9,7 +9,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const fakeDb = {
-  run: vi.fn(async () => 0),
+  // 保留参数，测试需要检查 checks_json 落在哪一列
+  run: vi.fn(async (_sql: string, _params: unknown[]): Promise<number> => 0),
   all: vi.fn(async () => []),
   one: vi.fn(async () => ({
     id: "d1",
@@ -75,6 +76,36 @@ describe("POST /api/directions/items 写入语义", () => {
 
     expect(data.inserted).toBe(1);
     expect(data.skipped).toBe(0);
+  });
+
+  it("依据标注随题落库，且不改变 source 与 status", async () => {
+    /*
+     * 「依据：…」只影响展示：服务端不重算教材原文，也不允许它参与
+     * source / status / 折扣判定。但它必须进 checks_json，
+     * 否则路径页看不到这道题出自哪本书、哪一章。
+     */
+    fakeDb.run.mockResolvedValueOnce(1);
+    const basis = "依据：《数据结构（C 语言版）》第3章 第45–46页";
+    const res = await POST(
+      req({
+        directionId: "d1",
+        kcId: "k1",
+        items: [{ ...goodItem, checks: ["双解校验", basis] }],
+      }) as never,
+    );
+    const data = (await res.json()) as {
+      inserted: number;
+      items: { checks: string[]; source: string; status: string }[];
+    };
+
+    expect(data.inserted).toBe(1);
+    expect(data.items[0].checks).toContain("双解校验");
+    expect(data.items[0].checks).toContain(basis);
+    expect(data.items[0].source).toBe("generated");
+    expect(data.items[0].status).toBe("accepted");
+
+    const params = fakeDb.run.mock.calls[0][1];
+    expect(String(params[11] ?? "")).toContain("依据：");
   });
 
   it("结构不合格的题既不落库也不进 inserted", async () => {

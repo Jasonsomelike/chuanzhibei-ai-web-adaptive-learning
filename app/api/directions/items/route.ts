@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { checkItem, type DirectionItem, type ItemStatus, type ItemSource } from "@/lib/itemgen";
 import { borrowItems } from "@/lib/borrow";
+import { MATERIAL_CHECK_PREFIX } from "@/lib/materials";
 import type { Difficulty } from "@/lib/mastery";
 
 export const runtime = "nodejs";
@@ -266,10 +267,18 @@ export async function POST(request: Request) {
         ? (raw.status as ItemStatus)
         : item.status;
 
-    // 前端声称的 checks 不采信，只保留服务端自己算出来的；
-    // 但「双解校验」这条结论前端做的、服务端无法重跑，如实保留
+    /*
+     * 前端声称的 checks 不采信，只保留两类服务端无法重跑的结论：
+     *   - 「双解校验」：需要再调两次模型，成本高
+     *   - 「依据：…」：教材 / 讲义出处，只影响展示
+     * 依据不参与 source / status / 折扣的任何判定，编造一条出处
+     * 最多让界面多显示一行字，不会让题变成可计证据的高分题。
+     */
     const clientChecks = Array.isArray(raw.checks)
-      ? raw.checks.filter((c): c is string => c === "双解校验")
+      ? raw.checks.filter(
+          (c): c is string =>
+            typeof c === "string" && (c === "双解校验" || c.startsWith(MATERIAL_CHECK_PREFIX)),
+        )
       : [];
 
     /*

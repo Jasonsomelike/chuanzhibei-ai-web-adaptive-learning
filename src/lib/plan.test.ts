@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   planPath,
   checkPrereqOrder,
@@ -129,13 +129,41 @@ describe("确定性：同一输入必须得到同一路径", () => {
     expect(a.pathHash).not.toBe(b.pathHash);
   });
 
-  it("hash 不含模型信息：改变与 LLM 无关的外部状态不影响 hash", () => {
-    // planPath 是纯函数，签名里根本没有模型参数。
-    // 这条测试的意义是：如果将来有人往输入里塞 modelVersion 并影响排序，这里会失败。
-    const input = baseInput();
-    const a = planPath(input);
-    const b = planPath({ ...input });
-    expect(a.pathHash).toBe(b.pathHash);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("hash 不含模型信息：外部状态不可用时输出逐位一致", () => {
+    /*
+     * 先说清这条测试**不**证明什么：PlanInput 里没有 modelVersion 字段，
+     * canonicalPlanJson 也只序列化 steps + algoVersion + kgVersion，
+     * 所以下面「两个 modelVersion 同 hash」是结构上必然成立的，它不是证据。
+     * 真正被锁住的是后半段：把 fetch / Math.random / Date.now 全部换成
+     * 「一调用就抛」之后，planPath 仍给出同一个 pathHash，证明它不读外部状态。
+     * 顺带锁住「多传未知字段会被丢弃、不会渗进指纹」这一点。
+     */
+    const withGpt = planPath({ ...baseInput(), modelVersion: "gpt-4o" } as PlanInput);
+    const withClaude = planPath({ ...baseInput(), modelVersion: "claude" } as PlanInput);
+    expect(withGpt.pathHash).toBe(withClaude.pathHash);
+
+    vi.stubGlobal("fetch", () => {
+      throw new Error("planPath 不应发起网络请求");
+    });
+    const randomSpy = vi.spyOn(Math, "random").mockImplementation(() => {
+      throw new Error("planPath 不应依赖随机数");
+    });
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      throw new Error("planPath 不应依赖当前时间");
+    });
+
+    // 外部状态全部不可用，输出必须与刚才逐位一致
+    const offline = planPath({ ...baseInput(), modelVersion: "gpt-4o" } as PlanInput);
+    expect(offline.steps).toEqual(withGpt.steps);
+    expect(offline.pathHash).toBe(withGpt.pathHash);
+
+    expect(randomSpy).not.toHaveBeenCalled();
+    expect(nowSpy).not.toHaveBeenCalled();
     expect(ALGO_VERSION).toBe("plan-v2");
   });
 });

@@ -15,13 +15,16 @@
  * 两份实现必然出现「这里能生成、那里生成不了」的错位。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import { useAuth } from "@/lib/useAuth";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
 import { ensureAllItems, fetchItems } from "@/lib/directionItems";
 import { kcEvidenceTarget, type ItemSource } from "@/lib/itemgen";
+import { useMaterialPack } from "@/lib/materialStore";
+import type { ProviderConfig } from "@/lib/provider";
+import type { KnowledgeGraph } from "@/lib/graph";
 import type { DirectionDraft } from "@/lib/direction";
 
 interface DirectionSummary {
@@ -52,9 +55,7 @@ export default function DirectionsPage() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const [coverage, setCoverage] = useState<Record<string, Coverage>>({});
-  const [genAll, setGenAll] = useState<{ id: string; done: number; total: number; name: string } | null>(
-    null,
-  );
+  /** 生成失败原因，按方向 id 记。进度由每个方向的按钮自己持有。 */
   const [genAllError, setGenAllError] = useState<Record<string, string>>({});
 
   const [manualFor, setManualFor] = useState<string | null>(null);
@@ -120,45 +121,6 @@ export default function DirectionsPage() {
   const remove = async (id: string) => {
     await fetch(`/api/directions?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadMine();
-  };
-
-  /** 一次备齐某个方向的所有题目。给老师/答辩演示用，不是默认路径。 */
-  const generateAll = async (d: DirectionSummary) => {
-    if (!d.graph) return;
-    const provider = draftState.provider;
-    if (!provider) {
-      setGenAllError((prev) => ({
-        ...prev,
-        [d.id]: "未配置模型供应商，无法生成题目。到设置页配置后再试。",
-      }));
-      return;
-    }
-
-    setGenAllError((prev) => ({ ...prev, [d.id]: "" }));
-    setGenAll({ id: d.id, done: 0, total: d.graph.concepts.length, name: "" });
-
-    const result = await ensureAllItems({
-      directionId: d.id,
-      graph: {
-        version: `custom-${d.id}`,
-        concepts: d.graph.concepts.map((c) => ({ ...c, chapter: "自定义" })),
-        edges: d.graph.edges,
-      },
-      provider,
-      onProgress: (done, total, name) => setGenAll({ id: d.id, done, total, name }),
-    });
-
-    setGenAll(null);
-    if (result.failed.length > 0) {
-      setGenAllError((prev) => ({
-        ...prev,
-        [d.id]: `${result.failed.length} 个知识点生成失败：${result.failed
-          .map((f) => f.name)
-          .slice(0, 3)
-          .join("、")}${result.failed.length > 3 ? " 等" : ""}`,
-      }));
-    }
-    await loadCoverage(mine);
   };
 
   if (loading) {
@@ -390,7 +352,6 @@ export default function DirectionsPage() {
                       return accepted >= kcEvidenceTarget(bucket?.sources ?? []);
                     }).length
                   : 0;
-                const isGenerating = genAll?.id === d.id;
 
                 return (
                   <div key={d.id} id={d.id}>
@@ -428,16 +389,14 @@ export default function DirectionsPage() {
                           >
                             查看路径
                           </Link>
-                          <button
-                            type="button"
-                            onClick={() => void generateAll(d)}
-                            disabled={isGenerating}
-                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs disabled:opacity-40"
-                          >
-                            {isGenerating
-                              ? `生成中 ${genAll.done}/${genAll.total}${genAll.name ? ` · ${genAll.name}` : ""}`
-                              : "生成全部题目"}
-                          </button>
+                          <GenerateAllButton
+                            direction={d}
+                            provider={draftState.provider}
+                            onError={(message) =>
+                              setGenAllError((prev) => ({ ...prev, [d.id]: message ?? "" }))
+                            }
+                            onFinished={() => void loadCoverage(mine)}
+                          />
                           <button
                             type="button"
                             onClick={() => setManualFor(manualFor === d.id ? null : d.id)}
@@ -491,6 +450,98 @@ export default function DirectionsPage() {
 
 function nameOf(draft: DirectionDraft, id: string): string {
   return draft.concepts.find((c) => c.id === id)?.name ?? id;
+}
+
+/**
+ * 「生成全部题目」按钮。给老师/答辩演示用，不是默认路径。
+ *
+ * 单独成组件是因为 useMaterialPack：它一次只服务一个 targetId，
+ * 而列表要在同一页渲染多个方向，父组件不能在 map 里循环调 hook。
+ * 进度与失败原因都归这个方向自己，父组件只负责刷新覆盖度与显示错误。
+ */
+function GenerateAllButton({
+  direction,
+  provider,
+  onError,
+  onFinished,
+}: {
+  direction: DirectionSummary;
+  provider: ProviderConfig | null;
+  /** 失败原因交给父组件显示在按钮行下方；null 表示清除。 */
+  onError: (message: string | null) => void;
+  onFinished: () => void;
+}) {
+  const [progress, setProgress] = useState<{ done: number; total: number; name: string } | null>(
+    null,
+  );
+
+  /*
+   * 与原先即时构造的图保持一致：方向列表接口不带 chapter，统一标成「自定义」。
+   * 资料片段按知识点 id 命中，章节只影响同优先级片段的排序。
+   */
+  const graph = useMemo<KnowledgeGraph | null>(() => {
+    if (!direction.graph) return null;
+    return {
+      version: `custom-${direction.id}`,
+      concepts: direction.graph.concepts.map((c) => ({ ...c, chapter: "自定义" })),
+      edges: direction.graph.edges,
+    };
+  }, [direction]);
+
+  /*
+   * 资料口径：内置资料包 + 我的笔记。自定义方向通常没有内置资料，
+   * 但笔记仍可挂上来；没选来源时 ensureAllItems 不会注入，行为与旧版一致。
+   */
+  const { pack, selection } = useMaterialPack(direction.id, graph ?? undefined);
+
+  const start = async () => {
+    if (!graph) return;
+    if (!provider) {
+      onError("未配置模型供应商，无法生成题目。到设置页配置后再试。");
+      return;
+    }
+
+    onError(null);
+    setProgress({ done: 0, total: graph.concepts.length, name: "" });
+
+    const result = await ensureAllItems({
+      directionId: direction.id,
+      graph,
+      provider,
+      material: { pack, selection },
+      onProgress: (done, total, name) => setProgress({ done, total, name }),
+    });
+
+    setProgress(null);
+    if (result.failed.length > 0) {
+      /*
+       * 只列知识点名没法判断是「模型质量差」还是「系统坏了」：
+       * 实测里 46 次调用全 200、落了 52 道题，失败其实是没到 4 题门槛。
+       * 把去重后的原因带上（最多两条），用户才知道该重试还是该换模型。
+       */
+      const reasons = [...new Set(result.failed.map((f) => f.error))].slice(0, 2);
+      onError(
+        `${result.failed.length} 个知识点未就绪：${result.failed
+          .map((f) => f.name)
+          .slice(0, 3)
+          .join("、")}${result.failed.length > 3 ? " 等" : ""}。原因：${reasons.join("；")}`,
+      );
+    }
+    onFinished();
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void start()}
+      disabled={!graph || progress !== null}
+      className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs disabled:opacity-40"
+    >
+      {progress
+        ? `生成中 ${progress.done}/${progress.total}${progress.name ? ` · ${progress.name}` : ""}`
+        : "生成全部题目"}
+    </button>
+  );
 }
 
 /** 手动录题。只跑 L2 结构检查（用户自己保证答案正确），source=manual。 */

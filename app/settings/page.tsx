@@ -17,9 +17,10 @@ import {
 } from "@/lib/provider";
 import { THEMES, MODES } from "@/lib/themes";
 import { useTheme } from "@/lib/theme";
+import { MaterialSourcePanel } from "@/components/material-source-panel";
 
 /**
- * 设置页：模型供应商 + 外观主题。
+ * 设置页：模型供应商 + 知识口径 + 外观主题。
  *
  * 供应商配置的设计参考主流 agent 工具（Cursor / Continue / Open WebUI）：
  * 地址、密钥、模型名全部用户自填，两种协议分别支持。
@@ -372,6 +373,40 @@ export default function SettingsPage() {
                 ) : null}
               </div>
             </div>
+          </Card>
+        </section>
+
+        {/* ── 知识口径 ── */}
+        <section className="mb-8">
+          <SectionTitle hint="决定生成时引用哪本教材 / 哪份讲义，以及同一知识点出现口径分歧时按谁的说法。">
+            知识口径与出处
+          </SectionTitle>
+          <MaterialSourcePanel />
+          <Card className="mt-4">
+            <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
+              <li>
+                <strong className="text-[var(--ink)]">只存本浏览器。</strong>
+                来源选择、口径裁定与讲义正文都保存在 localStorage，不上传本项目服务器，也不写入任何日志。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">出题与讲解会把摘录发给模型供应商。</strong>
+                命中的教材 / 讲义段落会随请求直接发到你配置的供应商（浏览器直连，不经过本项目）；
+                这是让模型按你的口径作答的前提，不配置模型时不外发。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">公开方向会带上解析与出处。</strong>
+                基于摘录生成的题目解析与「依据：」标注会随方向保存；方向设为公开后任何访问者都能看到，
+                讲义正文原文不入库。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">登出与换号都会清空。</strong>
+                退出登录、或在本浏览器换另一个账号登录，都会删除上一位用户的资料存档。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">首版只接受粘贴文本。</strong>
+                不解析 PDF / PPT；需要引用时请先自己复制正文再粘贴到「我的讲义」。
+              </li>
+            </ul>
           </Card>
         </section>
 

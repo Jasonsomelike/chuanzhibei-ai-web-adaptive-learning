@@ -7,6 +7,7 @@ import {
   contentHashOf,
   compareSolverAnswers,
   buildSolverPrompt,
+  parseSolverAnswers,
   tierToDifficulty,
   difficultyLabelIssue,
   kcEvidenceTarget,
@@ -228,6 +229,85 @@ describe("L4 双解校验协议", () => {
 
   it("比对忽略空白与大小写", () => {
     expect(compareSolverAnswers(["O(n)"], ["o(n) "], [" O(N)"])).toEqual([true]);
+  });
+});
+
+describe("L4 批解按下标落槽", () => {
+  /*
+   * 两次批解是并发发出的，模型返回的数组顺序与题号没有任何约定。
+   * 按数组顺序取会让正确答案整体错位，全部被判成「两次不一致」，
+   * 于是整批题被降级为 practice——这正是缺陷 3 的表现。
+   */
+  it("乱序 answers 逐位对齐到题号", () => {
+    const { answers, issues } = parseSolverAnswers(
+      {
+        answers: [
+          { index: 3, answerText: "丙" },
+          { index: 1, answerText: "甲" },
+          { index: 4, answerText: "丁" },
+          { index: 2, answerText: "乙" },
+        ],
+      },
+      4,
+    );
+    expect(answers).toEqual(["甲", "乙", "丙", "丁"]);
+    expect(issues).toEqual([]);
+  });
+
+  it("缺一条时对应槽位留空，其余仍按 index 对齐", () => {
+    const { answers, issues } = parseSolverAnswers(
+      {
+        answers: [
+          { index: 3, answerText: "丙" },
+          { index: 1, answerText: "甲" },
+        ],
+      },
+      4,
+    );
+    expect(answers).toEqual(["甲", "", "丙", ""]);
+    expect(issues).toEqual([]);
+  });
+
+  it("重复 index 取最后一条并记 issue", () => {
+    const { answers, issues } = parseSolverAnswers(
+      {
+        answers: [
+          { index: 1, answerText: "甲" },
+          { index: 1, answerText: "乙" },
+        ],
+      },
+      2,
+    );
+    expect(answers).toEqual(["乙", ""]);
+    expect(issues).toHaveLength(1);
+    expect(issues.join("；")).toContain("重复");
+  });
+
+  it("越界 index 丢弃并记 issue，不影响合法项", () => {
+    const { answers, issues } = parseSolverAnswers(
+      {
+        answers: [
+          { index: 0, answerText: "零" },
+          { index: 1, answerText: "甲" },
+          { index: 5, answerText: "越界" },
+        ],
+      },
+      2,
+    );
+    expect(answers).toEqual(["甲", ""]);
+    expect(issues).toHaveLength(2);
+    expect(issues.join("；")).toContain("越界");
+  });
+
+  it("提示词要求 index 从 1 开始且覆盖每一题", () => {
+    const prompt = buildSolverPrompt(
+      [{ stem: "题目一", options: ["甲", "乙", "丙", "丁"] }],
+      false,
+    );
+    expect(prompt).toContain("从 1 开始");
+    expect(prompt).toContain("覆盖每一题");
+    expect(prompt).not.toContain("解析");
+    expect(prompt).not.toContain("正确答案是");
   });
 });
 

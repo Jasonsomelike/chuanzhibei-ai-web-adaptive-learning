@@ -12,6 +12,12 @@ import { loadProvider, type ProviderConfig } from "@/lib/provider";
 import type { Question } from "@/data/questions";
 import { recordAttempt, attemptedQuestionIds, progressOf } from "@/lib/learner";
 import { useLearner } from "@/lib/useLearner";
+import { useMaterialPack } from "@/lib/materialStore";
+import {
+  MATERIAL_CHECK_PREFIX,
+  buildMaterialContext,
+  materialCheckLabel,
+} from "@/lib/materials";
 import {
   masteryMean,
   masterySd,
@@ -53,10 +59,14 @@ interface PickedQuestion {
   readonly origin?: DirectionItem["source"];
   /** 只练习、不计证据（L4 未过或手动录入）。 */
   readonly practiceOnly: boolean;
-  /** 通过了几项校验，用于「已通过 N 项校验」标记。 */
+  /** 通过了几项校验，用于「已通过 N 项校验」标记。不含「提示：」与「依据：」。 */
   readonly checkCount: number;
   /** 未拒绝但值得提示的问题（L5 难度理由不匹配等）。 */
   readonly checkNotes: readonly string[];
+  /** 题目的资料出处（checks 里的「依据：…」行）；内置题没有。 */
+  readonly materialLabel: string | null;
+  /** 所属章节。内置题用它标注「第X章 · 内置题库」。 */
+  readonly chapter: string;
 }
 
 interface AnsweredRow {
@@ -110,6 +120,16 @@ export default function DiagnosePage() {
   }, [targetId]);
 
   const graph = target?.graph;
+  /*
+   * 资料口径：内置数据包 + 我的笔记。只有出题时用得到，但 hook 必须无条件调用，
+   * 所以放在这里而不是 generateFor 里。graph 用于让笔记继承知识点的章节，
+   * 否则笔记的章节为空，在同优先级片段里会被排到最后。
+   */
+  const {
+    pack: materialPack,
+    selection: materialSelection,
+    unresolved,
+  } = useMaterialPack(targetId, graph);
   const depths = useMemo(
     () => (graph ? computeDepths(graph) : new Map<string, number>()),
     [graph],
@@ -245,15 +265,23 @@ export default function DiagnosePage() {
 
       const q = byInfo[0];
       const item = directionItems.find((i) => i.id === q.id);
+      const checks = item?.checks ?? [];
       return {
         question: q,
         kcName: chosen.concept.name,
         depth: chosen.depth,
         origin: item?.source,
         practiceOnly: item ? item.status === "practice" : false,
-        // 「提示：」开头的不是通过项，不计入 N
-        checkCount: (item?.checks ?? []).filter((c) => !c.startsWith("提示：")).length,
-        checkNotes: (item?.checks ?? []).filter((c) => c.startsWith("提示：")).map((c) => c.slice(3)),
+        /*
+         * 「提示：」开头的是未通过但值得提示的问题，「依据：」开头的是资料出处。
+         * 两者都不是通过项，不能计入 N——否则用户会看到「已通过 4 项」而实际只过了 3 项。
+         */
+        checkCount: checks.filter(
+          (c) => !c.startsWith("提示：") && !c.startsWith(MATERIAL_CHECK_PREFIX),
+        ).length,
+        checkNotes: checks.filter((c) => c.startsWith("提示：")).map((c) => c.slice(3)),
+        materialLabel: checks.find((c) => c.startsWith(MATERIAL_CHECK_PREFIX)) ?? null,
+        chapter: chosen.concept.chapter,
       };
     },
     [depths, graph, questionsByKc, targetId, directionItems, perKcTarget, skippedKcs],
@@ -319,12 +347,27 @@ export default function DiagnosePage() {
       genAbort.current = controller;
       setGen({ kind: "loading", kcId, kcName: kcNameText, done: 0, total: ITEMS_PER_KC });
 
+      const materialContext = buildMaterialContext(materialPack, [concept], materialSelection);
+      /*
+       * 没有可引用的教材 / 讲义片段时（未内置资料、或只有模型说法）不传：
+       * 空上下文只会让提示词多一个空小节，题卡也会多一行没有定位点的「依据」。
+       * citations 只看真正摘录到的片段，所以「模型说法」天然被排除在外。
+       */
+      const material =
+        materialContext.citations.length === 0
+          ? undefined
+          : {
+              context: materialContext.text,
+              checkLabel: materialCheckLabel(materialContext.citations),
+            };
+
       const result = await ensureItems({
         directionId: target.id,
         concept,
         provider,
         cached: directionItems.filter((i) => i.kcId === kcId),
         signal: controller.signal,
+        material,
       });
 
       if (controller.signal.aborted) {
@@ -351,7 +394,7 @@ export default function DiagnosePage() {
       setDirectionItems((prev) => [...prev.filter((i) => i.kcId !== kcId), ...fresh]);
       setGen({ kind: "idle" });
     },
-    [target, provider, directionItems],
+    [target, provider, directionItems, materialPack, materialSelection],
   );
 
   // 出题：没有 current 且还没答满上限时，先看要不要生成，再选题
@@ -445,13 +488,31 @@ export default function DiagnosePage() {
     if (learner) setCurrent(pickNext(learner));
   };
 
-  const reset = () => {
-    resetSubject();
+  /**
+   * 重置本次会话，保留 learner（掌握度与历史作答都不动）。
+   *
+   * 必须把 gen 归到 idle：failed / no-model 卡片的渲染条件是 `!done && gen.kind === …`，
+   * 只清 current 的话，重新诊断后上一轮失败的生成卡会立刻重新出现，
+   * 看起来像「重新诊断没生效」。已尝试生成的 KC 也要一起清空，否则 effect 不会再触发。
+   */
+  const restartSession = () => {
+    genAbort.current?.abort();
+    genAbort.current = null;
+    attemptedGenKcs.current = new Set();
+    setGen({ kind: "idle" });
+    setGenNotice(null);
     setAnswered([]);
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
     setSkippedKcs(new Set());
+  };
+
+  /** 清空当前目标的全部掌握度与作答记录。不可撤销，必须二次确认。 */
+  const clearAll = () => {
+    if (!window.confirm("确定清空当前目标记录的全部掌握度与作答记录？此操作不可撤销。")) return;
+    resetSubject();
+    restartSession();
   };
 
   /**
@@ -586,6 +647,25 @@ export default function DiagnosePage() {
   const correctCount = answered.filter((a) => a.correct).length;
   const directionId = target.kind === "direction" ? target.id : null;
 
+  /*
+   * 未决口径分歧：只提示，不替用户裁定。
+   *
+   * 只提示当前这道题涉及的分歧：整个资料包一次铺开，会把「栈顶指针」印在排序题上方。
+   * 内置学科的题来自静态题库、根本不会生成回答，所以只对自定义方向显示。
+   */
+  const relevantConflicts =
+    target.kind === "direction" && current
+      ? unresolved.filter((c) => c.kcId === current.question.kcId)
+      : [];
+  const conflictLine =
+    relevantConflicts.length > 0 ? (
+      <p className="mb-5 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-sm text-[var(--warn)]">
+        {`这道题的口径尚未选定：${relevantConflicts
+          .map((c) => `${kcName.get(c.kcId) ?? c.kcId}「${c.topic}」`)
+          .join("、")}（生成时会同时给出两种说法）`}
+      </p>
+    ) : null;
+
   return (
     <>
       <Nav />
@@ -599,10 +679,10 @@ export default function DiagnosePage() {
           </div>
           <button
             type="button"
-            onClick={reset}
+            onClick={clearAll}
             className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-sm text-[var(--ink-soft)] hover:bg-[var(--line)]"
           >
-            清空全部记录
+            清空当前目标记录（含掌握度）
           </button>
         </div>
 
@@ -662,6 +742,9 @@ export default function DiagnosePage() {
             {synced ? "进度已同步到账号" : "进度仅存本浏览器"}
           </p>
         </Card>
+
+        {/* 生成区上方的口径分歧提示 */}
+        {!done && !current ? conflictLine : null}
 
         {/* 生成中 */}
         {!done && gen.kind === "loading" ? (
@@ -889,6 +972,9 @@ export default function DiagnosePage() {
           </Card>
         ) : null}
 
+        {/* 题卡上方的口径分歧提示 */}
+        {current && !done ? conflictLine : null}
+
         {/* 当前题目 */}
         {current && !done ? (
           <Card className="mb-5">
@@ -908,6 +994,19 @@ export default function DiagnosePage() {
               {current.practiceOnly ? <Pill tone="warn">仅练习，不计入掌握度</Pill> : null}
             </div>
             <h2 className="text-base font-medium leading-relaxed">{current.question.stem}</h2>
+
+            {/*
+              出处：生成题显示落库的「依据：…」，内置题没有页级出处，只标明题库与章节。
+              origin 为 undefined 只可能是内置题库题——方向题的 source 必为
+              generated / manual / borrowed 三者之一。
+            */}
+            {current.materialLabel ? (
+              <p className="mt-2 text-xs text-[var(--ink-soft)]">{current.materialLabel}</p>
+            ) : current.origin === undefined ? (
+              <p className="mt-2 text-xs text-[var(--ink-faint)]">
+                {current.chapter} · 内置题库（无页级出处）
+              </p>
+            ) : null}
 
             <fieldset className="mt-4 space-y-2" disabled={revealed}>
               <legend className="sr-only">选择一个答案</legend>
@@ -1009,7 +1108,7 @@ export default function DiagnosePage() {
               </Link>
               <button
                 type="button"
-                onClick={reset}
+                onClick={restartSession}
                 className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
               >
                 重新诊断

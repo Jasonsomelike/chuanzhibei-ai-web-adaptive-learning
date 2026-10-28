@@ -11,6 +11,18 @@ import { callChat } from "@/lib/chat";
 import { search, buildIndex, type Bm25Index } from "@/lib/rag";
 import { masteryMean, masterySd } from "@/lib/mastery";
 import type { MasteryState } from "@/lib/mastery";
+import { useMaterialPack } from "@/lib/materialStore";
+import {
+  MAX_CONTEXT_CHARS,
+  buildMaterialContext,
+  citationLabel,
+  excerptFor,
+  type MaterialConflict,
+  type MaterialExcerpt,
+  type MaterialPack,
+  type MaterialSelection,
+} from "@/lib/materials";
+import type { KnowledgeConcept } from "@/lib/graph";
 
 /**
  * 导师对话。
@@ -30,6 +42,10 @@ interface Message {
   readonly citations: { kcId: string; title: string }[];
   readonly generatedByLlm: boolean;
   readonly note?: string;
+  /** 教材 / 讲义出处抬头，元素是 citationLabel 的输出，原样展示。 */
+  readonly sources: string[];
+  /** 本次回答涉及的未决口径分歧，已格式化成可直接展示的一行。 */
+  readonly conflicts: string[];
 }
 
 const SYSTEM_PROMPT = `你是一门大学课程的助教。回答必须遵守：
@@ -38,7 +54,14 @@ const SYSTEM_PROMPT = `你是一门大学课程的助教。回答必须遵守：
 2. 每个结论后用 [知识点ID] 标注依据，例如「栈是后进先出 [c09]」。
 3. 学生问「为什么给我排这一步」时，用他的掌握度数值解释，不要编造他没做过的题。
 4. 不要许诺系统没有的功能。
-5. 中文回答，200 字以内，不要用「首先/其次/最后」这种套话。`;
+5. 提供了「教材 / 讲义摘录」时，以摘录为准；摘录里没有的说法不要当成教材结论。
+6. 摘录与「知识点资料」说法不一致时，明确说出分歧，并分别标注两边出处，不要合成一种说法。
+7. 不得编造页码：只引用摘录中出现的章节与页码，摘录没有页码就不写。
+8. 中文回答，200 字以内，不要用「首先/其次/最后」这种套话。`;
+
+/** 有摘录时展示的口径说明。没有摘录就不显示，避免暗示回答有教材依据。 */
+const MATERIAL_BASIS_NOTE =
+  "口径：有教材 / 讲义摘录时以摘录为准；摘录与知识点资料不一致处分别标注出处，页码只取自摘录，没标页码就不推断。";
 
 export default function TutorPage() {
   const { target, targetId, setTargetId, ready, loadingTarget } = useSubject();
@@ -52,6 +75,15 @@ export default function TutorPage() {
 
   // 按学科建检索索引（学科切换时重建）
   const [index, setIndex] = useState<Bm25Index | null>(null);
+
+  /*
+   * 教材 / 讲义口径。graph 传进去是为了让笔记按绑定知识点继承章节，
+   * 自定义方向没有内置资料包，返回的是空包，界面不会凭空出现出处。
+   */
+  const { pack: materialPack, selection: materialSelection } = useMaterialPack(
+    targetId,
+    target?.graph,
+  );
 
   useEffect(() => {
     setLearner(loadLearner());
@@ -92,29 +124,51 @@ export default function TutorPage() {
 
   const send = async (text: string) => {
     const question = text.trim();
-    if (question.length === 0 || busy || !index) return;
+    if (question.length === 0 || busy || !index || !target) return;
 
     setError(null);
     setBusy(true);
     setInput("");
     setMessages((prev) => [
       ...prev,
-      { role: "user", text: question, citations: [], generatedByLlm: false },
+      {
+        role: "user",
+        text: question,
+        citations: [],
+        generatedByLlm: false,
+        sources: [],
+        conflicts: [],
+      },
     ]);
 
     const mastery = masteryOf();
     const docs = search(index, question, 3);
 
+    /*
+     * 检索命中的 kcId 才是要查教材的知识点。
+     * 检索分数高但图谱里没有的 id 不查——那说明索引与图谱不同步，
+     * 凭空多出一段摘录会让学生以为教材里真写了。
+     */
+    const conceptById = new Map(target.graph.concepts.map((c) => [c.id, c] as const));
+    const concepts = docs
+      .map((d) => conceptById.get(d.kcId))
+      .filter((c): c is KnowledgeConcept => c !== undefined);
+    const material = materialForAnswer(materialPack, materialSelection, concepts);
+    const conflicts = material.conflicts.map((c) => describeConflict(materialPack, c));
+
     // 未配置供应商：直接走结构化拼装
     if (!provider) {
+      const composed = composeDeterministic(question, docs, mastery, material.excerpts);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: composeDeterministic(question, docs, mastery),
+          text: composed.text,
           citations: docs.map((d) => ({ kcId: d.kcId, title: d.title })),
           generatedByLlm: false,
           note: "未配置模型供应商，本次由知识库检索拼装",
+          sources: composed.sources,
+          conflicts,
         },
       ]);
       setBusy(false);
@@ -123,7 +177,7 @@ export default function TutorPage() {
 
     // 配置了供应商：浏览器直连
     try {
-      const reply = await callProvider(provider, question, docs, mastery);
+      const reply = await callProvider(provider, question, docs, mastery, material.promptContext);
       /*
        * 引用不是「检索到了什么」，而是「回复里真的引用了什么」。
        * 旧实现把 docs 全部列为 citations，模型不引用或引错时界面仍显示 3 个知识点，
@@ -141,18 +195,28 @@ export default function TutorPage() {
             cited.length === 0
               ? `${provider.label} · ${provider.model} · 本次回复未包含可核对的 [知识点ID] 引用`
               : `${provider.label} · ${provider.model}`,
+          /*
+           * sources 是「本次注入的摘录」，不是「模型声称引用了这些」。
+           * 模型一个 [知识点ID] 都没引用时，note 会如实说明；
+           * 出处行仍然列出可核对的原文，方便学生自己比对模型有没有照摘录说。
+           */
+          sources: material.sources,
+          conflicts,
         },
       ]);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      const composed = composeDeterministic(question, docs, mastery, material.excerpts);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: composeDeterministic(question, docs, mastery),
+          text: composed.text,
           citations: docs.map((d) => ({ kcId: d.kcId, title: d.title })),
           generatedByLlm: false,
           note: `模型调用失败（${reason}），已退回检索拼装`,
+          sources: composed.sources,
+          conflicts,
         },
       ]);
       setError(`模型调用失败：${reason}。可以到设置页测试连通性。`);
@@ -255,6 +319,17 @@ export default function TutorPage() {
                   : "mr-8"
               }
             >
+              {m.role === "assistant" && m.conflicts.length > 0 ? (
+                <div className="mb-3 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2">
+                  <p className="text-xs font-medium text-[var(--warn)]">口径未定，先看两说</p>
+                  {m.conflicts.map((c) => (
+                    <p key={c} className="mt-1 text-xs leading-relaxed text-[var(--warn)]">
+                      {c}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+
               <p className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</p>
 
               {m.role === "assistant" ? (
@@ -267,6 +342,16 @@ export default function TutorPage() {
                           {c.title} [{c.kcId}]
                         </Pill>
                       ))}
+                    </div>
+                  ) : null}
+                  {m.sources.length > 0 ? (
+                    <div className="space-y-1">
+                      <p className="text-xs leading-relaxed text-[var(--ink-soft)]">
+                        出处：{m.sources.join("；")}
+                      </p>
+                      <p className="text-xs leading-relaxed text-[var(--ink-faint)]">
+                        {MATERIAL_BASIS_NOTE}
+                      </p>
                     </div>
                   ) : null}
                   {m.note ? (
@@ -357,34 +442,107 @@ function extractCitedKcIds(
   return out;
 }
 
-/** 无模型时的回答：检索结果 + 掌握度数值 + 题库解析。 */
+/** 无模型时的回答：检索结果 + 教材摘录 + 掌握度数值。 */
 function composeDeterministic(
   question: string,
   docs: { kcId: string; title: string; snippet: string }[],
   mastery: readonly MasteryState[],
-): string {
+  excerpts: ReadonlyMap<string, MaterialExcerpt>,
+): { text: string; sources: string[] } {
   const byId = new Map(mastery.map((m) => [m.kcId, m]));
 
   if (docs.length === 0) {
-    return (
-      `课程资料里没有检索到与「${question}」直接相关的内容。\n\n` +
-      `当前学科的知识点都已在知识图谱里，可以换个说法，或者告诉我你在看哪一章。`
-    );
+    return {
+      text:
+        `课程资料里没有检索到与「${question}」直接相关的内容。\n\n` +
+        `当前学科的知识点都已在知识图谱里，可以换个说法，或者告诉我你在看哪一章。`,
+      sources: [],
+    };
   }
 
+  const sources: string[] = [];
   const lines = docs.map((d) => {
     const m = byId.get(d.kcId);
     const state = m
       ? `你目前在这个知识点上已测 ${m.evidenceN} 题，掌握度 ${Math.round(masteryMean(m) * 100)}%（±${Math.round(masterySd(m) * 100)}）。`
       : "你还没有测过这个知识点。";
-    return `**${d.title}** [${d.kcId}]\n${d.snippet}\n${state}`;
+
+    /*
+     * 每条都先给出处再给原文：摘录才是教材口径，
+     * 检索摘要只是知识点文档，两者不能混在一起让学生分不清哪句是书上的。
+     * 没有摘录时如实说没有，不拿知识点摘要冒充教材原文。
+     */
+    const excerpt = excerpts.get(d.kcId);
+    const sourceLine = excerpt
+      ? `出处：${citationLabel(excerpt)}`
+      : "出处：教材 / 讲义里没有这个知识点的摘录";
+    if (excerpt) {
+      const label = citationLabel(excerpt);
+      if (!sources.includes(label)) sources.push(label);
+    }
+    const body = excerpt ? excerpt.text : d.snippet;
+
+    return `**${d.title}** [${d.kcId}]\n${sourceLine}\n${body}\n${state}`;
   });
 
-  return (
-    lines.join("\n\n") +
-    `\n\n（当前未配置模型供应商，以上内容由课程知识库直接检索拼装。` +
-    `到设置页配置后可得自然语言讲解，检索依据不变。）`
-  );
+  return {
+    text:
+      lines.join("\n\n") +
+      `\n\n（以上内容由课程知识库与教材 / 讲义原文直接拼装。` +
+      `到设置页配置后可得自然语言讲解，检索依据不变。）`,
+    sources,
+  };
+}
+
+/**
+ * 一次回答要用的教材 / 讲义材料。
+ *
+ * promptContext 是按全部命中知识点共享 2400 字预算裁剪后的整段摘录，注入模型；
+ * excerpts 按 kcId 拆开，给无模型拼装逐条标出处。
+ * 两者都出自同一条排序规则（materials.ts 的 chunksForConcept），页码口径不会分叉。
+ */
+interface AnswerMaterial {
+  readonly promptContext: string;
+  readonly excerpts: ReadonlyMap<string, MaterialExcerpt>;
+  /** 实际注入模型的出处抬头，去重后保持首次出现顺序。 */
+  readonly sources: string[];
+  readonly conflicts: readonly MaterialConflict[];
+}
+
+function materialForAnswer(
+  pack: MaterialPack,
+  selection: MaterialSelection,
+  concepts: readonly KnowledgeConcept[],
+): AnswerMaterial {
+  const combined = buildMaterialContext(pack, concepts, selection, MAX_CONTEXT_CHARS);
+
+  const excerpts = new Map<string, MaterialExcerpt>();
+  for (const concept of concepts) {
+    const excerpt = excerptFor(pack, concept, selection);
+    if (excerpt) excerpts.set(concept.id, excerpt);
+  }
+
+  return {
+    promptContext: combined.text,
+    excerpts,
+    sources: [...new Set(combined.citations.map((c) => c.label))],
+    conflicts: combined.unresolved,
+  };
+}
+
+/**
+ * 未决分歧的提示语：把每种说法和它的出处都摆出来，不替用户选边。
+ *
+ * 书目名只从数据包里取；没有实体来源的说法标成「模型」，
+ * 不能给它编一个《…》——那会变成假书目。
+ */
+function describeConflict(pack: MaterialPack, conflict: MaterialConflict): string {
+  const titles = new Map(pack.sources.map((s) => [s.id, s.title] as const));
+  const parts = conflict.claims.map((claim) => {
+    const title = claim.sourceId ? titles.get(claim.sourceId) : undefined;
+    return `${title ? `《${title}》` : "模型"}称「${claim.statement}」`;
+  });
+  return `「${conflict.topic}」尚未选定口径：${parts.join("，")}。两种说法都保留，不替你决定。`;
 }
 
 /** 浏览器直连供应商。失败时抛错，由调用方降级。 */
@@ -393,6 +551,7 @@ async function callProvider(
   question: string,
   docs: { kcId: string; title: string; snippet: string }[],
   mastery: readonly MasteryState[],
+  materialContext: string,
 ): Promise<string> {
   const byId = new Map(mastery.map((m) => [m.kcId, m]));
 
@@ -409,9 +568,19 @@ async function callProvider(
           .join("\n\n")
       : "（没有检索到相关资料，请直接说明资料里没有）";
 
+  /*
+   * 摘录单独成段，且明确写出「引用只能使用这里出现的书目、章节与页码」：
+   * 混进知识点资料里，模型会把知识点摘要也当成教材原文去编页码。
+   */
+  const trimmedMaterial = materialContext.trim();
+  const materialBlock =
+    trimmedMaterial === ""
+      ? ""
+      : `\n\n教材 / 讲义摘录（有摘录时以此为准；引用只能使用这里出现的书目、章节与页码）：\n${trimmedMaterial}`;
+
   const { text } = await callChat(provider, {
     system: SYSTEM_PROMPT,
-    user: `学生的问题：${question}\n\n可用资料：\n${context}`,
+    user: `学生的问题：${question}\n\n可用资料：\n${context}${materialBlock}`,
     maxTokens: 600,
     temperature: 0.3,
     timeoutMs: 45000,
