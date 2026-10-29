@@ -1,1457 +1,180 @@
-# 可解释的自适应学习路径 · 多学科
+<div align="center">
 
-> 给高校硬课的学生做一条**算得出、说得清、改得动**的学习路径：先修图决定能不能学，Beta 后验决定先学哪个，时间预算决定这次学到哪。
+# 可解释的自适应学习路径
 
-**TL;DR**
+给高校硬课的学生一条**算得出、说得清、改得动**的学习路径。
 
-- **9 学科 · 360 知识点 · 1080 题**：每学科 40 点 / 60 条先修边 / 120 题，注册表在 `src/data/subjects/index.ts:40`。
-- **Beta 后验 + 纯函数规划**：掌握度带 ±区间；路径排序不联网、不用随机数（`src/lib/mastery.ts`、`src/lib/plan.ts`）。
-- **给定图谱后，排序不调大模型**：不配任何 key，内置学科的诊断、路径、改写全部可用。注意自定义方向的**图谱本身**可由模型生成，模型因此决定了排序的输入；排序函数本身仍不联网、不用随机数。记忆卡与预测校准只读作答记录，也不进入 `planPath`。
-- **可选能力可缺席，密钥按调用模式存放**：默认 `server` 模式把模型 / 搜索 / 语音密钥用 AES-256-GCM 加密存进账号（`user_secrets`，任何响应只回掩码），由本项目服务端代发（`/api/llm/*`、`/api/search`、`/api/tts`）；切到 `local` 模式则回到浏览器直连、密钥仅写本浏览器 localStorage。两种模式都不配模型时，诊断、路径、记忆、校准、教材检索与上传检索仍然可用。
+先修图决定能不能学 · Beta 后验决定先学哪个 · 时间预算决定这次学到哪
+
+[在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [已知限制](docs/limits.md)
+
+![tests](https://img.shields.io/badge/tests-1594%20passed-brightgreen)
+![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
+![subjects](https://img.shields.io/badge/subjects-9-blue)
+![license](https://img.shields.io/badge/license-MIT-blue)
+
+</div>
 
 ![首页](screenshots/home-hero.png)
 
-**在线演示**：<https://chuanzhibei-adaptive-learning.vercel.app>（2026-10-26 抓取首页，显示「覆盖 9 个学科 · 360 个知识点 · 540 条先修关系 · 1080 道题」）。**本轮新增的账号级知识库 / 记忆卡同步、服务端密钥与代理、混合检索与 50 条评测尚未重新部署验证**，线上版本可能落后于本仓库；新增能力的数字以本地运行结果为准。
+## 这是什么
 
-> 首页、路径页、关于页里与实现不符的文案（「CI 会红」「src/lib/llm.ts」「Ollama 预设」「拖动步骤」）已在上一轮修正；本轮设置页与 README 又同步了文件上传、流式回答与新增能力的说明。
+一个多学科自适应学习系统：学生先做一轮诊断，系统用 Beta 后验收敛出每个知识点的掌握度，再在先修约束下排出「这次该学哪几步」，每一步都带数值理由，可以改预算、可以手动调顺序，违规会当场标出。
 
-![tests](https://img.shields.io/badge/tests-1570%20passed-brightgreen)
-![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
-![subjects](https://img.shields.io/badge/subjects-9-blue)
+和常见推荐系统的区别只有一句话：**它判断的是「能不能学」，不是「想不想学」**。先修 DAG 是硬约束，未掌握的先修排在后继之前；先修被预算推迟时，后继进 `blocked` 而不是照排。
 
-> 三个徽章都对应一条能当场跑的命令，见 [§7](#7-工程与验证)。徽章是静态的：测试数字来自 2026-10-29 本机 `npm run test`（64 个测试文件、1570 passed）；`kg:validate` 与学科数由 `scripts/validate-kg.ts` 当场输出。不是 CI 实时状态。同一轮 `npm run typecheck` 与 `npm run build` 均 exit 0；`npm run check:secrets` 本轮 exit 0（测试假值已改为非凭据形状的占位符），原始输出见 §7。
+- **9 学科 · 360 知识点 · 540 条先修边 · 1080 题**，每学科 40 点 / 60 边 / 120 题，`npm run kg:validate` 逐科校验无环、无悬空边、每点恰好 3 题。
+- **排序是纯函数**：`planPath` 只依赖图谱与掌握度，不联网、不取时钟、不用随机数；给定输入，路径逐位可复现（`pathHash`）。
+- **不配任何 API key 也能完整使用**：诊断、路径、章节目标、手动改写、记忆卡、预测校准、教材检索与上传检索都不需要模型。
 
----
+## 核心特性
 
-## 1. 30 秒看懂
+| 能力 | 你能得到什么 |
+| --- | --- |
+| **可解释的路径** | 每一步一句带数值的理由（「尚无作答记录，先修深度 6，先建立基线（当前掌握度 10% ±17）」），外加输入 / 路径双指纹 |
+| **不确定性可见** | 掌握度不是点估计：界面显示 `70% ±19` 与 `P(已掌握)`，条带宽度就是 `±sd` |
+| **预算反事实** | 同一份掌握度换一个预算，直接看到哪些步骤被推迟、哪些因先修阻塞，阻塞点列出阻塞者 |
+| **可改写** | 每步可上移 / 下移 / 移除，即时重算先修违规；章节多选只收窄候选，跨章先修点自动带上 |
+| **证据链** | 导师回答先检索再生成，引用逐个逐字核对；联网结果与方向无关时被过滤，教材没有就说没有 |
+| **账号级知识库** | 每个自定义方向一份知识库，支持 Markdown / TXT / 带文本层 PDF；登录后同步到账号，换设备能拿回 |
+| **密钥不进浏览器** | server 模式下模型 / 搜索 / 语音密钥 AES-256-GCM 加密存库，任何响应只回 `••••` + 末 4 位 |
+| **方向市场与 MCP** | 方向可公开、可复制；`POST /api/mcp` 暴露 5 tools / 18 resources / 2 prompts，全部只读 |
 
-```mermaid
-flowchart LR
-  A["诊断出题<br/>app/diagnose/page.tsx"] --> B["Beta 后验<br/>src/lib/mastery.ts:78"]
-  B --> C["排序：深度→ZPD→sd→兜底<br/>src/lib/plan.ts:128"]
-  C --> D["预算装包<br/>src/lib/plan.ts:169"]
-  D --> E["手动改写<br/>app/path/page.tsx:260"]
-  E --> F["先修校验<br/>src/lib/plan.ts:375"]
-  F -->|改预算 / 再答题| C
-  D --> G["路径指纹 pathHash<br/>src/lib/plan.ts:296"]
-  T["导师 / 方向生成<br/>app/tutor/page.tsx · src/lib/direction.ts"] -. "只生成内容与解释，不进排序" .-> C
-  A --> M["记忆卡<br/>src/lib/memory.ts"]
-  A --> CAL["预测校准<br/>src/lib/calibration.ts"]
-  M -. "只读：不更新 α/β" .-> B
-  CAL -. "只读作答记录" .-> B
-```
+更多界面与文案见 [功能清单](docs/features.md)。
 
-**可选能力层**（都不在核心路径上，失败时只降级自己）：
+## 30 秒跑起来
 
-```mermaid
-flowchart LR
-  Q["导师提问<br/>app/tutor/page.tsx"] --> R["BM25 / 混合检索<br/>rag.ts · hybrid.ts · vector.ts"]
-  Q --> S["流式 + 思考<br/>chat.ts · reasoning.ts → /api/llm/chat"]
-  Q --> W["联网检索<br/>websearch.ts · searchClient.ts → /api/search"]
-  Q --> U["上传资料检索<br/>knowledge.ts · kbStore.ts · kbRemote.ts"]
-  S --> V["引用核对<br/>verify.ts · verifyClient.ts"]
-  D["方向出题<br/>src/lib/directionItems.ts"] --> L6["L6 依据核对<br/>verify.ts · verifyClient.ts"]
-  V -. "只标注，不改写回答" .-> Q
-  L6 -. "未过降为 practice" .-> D
-  Q --> TTS["朗读<br/>src/lib/tts.ts → /api/tts"]
-```
-
-每个节点的职责：
-
-| 节点 | 输入 | 做什么 | 输出 |
-| --- | --- | --- | --- |
-| 诊断出题 | 图谱深度、各点掌握度、未做过的题 | 先修深度升序 → 掌握度均值升序 → 选预测正确率最接近 0.65 的题 | 下一道题 |
-| Beta 后验 | 答对/答错 + 题目难度 | 答对加 α、答错加 β，权重 `w = 0.5 + 0.25d` | 均值、`sd`、`P(已掌握)` |
-| 排序键 | 掌握度快照、先修图 | 深度升序 → ZPD 距离升序 → `sd` 降序 → 拓扑序 → id | 有序候选列表 |
-| 预算装包 | 排序结果、预算 | 贪心装入；先修被推迟则后继阻塞 | `steps` / `deferred` / `blocked` |
-| 手动改写 | 算法路径 | 上移、下移、移除，实时重算违规 | 新顺序 + 违规列表 |
-| 先修校验 | 路径 + 已掌握集合 | 检查每条边的相对位置与缺失 | 违规文案 |
-| 路径指纹 | 步骤序列 + 版本号 | SHA-256 | 64 位十六进制 |
-| 记忆卡 | 答错的题、易混的知识点对、复习自评 | 到期阶梯 1/3/7/21 天；连续 4 次「记住了」毕业 | 待复习卡片（不更新 α/β） |
-| 预测校准 | 作答前的 `predicted` + 实际对错 | Wilson 区间、O/E、Brier；30/60/100 三档 | 一句话结论 + 折叠明细 |
-| L6 依据核对 | 一批 3–4 题 + 该知识点的原文 | 逐字 quote、答案与选项比对；整批一次调用 | `checks` + 未过降为 practice |
-
-**分层与职责**（自下而上，上层只能依赖下层）：
-
-```
-┌─ 数据层 ──────────────────────────────────────────────┐
-│ 9 学科图谱与题库（静态 TS 模块）· Postgres/内存 10 张表   │
-│ 方向上传知识库（IndexedDB 本机 + 账号 kb_docs/kb_chunks） │
-│ 职责：只存数据，不含规则                                  │
-├─ 决策层（纯函数）─────────────────────────────────────┤
-│ graph / mastery / plan / itemgen / memory / calibration│
-│ knowledge / rag / hybrid / vector / embedding / ragEval│
-│ verify / websearch / reasoning                         │
-│ 职责：无网络、无随机、无时间；可被测试逐位复现             │
-├─ 触点层（可选）───────────────────────────────────────┤
-│ chat + direction + directionItems + verifyClient       │
-│ + searchClient + external + upstream + ssrfGuard       │
-│ + tts + kbStore/kbLocal/kbRemote/vectorCache           │
-│ + embeddingClient/hybridSearchClient + server* 适配     │
-│ + materials + pdf + textFile                           │
-│ 职责：检索、模型调用、浏览器/账号存储与语音；失败必须降级   │
-├─ 表现层 ──────────────────────────────────────────────┤
-│ app/ 9 个页面 + 14 个 API 路由                          │
-│ 职责：读写状态、展示数值理由、把纯函数结果画出来             │
-└───────────────────────────────────────────────────────┘
-```
-
-关键约束：**决策层不 import 触点层**。`plan.ts` 的依赖只有 `graph.ts` 与 `mastery.ts`（`src/lib/plan.ts:11-18`），所以模型不可用时决策层行为完全不变。新增的 `memory.ts` / `calibration.ts` / `knowledge.ts` / `rag.ts` / `hybrid.ts` / `vector.ts` / `embedding.ts` / `ragEval.ts` / `verify.ts` / `websearch.ts` / `reasoning.ts` 同样不碰网络、IndexedDB 与系统时钟；`pathHash` 与 golden case 没有因为这一轮新增功能而变化。
-
-<details>
-<summary>PDF / 不支持 Mermaid 的平台：ASCII 版</summary>
-
-```
-[诊断出题 diagnose/page.tsx]
-        │  答对/答错 + 难度
-        ▼
-[Beta 后验 mastery.ts] ──► (mean, sd, P)
-        │
-        ▼
-[排序 plan.ts:128]  depth ↑ → |0.6-mean| ↑ → sd ↓ → 拓扑序/id
-        │
-        ▼
-[装包 plan.ts:169]  15 分钟/新学，8 分钟/复习；先修被推迟 → 后继 blocked
-        │
-        ├──► [pathHash plan.ts:296]
-        ▼
-[手动改写 path/page.tsx] ──► [checkPrereqOrder plan.ts:375] ──► 违规提示
-        ▲
-        └── 改预算 / 再答题，回到排序
-
-可选能力层（都不阻塞核心路径）：
-[导师提问] ─► BM25 / 混合检索 ─┬─► 流式回答 + 思考 ─► 引用核对（只标注）
-                         ├─► 联网检索 [网络n]（外部网页，未核对；server 模式经 /api/search）
-                         ├─► 上传资料检索 [资料n]（本机 IndexedDB + 登录后账号同步）
-                         └─► 朗读（浏览器 / 在线语音；server 模式经 /api/tts）
-[方向出题] ─► L1 → L2 → L3 → L4 → L6 依据核对 ─► 落库
-[诊断作答] ─► 记忆卡（不更新 α/β）· 预测校准（只读 attempts）
-```
-
-</details>
-
-**一个具体的学生。** 小王在操作系统里想学第 3 章（`o10`–`o14` 五个知识点，`src/data/subjects/os.ts:28`）。按诊断页同一套选题规则模拟（全部答对）：候选点按「先修深度升序 → 掌握度均值升序」出题，两个会话共 24 题（每次上限 15 题，`app/diagnose/page.tsx:72`）测完 8 个点——`o01`–`o05` 是第 3 章的传递先修，`o34`–`o36` 属于文件系统方向、深度只有 0–2 所以也排在前面（诊断不限于目标点的先修闭包）。8 个点各 3 题全对，掌握度 0.700–0.740，`sd` 0.179–0.187。
-
-- **90 分钟预算、目标 `o10`–`o14`** → 6 步：`o06` 进程控制块与进程控制 → `o07` 进程上下文切换 → `o08` 线程与多线程模型 → `o10` 处理机调度的层次与目标 → `o11` 先来先服务与短作业优先 → `o12` 优先级调度与时间片轮转，正好 90 分钟；`o13`、`o14` 进 `deferred`，`blocked` 为 0，`pathHash = 5c51a690…`。
-- **改成 60 分钟** → 4 步（`o06`→`o07`→`o08`→`o10`，60 分钟），`o11` 进 `deferred`，另外 3 个点因先修被推迟进入 `blocked`，`pathHash = 0ec9da69…`。这就是界面上的「反事实」：不是换一条算法，而是同一算法换一个预算。
-- **把 `o12` 上移到 `o11` 之前** → 立即报「`o11` 应先于 `o12`，实际排在其后（位置 5 > 4）」；**删掉 `o07`** → 报「`o07` 是 `o08` 的先修，但不在路径中，也未标记为已掌握」。
-
-> 上面这一遍用 `targets` 限定到第 3 章，`planPath` 的入参与 MCP 的 `plan_path` 工具都支持；路径页也已支持按章多选（见 [§8](#8-功能清单)），章节只收窄 `targets`，跨章先修点仍会自动带上。
-
----
-
-## 2. 它和推荐系统的区别
-
-| 维度 | 常见推荐系统 | 本项目 |
-| --- | --- | --- |
-| 约束 | 按相似度或热度排序，不建模先修关系 | 先修 DAG 是硬约束：目标点的先修闭包全部进入候选，未掌握的先修排在后继之前；先修被预算推迟时，后继进 `blocked` 而不是照排（`src/lib/plan.ts:110`、`:170`） |
-| 可解释 | 一个分数，说不清为什么 | 每一步一句带数值的理由（「尚无作答记录，先修深度 6，先建立基线（当前掌握度 10% ±17）」；复习步骤写成「已掌握 57%（±23），距目标还差 3 个百分点」，`src/lib/plan.ts:212`）+ 输入/路径双指纹 |
-| 不确定性 | 点估计 | Beta 后验：界面显示 `70% ±19` 与 `P(已掌握)`，条带宽度就是 `±sd`（`src/components/ui.tsx:48`） |
-| 方案数 | 单一结果 | 反事实预算对比：选一个对照预算，标出哪些步骤会被推迟或因先修阻塞（`app/path/page.tsx:92`） |
-| 可改写 | 不可改 | 可上移/下移/移除，实时标违规；顺序只存在当前页面状态（`app/path/page.tsx:103`），刷新即丢 |
-
-这张表里最关键的是第一行：**先修约束让「推荐」变成「能不能学」的判断**，而不是「想不想学」的猜测。第二行是它的直接后果——既然排序规则是显式的，就能把每一步的数值理由打印出来，也能对同样的输入复现同样的输出。
-
----
-
-## 3. 自适应到底在哪
-
-「自适应」在本项目里只有三件事，每件都能指到代码。
-
-### ① 出题：下一个测哪个知识点、出哪道题
-
-- **输入**：当前掌握度快照、每点已做过的题、图谱深度。
-- **规则**：候选点按 `depth` 升序 → 掌握度均值升序 → `id` 排序；选中点里再选 `|predictCorrect(mean, d) − 0.65|` 最小的那道题（`app/diagnose/page.tsx:326`、`:341`）。0.65 是信息量较大的区间：太低多半在猜，太高测不出上限。
-- **输出**：下一道题 + 所属知识点 + 难度。
-- **证据门槛**：内置题每点 3 题、生成题 4 题（`src/lib/mastery.ts:123`），达到即换下一个点；全局上限 15 题（`app/diagnose/page.tsx:72` 的 `HARD_CAP`）。
-
-实测效果：`o01`（depth 0，先验 0.35）三道题依次选 `d=1`（预测 0.641）、`d=2`（0.670）、`d=3`（0.653），全对后均值 0.740；`o10`（depth 6，先验 0.10）单独模拟时出题序列同样是 1→2→3，全对后均值只到 0.640。**出题序列相同、结果不同**——差别来自先验，不是难度标签。
-
-### ② 排序：下一步学哪个
-
-- **输入**：`PlanInput { graph, mastery, budgetMinutes, targets?, masteryTarget? }`。
-- **规则**：先取目标点的先修闭包 ∪ 目标点，去掉已达 0.6 的点；再按 **先修深度升序 → ZPD 距离升序 → `sd` 降序 → 拓扑序/id** 排序（`src/lib/plan.ts:128-148`）；最后按 15 分钟/新学、8 分钟/复习贪心装包（`src/lib/plan.ts:169-197`）。
-- **输出**：`steps`（带 `reason`）、`totalMinutes`、`deferred`、`blocked`、`pathHash`。
-- **为什么是这个顺序**：深度保证不跳级；ZPD 距离让「跳一跳够得着」成为显式规则；`sd` 降序让最不确定的点优先获得证据；拓扑序与 id 只是兜底，保证完全确定。前三个键决定「先学哪个」，后两个键只负责在同分时给出稳定结果。
-
-`learn` 与 `review` 由 `evidenceN` 决定：没作答过是新学，作答过但没达标是复习（`src/lib/plan.ts:180`）。装包阶段先修被推迟时，后继必须进 `blocked` 并带 `by`，否则会产出「先修不在路径、后继却在路径」的非法结果（`src/lib/plan.ts:170-176`）。
-
-### ③ 预算反事实 + 手动改写
-
-- **输入**：同一份掌握度快照 + 两个预算（30/60/90/120/180/240 分钟，`app/path/page.tsx:39`）。
-- **规则**：对两个预算各跑一次 `planPath`，把对照预算下会被推迟或阻塞的步骤标灰并加「对照预算下会被推迟」标签（`app/path/page.tsx:184`、`:547`）。
-- **手动改写**：上移/下移/移除按钮（`app/path/page.tsx:598-623`）改的是当前页面状态；每次改动后用 `checkPrereqOrder(graph, steps, { mastered: masteredSet(mastery) })` 严格模式重算违规（`app/path/page.tsx:251`、`src/lib/plan.ts:375`）。严格模式要求「先修既不在路径、也未标记已掌握」必须报违规；不传 `mastered` 的宽松模式只查顺序。
-- **输出**：违规条数与逐条文案；无违规时显示「当前顺序仍满足全部先修约束」。
-
-界面上的三个闭环对应三张图：[诊断](screenshots/diagnose.png)、[路径与指纹](screenshots/path.png)、[自定义方向诊断](screenshots/diagnose-direction.png)。
-
----
-
-## 4. AI 用在哪、不用在哪
-
-### 六个触点（其中两个不调模型）
-
-| 触点 | 做什么 | 代码 | 无 key / 失败时 |
-| --- | --- | --- | --- |
-| 导师解释 | BM25 检索 3 个知识点文档 + 教材 / 上传摘录 → 流式讲解；**引用列表从回复里解析**，只列回复中真的出现、且确实在检索结果里的 `[kcId]`；可选开启思考强度与联网补充 | `app/tutor/page.tsx`、`src/lib/chat.ts:508`（`callChatStream`）、`src/lib/reasoning.ts`、`extractCitedKcIds`（`src/components/tutor-logic.ts:48`）；server 模式经 `POST /api/llm/chat` | `composeDeterministic`：检索片段 + 该点掌握度 + 教材 / 上传 / 网络摘录 + 题库解析拼装（`app/tutor/page.tsx:520`），界面标「知识库检索」 |
-| 方向图谱 | 用户一句话 → 模型按 schema 输出知识点与先修边 → 服务端校验后才入库；草稿标题可改 | `src/lib/direction.ts:80`（`validateDraft`）、`app/api/directions/generate/route.ts:62`、`src/lib/useDirectionDraft.ts`；模型调用同走 provider 模式 | 关键词规则从现有学科挑选知识点（`src/lib/direction.ts:202`）；命中不足 5 个时补基础点，描述里如实写明「其中 N 个直接相关，其余是基础知识点」 |
-| 方向题目 | 推进到缺题的 KC 时生成 4 题 → L1–L4 →（有原文时）L6 整批依据核对 → 落库缓存；界面显示 L1–L6 流程轨迹 | `src/lib/directionItems.ts:822`（`ensureAllItems`）、`src/lib/itemgen.ts`、`src/lib/verify.ts` | 该 KC 标记无题并跳过，路径照常可规划；也可手动录题 |
-| 引用核对（只读） | 回答里每条带 `[kcId]` 的说法，用**本次实际注入的完整上下文**逐字核对；只加徽标，不改写回答 | `src/lib/verify.ts:559`（`parseClaimVerdicts`）、`src/lib/verifyClient.ts:105` | 不发起核对，界面写「未核对」；失败一律 fail-open |
-| 联网检索（不调模型） | server 模式经 `/api/search` 代发 DeepSeek / Tavily，维基百科免密钥也可直连；local 模式 Tavily（用户 key）或维基百科浏览器直连 → 独立 `[网络n]` 命名空间，标注「外部网页，未核对」 | `src/lib/websearch.ts`、`src/lib/searchClient.ts:590`（`searchViaServer`）、`app/api/search/route.ts` | 失败只显示一条非阻塞提示，回答照常生成；未登录选 DeepSeek / server 模式没配 Tavily 时带 notice 回退维基百科 |
-| 朗读（不调模型） | 浏览器内置语音；server 模式经 `/api/tts` 代发（`speech` 或 mimo `chat-audio`），local 模式浏览器直连同一套协议（受 CORS 限制）；只朗读回答正文 | `src/lib/tts.ts:847`（`speakRemote`）、`src/lib/mimo.ts`、`app/api/tts/route.ts`、`src/components/read-aloud.tsx` | 在线语音失败自动回退浏览器语音，并显示原因 |
-
-### 多角色协作：只做只读核对，不做 debate
-
-**为什么不做 debate。** 同模型、同题干、`temperature=0` 的「第二个 solver」与现有 L4 基本同构，只是第三次采样；共享训练数据与盲区，增量接近零。3 agents × 2 rounds 的 debate 成本约 ×6，而现有证据并不支持它稳定优于 self-consistency。有外部反馈的核对（CoVe / RARR 式）才有稳定收益，但 critic 会编造「问题」，所以本项目的核对者必须给出**逐字原文**，并由代码做 substring 校验。
-
-**L6 出题依据核对。** 在 L4 之后整批核对这个 KC 的 3–4 道题，每 KC **1 次**调用（`maxTokens: 1200`、`temperature: 0`、45 秒超时，随 `AbortSignal` 取消）。核对者只看题干、4 个选项与该 KC 的原文；**看不到生成器的答案与解析**，否则只是在复述。判定全部是代码：
-
-1. `quote` 归一化空白后必须是原文子串，且至少 **12 个码点**、含实质字符（不能只由引用抬头、标点或数字组成）；否则按 `not_found`，不采信。
-2. `answerText` 归一化后必须等于该题恰好一个选项；否则 `not_found`。
-3. 明确 `supported` 且答案与生成器一致 → 保留原状态（`accepted` 仍是 `accepted`，L4 已降 `practice` 的不升级），`checks` 追加「依据核对」。
-4. 明确 `not_found` / `contradicted` / `unable` 或答案不一致 → 降为 `practice`（可做、记录作答、不计证据），`checks` 追加「依据核对：未通过（原因）」。
-5. **网络 / HTTP / JSON 不可解析 / 字段不全 → 不降级**：保留原状态，`checks` 追加「依据核对：未完成」。核对器没跑完不是「题目错」的证据。
-6. 没有教材 / 上传原文 → 整批 `skipped`，不发请求，也不追加检查项。
-
-`ensureAllItems` 最多核对 **20 个 KC**（`src/lib/directionItems.ts:116`）；超出的知识点仍照常出题，只是不核对。服务端**不重跑 L6**（需要再调模型、结论不可缓存），与 L4 同一威胁模型；`app/api/directions/items/route.ts:280-284` 的白名单只保留「双解校验」「依据核对…」前缀与「依据：…」三类客户端声明（`c === "双解校验" || c.startsWith("依据核对") || c.startsWith(MATERIAL_CHECK_PREFIX)`），`status` 仍由客户端显式 `practice` 保留，所以 L6 未过的题落库后仍不计证据。
-
-**导师引用核对。** 触发条件是开关开、至少一个 `[kcId]` 引用、且注入了可核对原文，三者缺一就不发请求（`src/components/tutor-logic.ts:206` 的 `shouldVerifyClaims`）。只核对回答里带 `[kcId]` 的说法（最多 5 条），一次回答一次调用（`maxTokens: 600`、30 秒超时）。第三个参数是**本次实际注入模型的完整 `promptContext`**（多片段教材 + 上传摘录），不是 `excerptFor` 的每 KC 第一条摘录——用窄范围会把模型引用的第二、三条片段误判成 `not_found`。核对失败/超时逐条返回 `unable`，界面写「核对未完成；回答内容未改动」。网络来源单独标「网络来源未核对」，核对器不把网页当证据。
-
-**明确不做**：3-agent debate、LLM router、ReAct / ToolLoopAgent、同模型第二 solver、跨供应商核对（当前只有一个 `ProviderConfig`）；也不让 critic 给「题目是否清晰 / 讲解是否好懂」打主观分——没有可判定的 ground truth。
-
-### 思考过程与思考强度
-
-**流式回答。** 导师页用 `callChatStream`（SSE）增量渲染，正文与 `reasoning` 永远分两个字段：`reasoning` 不拼进 `text`，否则 `callChatWithRepair` 的 JSON 校验会被半截思考打穿。思考面板默认展开，正文开始输出时自动折叠；面板固定写「思考过程可能不忠实；判分与引用以正文和出处为准」。模型没返回思考内容时不渲染空面板，只写一行说明。
-
-**出题过程展示的是流程轨迹，不是原始 CoT。** `ensureItems` 返回 `trace`：生成、L1、L2、L3、L4、L6、落库各一条，失败的题显示原因。出题链路只把 `callChat` 的 `text` 拿去解析 JSON，不展示模型原始推理；轨迹只存在本次内存，不落库。
-
-**三档请求矩阵**（`src/lib/reasoning.ts:455` 的 `buildThinkingBody`）：
-
-| 档位 | OpenAI 兼容 | Anthropic | `max_tokens` | 采样参数 |
-| --- | --- | --- | --- | --- |
-| 关 | 不发 `reasoning_effort`、不发 `thinking` | 不发 `thinking` | 原值 | 原值 |
-| 标准 | `reasoning_effort: "medium"` | `thinking: {type:"enabled", budget_tokens:4096}` | ≥8192 | 删除 `temperature` / `top_p` / `top_k` |
-| 深入 | `reasoning_effort: "high"` | `thinking: {type:"enabled", budget_tokens:16384}` | ≥20480 | 删除 `temperature` / `top_p` / `top_k` |
-
-- 「关」不是发 `none` / `disabled`，而是**字段完全不出现**——多家端点会对 `reasoning_effort:"none"` 或 `thinking:{type:"disabled"}` 直接 400。
-- **思考强度只作用于导师回答**（`callChatStream`）。出题、批解、方向生成继续 `callChat`，`callChat` 忽略 `provider.thinking`（`src/lib/chat.ts:302-303`），默认关，避免 JSON 被思考 token 吃光、每 KC 成本翻倍。server 模式下思考档来自账号里保存的 `options.thinking`，请求体里没有这个字段（`apiContracts.llmChat` 是 strictObject），客户端也无法在本次请求里降级；要改档只能回设置页重存。
-- 开思考遇到 HTTP 400 时，`callChatStream` 去掉思考字段、恢复采样参数、重发**一次**最小请求；成功则本次按普通模式继续，并把 `thinkingStatus="unsupported"` 写回 localStorage，设置页把标准 / 深入置灰，只保留「关」。
-- `probeThinking`（`src/lib/chat.ts:641`）用设置页当前表单草稿探测，结论分 `verified` / `verified-empty` / `unsupported` / `unknown`；换预设、协议、地址或模型时重置为 `unknown`，不把上一个端点的结论带过来。
-- **三个字段必须能往返**：`thinking`（默认 `off`）、`thinkingStatus`（默认 `unknown`）、`verification`（默认 `true`）由 `loadProvider` 显式读出并补默认值（`src/lib/provider.ts:218-224`）、`saveProvider` 显式写回（`:257-258`），设置页的 `currentConfig()` 也必须带上它们——少任何一处都会「保存 → 刷新 → 再读」丢字段，导致思考档或核对开关失效。`provider.test.ts` 有 load/save 往返用例。
-- 档位是「请求意图」不是「实际强度」：部分供应商会映射（如 DeepSeek 把 `medium` 映射成 `high`），实际由供应商决定。
-- **OpenAI 官方 Chat Completions 不暴露原始推理正文**，只有 Responses API 的 summary；本项目只有 chat/completions，所以官方端点下面板可能为空。Anthropic 新模型也可能只给空串 + signature。
-
-### 联网补充（DeepSeek / Tavily / 维基百科）
-
-| 供应商 | 调用方式 | 本轮 |
-| --- | --- | --- |
-| DeepSeek 搜索 | **只有服务端**：`POST /api/search`，固定端点 `https://api.deepseek.com/v1/tools/search`；需要登录 + `search-deepseek` 行，或 llm 行 `base_url` 主机严格等于 `api.deepseek.com` 时复用 llm 密钥 | 支持；`count` 1–10（默认 4） |
-| Tavily | server 模式经 `/api/search`；local 模式浏览器直连（用户自带 key） | 支持；最多 4 条 |
-| 维基百科 Action API | 服务端 `/api/search` 或浏览器直连（`origin=*`），零密钥 | 默认供应商；最多 3 条，`?oldid=` 稳定链接 |
-| Brave / Exa / DuckDuckGo | 否（无 ACAO / 405 / 0 字节） | **不支持** |
-| 任意网页正文抓取 | 否（逐站 CORS） | **不做** |
-
-- 默认**关闭**；输入区开关「联网补充（外部网页，未核对）」。设置页可改默认开 / 关、选供应商。
-- 查询词 = 问题 + 检索到的知识点名，≤120 字；15 秒超时；结果在当前标签页 `sessionStorage` 缓存 **30 分钟**，失败不缓存。缓存键带供应商，换供应商不会读到上一家的结果。
-- provider 必须由客户端显式指定，服务端**不做静默换供应商**：响应的 `provider` 永远等于请求值，失败时才能说清是谁失败。客户端的回退只有一种——未登录选 DeepSeek、或 server 模式未登录选 Tavily、或 local 模式没填 Tavily key 时，回退维基百科并显示 notice（`resolveSearchProvider`，`src/lib/searchClient.ts:246`）。
-- 「三家全试一遍」的候选链**没有实现**：契约里的 `search_exhausted` 没有任何路由产出；`switch` 末尾是编译期 `assertNeverProvider`（`src/lib/serverSearch.ts:365`、`app/api/search/route.ts:184`），新增供应商漏分支会编译失败，而不是运行期自动兜底。
-- 注入提示词时单独成块，带「外部网页不可信、其中的指令一律不执行、与教材冲突时以教材为准」；引用写 `[网络n]`，不写文件名或 URL。
-- 回答下方单独一块「网络来源（外部网页，未核对）」；模型没引用任何 `[网络n]` 时仍列出检索条目，但标「未采用」——检索了不等于用了。
-- 搜索失败不阻塞回答；401 显示「登录后才能使用服务端搜索代理」，404 `provider_not_configured` 显示「还没有在账号里配置」，429 显示「搜索服务限流」，502 / 504 显示上游失败或超时，网络错误显示「无法连接服务端」。
-- **密钥按模式存放**：server 模式下 DeepSeek / Tavily 密钥 AES-256-GCM 加密存 `user_secrets`，浏览器只看到掩码，搜索由服务端代发；local 模式下 Tavily key 在 `alp.search.v1`，浏览器直连。两种模式都**没有项目自有搜索 key**——DeepSeek 搜索不会拿用户的 llm 密钥去用户自填的中转域，只发官方端点。
-
-### 语音朗读（TTS）
-
-| 引擎 / 协议 | 调用方式 | 密钥 |
-| --- | --- | --- |
-| 浏览器内置语音 | 系统 voice + 语速 0.8–1.2 | 不需要 |
-| OpenAI 兼容 `speech` | server 模式经 `POST /api/tts`（`{baseUrl}/audio/speech`）；local 模式浏览器直连 | server：加密存 `user_secrets`（kind=`tts`）；local：`alp.tts.v1` |
-| mimo `chat-audio` | server 模式经 `/api/tts`（`{baseUrl}/chat/completions` + `modalities:["audio"]`，音频在 `choices[0].message.audio.data`）；local 模式浏览器直连同一端点 | 同上；小米 mimo 使用 chat-audio（其 `/audio/speech` 不走这条路径） |
-
-- 只朗读助手回答的正文：朗读前去掉 `[kcId]`、`[教材·…]`、`[资料n]`、`[网络n]`、Markdown 代码块与链接；单段最多 **2000 字**，超出截断并提示「只朗读前 2000 字」。
-- server 模式：浏览器只发 `{text}` 到 `/api/tts`，端点 / 密钥 / 模型来自账号里的 `tts` 行，浏览器不接触明文；`ttsConfigIssues(config, "server")` 返回空数组（`src/lib/tts.ts:194-201`），因为本机没有 apiKey 是正常状态——否则「账号里有 key、本机没有」会永远回退浏览器语音。
-- local 模式：`speech` 协议请求 `POST ${baseUrl}/audio/speech`，body `{model, voice, input, response_format:"mp3", speed}`；`chat-audio` 协议请求 `chat/completions` 并解 `choices[0].message.audio.data` 的 base64。返回 blob → `URL.createObjectURL` → `Audio`，结束后 `revokeObjectURL`。
-- 协议选择：`resolveTtsApi` 先看行里的 `api`（`mimo|chat-audio|speech`），再看 `options.protocol`，最后按 base_url 是否含 `mimo` 推断（`src/lib/serverTts.ts:213`）。两条协议对外统一返回 `audio/mpeg`，客户端只需一套播放逻辑。
-- 在线 CORS / HTTP / 播放失败 → 自动回退浏览器语音，并显示原因；不静默失败。server 模式的 404 / 409 都表示「没有可用的在线配置」，客户端应直接回退，不要重试。
-- 不自动播放、不做逐字高亮 / 字幕同步；每条助手消息一个「朗读」按钮，播放中变「停止」。
-- 语音密钥与聊天供应商密钥**分开保存**，不复用——把聊天 key 发到不支持 TTS 的端点只会得到 404/401。
-
-### 知识口径（教材/讲义/模型）
-
-**为什么单独一层。** 教材与讲义是「可以引用的来源」，模型生成的说法只是「依据」之一；把模型塞进来源列表会造出《某模型》第 1 版这种假书目。数据模型因此把两者分开：`MaterialKind = "textbook" | "lecture"`，`MaterialBasis = MaterialKind | "model"`（`src/lib/materials.ts:17-20`）。
-
-**数据形状与纯函数**（`src/lib/materials.ts`）：
-
-- `MaterialSource`：id、类型、书名 / 讲义名、作者、版次、年份；
-- `MaterialChunk`：绑定一个或多个 `kcId` 的原文片段，带章节、小节与页码；页码缺失表示来源没有分页（如笔记），引用抬头不会编造页码；
-- `MaterialClaim`：一条说法，`kcId + topic` 是争议维度，`basis` 是教材 / 讲义 / 模型；
-- `MaterialPack` / `MaterialSelection`：数据包（来源 + 片段 + 说法）与用户选择（`sourceIds` 顺序即优先级，`resolutions` 是冲突 key → 选中的 claim）。
-
-纯函数负责筛选、拼装与检测：`chunksForConcept` **先按勾选的来源过滤**，再按「来源优先级 → 章节匹配 → 页码 → id」排序（`src/lib/materials.ts:250`）——勾掉一个来源它就不进上下文、也不进「依据」；空选择等于「模型通用知识」，什么都不注入；`buildMaterialContext` 在字符预算内裁剪，**未决分歧永远保留在预算之外**（`:436`）；`detectConflicts` / `unresolvedConflicts` 判定口径分歧（`:539`、`:564`）；`notesAsPack` / `mergePacks` 把「我的讲义」并进内置包（`:620`、`:666`）；`validatePack` 查结构错误（`:687`）；`parseMaterialsState` 对坏存档一律回到空状态（`:786`）。
-
-**两个内置数据包。** `src/data/materials/data-structures.ts`（数据结构，第 3 章栈与队列、第 4 章串，覆盖 c09–c14 中的 5 个知识点）与 `src/data/materials/network.ts`（计算机网络，第 5 章运输层，覆盖 n23–n28）。注册表在 `src/data/materials/index.ts:20` 的 `getMaterialPack`：没有内置资料的学科或自定义方向返回空包，诊断与路径照常可用。
-
-**存档在本浏览器，但摘录会随请求外发。** 来源选择、冲突裁定与讲义正文都写 localStorage（`MATERIALS_STORAGE_KEY = "alp.materials.v1"`，`src/lib/materials.ts:23`；读写与订阅在 `src/lib/materialStore.ts:72`、`:82`、`:113`），存档不上传本项目数据库。但出题与导师讲解时，命中的教材 / 讲义段落会随提示词**发给你配置的模型供应商**：server 模式经本项目 `/api/llm/chat` 转发，local 模式由浏览器直连——这是让模型按你的口径作答的前提，不配置模型时不外发。基于摘录生成的题目解析与「依据：」标注会随方向保存；方向设为公开后任何访问者都能看到解析与出处，讲义正文原文不入库。退出登录、或在本浏览器换另一个账号登录，都会删掉上一位用户的资料存档（`src/lib/useAuth.ts:73-116`、`:239`）。
-
-**冲突由用户选定。** `detectConflicts` 只在同一 `kcId + topic` 下出现两种以上**不同 statement** 时算分歧——同一句话被两本书都写了是共识，不是冲突。未选定时，注入的上下文会写「【口径分歧｜尚未选定】…请同时列出两种说法，不要替用户选择」（`src/lib/materials.ts:396`）；设置页逐条列出说法，用户选定后写入 `resolutions`，并在注入文本里追加一条「【口径裁定｜以此为准】…不要再列出其他来源的不同说法」（`src/lib/materials.ts` 的 `resolvedConflicts` / `resolutionBlock`）——只把提示删掉、仍让模型两说并陈，等于让用户以为自己选过了。`unresolvedConflicts` 会把「指向已删除说法」的旧裁定也算作未决，避免界面显示已选定而正文里没有对应说法。
-
-**「我的讲义」粘贴框只收纯文本；文件型资料走方向知识库。** 粘贴框没有页码字段，用户写的页码只作为正文末尾的标注保存；它不解析 PDF / PPT（`src/components/material-source-panel.tsx`）。`validatePack` 把空章节、空正文、页码不成对当成结构错误，宁可拒绝一个包，也不让引用抬头带错定位。上传文件（Markdown / TXT / 带文本层的 PDF）是另一条路径：在方向页导入后按方向存进本机 IndexedDB（登录后同步账号的 `kb_docs` / `kb_chunks`），绑定知识点后由 `uploadsToPack` 合并进同一个 `MaterialPack`（`src/lib/knowledge.ts:422`）——章节固定为「上传资料」，引用抬头形如 `[讲义·《文件名》·上传资料·第X页]`（md/txt 没有页码就不编页码）。未绑定知识点的上传文档只服务导师检索，不进出题与 L6 核对。
-
-**没覆盖的知识点回退模型知识。** `buildMaterialContext` 返回裁剪后的 `coveredKcIds` / `missingKcIds`；诊断生成只在真的摘到片段时把上下文交给 `ensureItems`（`app/diagnose/page.tsx:456-465`），没有片段时提示词只带知识点名、说明与章节，模型按自身知识出题；题卡的「依据：」也只在有摘录时出现。导师侧同样注入这份上下文（`app/tutor/page.tsx:359`），未覆盖的点退回 BM25 + 模型知识。
-
-**内置学科的题不走生成。** 9 个内置学科的题目来自静态题库，教材 / 讲义依据只体现在**导师讲解**与**自定义方向的生成题**上；内置题的题卡标注是「第X章 · 内置题库（无页级出处）」，不会伪装成有书目出处。方向页的「生成全部题目」与诊断页的懒生成走同一个 `materialForConcept`（`src/lib/directionItems.ts:171`），都会合并内置包、我的讲义与上传资料，并透传 L6 开关。
-
-**同一题干只落一行。** 同一 KC 下题干重复会被 `checkItem` 判为 L2 失败（`src/lib/itemgen.ts:230-233`），服务端用该 KC 已有题目构造 `seenStems`（`app/api/directions/items/route.ts:160-162`），所以换一套教材口径重新生成同一道题不会落第二行；已落库那行保留首次写入的「依据：」标注，同一道题也就不会被计两次证据。服务端只接受三类客户端 checks：「双解校验」「依据核对…」前缀与「依据：…」（`app/api/directions/items/route.ts:280-284`），其余一律丢弃。
-
-### 一条硬边界
-
-`src/lib/plan.ts` 只 import `./graph` 与 `./mastery`，没有 `fetch`、没有 provider 引用、没有 `Date.now()` / `Math.random()`（`src/lib/plan.ts:11-18`）。这条边界由三样东西共同保证，缺一条都会退化成口头承诺：
-
-1. **类型**：`PlanInput` 里没有模型字段，模型只能通过 `mastery` / `graph` 间接影响输入；
-2. **canonical 字段清单**：`canonicalPlanJson` 只序列化 steps 的 `kcId / kind / estMinutes / source` 与两个版本号（`src/lib/plan.ts:234`），新增字段不会自动进入 `pathHash`；
-3. **模型版本无关用例**：两个不同 `modelVersion` 必须得到同一 `pathHash`；再把 `fetch` / `Math.random` / `Date.now` 全换成「一调用就抛」，输出仍逐位一致（`src/lib/plan.test.ts:137-168`）。golden 的两个字面量锁在同一文件的 `:26-27`，换模型不会改变它们。
-
-这条边界的**准确措辞**是：给定同一张图谱与同一份掌握度快照，排序结果与模型无关。自定义方向的图谱可能由模型生成（`src/lib/useDirectionDraft.ts:114` 的 `callChat`），模型因此影响了「排序的输入」，但它不参与「输入到输出」的计算。README 里凡写「大模型不参与排序」的地方，都应按这句理解。记忆卡、预测校准与知识库同样不进入 `planPath`：`memory.ts` 只改 `SubjectProgress.memories`，`calibration.ts` 只读 `attempts`，`knowledge.ts` 只产出资料包。**本轮没有修改 `plan.ts` / `mastery.ts` / `graph.ts`**，`ALGO_VERSION`、图谱版本（`graph.version`）与 golden 双指纹保持不变。
-
-### 方向图谱的八条硬门禁
-
-`validateDraft` 不合格就拒绝，不入库（`src/lib/direction.ts:80-151`）：
-
-1. 标题非空且 ≤ 60 字，描述非空；
-2. 知识点数量 5–20；
-3. id 必须小写字母开头、只含小写字母数字下划线、≤ 16 字符；
-4. id 不重复；
-5. 知识点名称不重复（忽略空白差异）——两个同名的点会让诊断页出现两个一模一样的选项；
-6. 边的两端必须存在、不能自环；
-7. 不能成环、不能有重复边（复用 `validateGraph`，`src/lib/graph.ts:70`）；
-8. 至少有一条先修边——0 条边的图没有先修约束，规划会退化成按 id 排序。
-
-**不检查「语义相关性」。** 门禁只保证图在结构上可规划，不保证知识点真的属于这个主题。生成质量靠人工预览确认（`app/directions/page.tsx` 的预览区）与后续题目校验兜底。
-
-为什么成环必须拦：`topologicalOrder` 用 Kahn 算法，遇到环时它不会报错，而是**静默返回偏序**——环上的点直接不出现（`src/lib/graph.ts:172`）。`computeDepths` 也只会把环当成深度 0（`:128`）。所以校验放在入库前，而不是指望下游算法兜底。
-
-### 方向题目的 L1–L6 校验链
-
-L1 结构（zod，4 选项）→ L2 卫生（选项互异、无「以上都对」、题干 8–200 字、解析含正确选项前 6 字、同 KC 去重）→ L3 答案（`answerText` 必须逐字等于恰好一个选项）→ L4 双解（两次独立批解，第二次反转选项顺序，必须选同一**文本**）→ L5 难度（三档映射 2/3/4，只给提示）→ L6 依据核对（整批一次，有教材 / 上传原文时才跑）。L1–L5 的纯函数在 `src/lib/itemgen.ts`；L4 与 L6 需要发请求，留在调用方（`src/lib/directionItems.ts` 与 `src/lib/verifyClient.ts`）。服务端落库时会用同一个 `checkItem` 重跑 L2/L3，不信任前端结论（`app/api/directions/items/route.ts:255`），但**不重跑 L4/L6**。
-
-**各层的判定与它挡不住什么：**
-
-| 层 | 失败时 | 挡不住 |
-| --- | --- | --- |
-| L1 结构 | 整批重试 1 次，仍失败则该 KC 无题 | — |
-| L2 卫生 | `rejected`，不落库、不展示 | 语义错误（选项互异但都在胡说） |
-| L3 答案 | `rejected`，不落库、不展示 | — |
-| L4 双解 | 降级 `practice`：可做、记录作答、**不计证据**（`weightScale=0`） | **模型两次一致地错**——两次都选同一个错误选项时 L4 通过 |
-| L5 难度 | 不拒绝；提示写进 `checks`（前缀「提示：」）随题落库 | 难度标签本身是否正确 |
-| L6 依据核对 | 明确未通过 → 降 `practice`；网络 / 解析失败 → 保留原状态，只记「依据核对：未完成」 | 原文本身错误、模型稳定地答错、题目语义是否清晰 |
-
-所以准确的说法是：L1–L6 能挡住「格式坏、选项脏、答案对不上、模型自己不一致、引用对不上原文」，
-**挡不住「模型稳定地错」与「原文本身错」**。前者只能靠人工审题（见 §11 第 2 条）；后者取决于教材 / 讲义本身。
-这也是为什么 L4 失败只降级为 practice 而不是丢弃——题目仍可能对，只是证据不可信。
-
-### 降级矩阵
-
-| | 有可用模型（server 或 local） | 无 key / 服务端没配置 / 失败时 |
-| --- | --- | --- |
-| 导师 | 流式回答 + 检索 + 引用；思考与联网可选；引用核对可开；server 模式经 `/api/llm/chat`，local 模式浏览器直连 | 检索片段 + 教材 / 上传 / 网络摘录 + 掌握度 + 解析拼装，标「知识库检索」；生成中断只保留已输出部分，不伪装成完整回答 |
-| 方向图谱 | 模型生成 → 八条硬门禁；草稿标题可改 | 关键词规则从现有学科挑选 → 同样过门禁 |
-| 方向题目 | 每 KC 生成 4 题 → L1–L6（L6 有原文时）→ 落库 | 该 KC 无题并跳过；卡片给「去配置模型 / 只规划路径 / 跳过这个知识点」，生成失败时另有「手动添加题目 / 换模型重试」 |
-| **路径** | **不降级** | **不降级**：只依赖图谱与掌握度 |
-| 记忆 / 校准 / 知识库 | 不依赖模型 | 不依赖模型：记忆与校准读进度（记忆卡单独表 / 本地），知识库未登录写 IndexedDB、登录后本地 + 账号同步 |
-| 联网 | DeepSeek / Tavily（server 代理）或 Tavily（local 直连） | 维基百科（零密钥）；未登录 / 未配置时带 notice 回退，不阻塞回答 |
-| 朗读 | 在线语音（server 代理不受浏览器 CORS 限制；local 直连需端点允许 CORS） | 浏览器内置语音；在线失败自动回退 |
-| 上传资料检索 | BM25 + 向量 + RRF（有 embedding 时） | 只走 BM25，界面写「本次未使用语义检索（未配置 embedding 模型）」；两路皆空则不注入依据 |
-
----
-
-## 5. 记忆、校准与知识库
-
-新增的三层各回答一个问题，**都不引入第二个掌握度**：
-
-| 层 | 回答什么问题 | 数据 | 存储 | 是否更新 α/β |
-| --- | --- | --- | --- | --- |
-| **Beta 掌握度** | 「这个 KC 的新题会不会做」 | `MasteryState { alpha, beta, evidenceN }` | progress JSON → Postgres / localStorage | **是，唯一写入者** |
-| **记忆库** | 「我错过哪道题、和哪个点混了、什么时候再看一眼」 | `MemoryItem[]` | 服务端 `memories` 表（登录后）/ `SubjectProgress.memories`（本机展示）；落库前从 progress 剥离 | **否** |
-| **知识库** | 「这个方向有哪些可引用的原文」 | 上传文档 + 切块（+ 可选向量） | 本机 IndexedDB `alp-kb-v1` + 登录后 `kb_docs` / `kb_chunks` 同步副本，按 `directionId` 隔离 | **否** |
-
-三条硬规则：
-
-1. **只有 `recordAttempt` 且 `counted === true` 才写 α/β**（`src/lib/learner.ts:137-152`）。记忆卡的创建、复习自评、易混标记都不调用 `recordAttempt`。
-2. **同一题重复作答不计证据**（`alreadyCounted`）。重复答对可以把记忆卡标记为 resolved，但 α/β 不变。
-3. **不给 α/β 乘时间衰减、不拟合 FSRS 的 21 个参数、不显示第二个掌握度百分比。** 掌握度条仍只显示 Beta 后验的 `70% ±19`。
-
-### 记忆卡：错题与易混点
-
-- 形状：`MemoryItem { id, kind: "error" | "confusion", kcId, withKcId?, questionId?, prompt, chosen?, correction, note?, createdAt, lastSeenAt, status, resolvedAt?, streak, reviewCount }`（`src/lib/memory.ts:13-40`）。题干截到 200 字、正确答案 + 解析截到 600 字。
-- 写入时机：答错 → `upsertErrorMemory`，按 `questionId` 幂等；同一题再次答错只更新原卡，`streak` 归零、状态回到 `open`。同一题重复答对 → `resolveMemory`。用户点「记入易混」→ `addConfusionMemory`，同一对知识点幂等。
-- 到期阶梯：`dueAt = lastSeenAt + [1, 3, 7, 21][min(streak, 3)] 天`，resolved 无到期（`src/lib/memory.ts:273`）。复习自评「记住了」→ `streak+1`、刷新 `lastSeenAt`，连续 4 次标记 resolved；「没记住」→ `streak=0`、1 天后再到期。**自评不调用 `recordAttempt`，不动 α/β。**
-- 容量：每学科最多 **200 张**。写入前先删「已 resolved 且超过 90 天」的，仍满则删最早的 resolved；如果全是 open，**拒绝新增并返回 warning**，页面会把 warning 显示出来，不静默丢弃。
-- 存储：本机展示仍走 `SubjectProgress.memories`（localStorage）；登录后**落库前用 `stripMemories` 从 progress 摘掉**，单独写 `memories` 表（`src/lib/memorySync.ts:31`、`src/lib/memoryServer.ts:96`），读回再用 `withMemories` 装回。LWW 版本取 `max(lastSeenAt, createdAt)`；`PUT /api/memories` 只 upsert、**永不删除**不在列表里的卡，删除必须显式 `DELETE`。`loadLearner` 与服务端拉回都过 `sanitizeProgress` / `parseMemories`，坏形状与超量记录不会原样进 UI。
-- 界面：诊断页顶部显示「记忆卡 N 张未解决 · 其中 M 张已到期」，展开 `MemoryReview`；卡片正面是题干 +「你选了…」，显示答案后给正确答案 + 解析 +「记住了 / 没记住」。旁边固定写「复习自评不计入掌握度」。
-
-### 预测校准：预测到底准不准
-
-- 作答时落盘：在 `recordAttempt` 之前算 `predictCorrect(masteryMean(beforeState), difficulty)`，写入 `AttemptRecord.predicted`（同时落 `source` / `weightScale` / `selectedIndex`）。旧存档没有 `predicted`，单独计入 `legacy`，不参与统计；不在 `(0,1)` 的坏值计入 `excluded`。
-- 算法（`src/lib/calibration.ts:128` 的 `calibrationReport`）：有效样本 `n`、命中 `hits`、`meanQ`、`hitRate`、Wilson 95% 区间、半宽 `halfWidth`、`O/E = hitRate / meanQ`、`Brier = mean((q − y)²)`、预测概率标准差 `qSd`。5 个等宽分箱只放在「查看计算口径」里，箱内 `n < 20` 标「样本少，仅供参考」，**不作为结论**。
-- 档位按产品可达性定（`src/lib/calibration.ts:70`）：`n=0` none；`1–29` insufficient；`30–59` preliminary；`60–99` weak；`≥100` moderate。`n < 30` 一律 `unknown`，界面只说「样本不足」，**不出现「可信 / 不可信」**。
-- 判定：`CI.low > meanQ` → 系统性低估；`CI.high < meanQ` → 系统性高估；否则「在现有样本下未发现系统性偏差」。
-- **不承诺 ±5pp**：单目标最多约 **120 题**（内置学科 40 KC × 3）或 **80 题**（自定义方向 20 KC × 4），`n ≥ 100` 只在内置学科可达。校准卡常驻这句说明（`src/components/calibration-card.tsx`）。
-- **不实现 ECE / BSS / byFlow**：ECE 至少要几百题才能与固定阈值比较；诊断流按 `|q − 0.65|` 选题会把 `q` 压得很窄，BSS 天然接近 0；本轮也没有练习 / 复习作答流可分流。按知识点画可靠性图同样不做——每点只有 3–4 题，箱内命中率不可估。
-- 单题反馈：作答后题卡显示「这题系统预测答对概率 65%，你答对了 / 答错了」；不显示预测区间，避免把掌握度 `sd` 当成预测误差。
-
-### 方向知识库与文件上传
-
-- **每个方向一个库，所有写入点走同一个解析器。** 存储键是 `directionId`；未登录时 `getKbStorageForUser(null)` 返回本机 IndexedDB `alp-kb-v1`（`docs` 与 `chunks` 两个 store，按 `directionId` 建索引）；登录后返回「本地 + 远端」复合存储：本地先写，再 `PUT /api/kb` 到账号的 `kb_docs` / `kb_chunks`。5 个读写点（上传、删除、改绑定、方向页读库、导师/诊断 hook）全部经 `getKbStorageForUser`（`src/lib/kbRemote.ts:512`），没有第二条旁路。`useKnowledgeBase(directionId, userId)` 也在这个模块里（`src/lib/kbStore.ts:530`），返回 `{ docs, chunks, loading, error, reload }`；页面把 `docs` / `chunks` 交给纯函数 `uploadsToPack`，hook 本身不做切块或检索。
-- **只存抽取后的文本与切块，不保存原始文件。** 这样 100MB 的原始 PDF 不会占库，也避免版权原文件落盘。未登录时只在本机，换浏览器要重新上传；登录后文档与片段同步到账号（向量按 `chunk_id` 游标分页取，默认列表不带向量），换设备登录同一账号能拿回。**不随方向公开或复制**：方向市场里的副本默认空库，其他用户读不到你的知识库；删除方向也不会级联清理本地与远端留下的行。
-- **格式**：Markdown（`.md` / `.markdown`）、纯文本（`.txt`）、带文本层的 PDF。**PPT / DOCX 不解析；扫描件不做 OCR。** PDF 用 `pdfjs-dist@6.4.299` 在浏览器里动态加载、逐页 `getTextContent()`；整份 0 字符时直接拒绝并返回「这份 PDF 没有文本层（可能是扫描件）。本版本不做 OCR，请上传可复制文字的 PDF 或 Markdown/TXT。」（`src/lib/pdf.ts:13`）。
-- **上限**（`src/lib/knowledge.ts:17-38`）：单文件 20MB、单份 PDF 300 页、单文件正文 20 万字；单个方向累计 800 段 / 40 万字。装不下就**整体拒绝**，并报「本方向剩余 300 段，这份文件需要 620 段」，不导入半份。
-- **切块**：中文按 500 字 + 50 字重叠；切点优先句号 / 问号 / 感叹号 / 换行，回溯不超过窗口的 50%。`<80` 字的碎块先并入前一块（合并后仍 ≤500），否则尝试并入后一块，都不行则保留为边界尾块。不变量是「所有常规块 ≤500，只有边界尾块可能 <80」。
-- **编码**：`TextDecoder("utf-8", { fatal: true })` → 失败试 `gb18030` → 再失败试 `utf-16le`；UTF-8 BOM 自动剥离。界面会显示「按 GB18030 读取」，避免用户以为乱码是文件坏了。编码探测只实现一份（`src/lib/knowledge.ts:347`），`textFile.ts` 只做 File → Uint8Array。
-- **写入**：本地单事务提交 `docs + chunks`，失败整体回滚，界面报「已导入 0/M 段，未写入任何内容」；导入前用 `navigator.storage.estimate()` 做预算，`usage + 估算字节 > quota × 0.8` 先拒绝。文档 id 已存在时按重复导入拒绝，不覆盖。登录后远端是**文档级 LWW + 前置 CAS**：请求带 `baseUpdatedAt`，与库中版本不一致返回 409 且不写任何行（`src/lib/kbServer.ts:461`）；片段没有独立版本号，随文档整体替换。远端非 409 失败**不回滚本地**，只记 `syncWarning`——界面必须显示「已存本机，尚未同步到账号」，否则用户会以为换设备能拿到。
-- **绑定知识点**：`UploadDoc.kcIds` 可空。空 = 只在导师问答里检索；绑定后 `uploadsToPack` 只收这些文档，出题与 L6 核对会引用对应段落，章节固定「上传资料」，引用抬头形如 `[讲义·《文件名》·上传资料·第X页]`（md/txt 不编页码）。
-- **已知边界**：服务端按 `user_id` 隔离，未登录访问 `/api/kb` 一律 401；换账号时 `planAccountTransition` 会清本机 IndexedDB（`src/lib/accountTransition.ts:53`），登出也清空。删除方向后本地与账号里的文档不会自动清理（按旧 `directionId` 成为孤儿，UUID 不复用所以不会串到新方向）。CAS 是「先查后写」，不是事务：两个并发 PUT 使用同一个 `baseUpdatedAt` 时可能都通过，后写者覆盖（见 §11）。
-
----
-
-## 6. 核心算法
-
-### 掌握度：难度加权 Beta 后验
-
-```
-先验  α₀ = s·p₀，β₀ = s·(1−p₀)，s = 2
-      p₀ = max(0.10, 0.35 − 0.05·depth)
-更新  答对 α += w；答错 β += w
-      w = (0.5 + 0.25·d) × weightScale，d ∈ {1,2,3,4,5}
-输出  mean = α/(α+β)
-      sd   = √(αβ / ((α+β)²(α+β+1)))
-```
-
-代码：`src/lib/mastery.ts:43`（先验）、`:35`（权重）、`:78`（更新）、`:96`（均值）、`:107`（sd）。生成题的 `weightScale = 0.8`，仅练习题为 0（`src/lib/itemgen.ts:58`、`src/lib/mastery.ts:85`）。
-
-**为什么 3 题够用（实测，不是推导）。** 对全部 360 个知识点各做「3 题全对」后统计：`sd` 最大 **0.196**、中位 **0.184**、最小 0.161，全部 ≤ 0.20 阈值。
-
-这个结论**依赖先验与难度组合**，不能简化成「按众数难度 d=2 算」。实际难度直方图是 `{1: 227, 2: 348, 3: 349, 4: 156}`，全局众数是 d=3，而计算机网络学科的众数是 d=1（`src/data/subjects/network.ts` 共 40 道 d=1）。下面这张表只在 `p₀ = 0.35`（根节点）时成立，用来说明趋势：
-
-| 同点全对题数 | 0 | 1 | 2 | 3 |
-| --- | --- | --- | --- | --- |
-| `sd`（d=1） | 0.275 | 0.258 | 0.228 | 0.201 |
-| `sd`（d=2） | 0.275 | 0.248 | 0.209 | 0.179 |
-| `sd`（d=3） | 0.275 | 0.238 | 0.193 | 0.161 |
-| `sd`（d=4） | 0.275 | 0.228 | 0.179 | 0.146 |
-
-深度越大 `p₀` 越低，同样的 3 题全对会留下更大的不确定度——`data-structures/c18`（depth 6，`p₀=0.10`，三道 d=1/2/3）的 3 题全对 `sd` 是 0.196，接近阈值。
-
-**证据门槛按来源区分**（`src/lib/mastery.ts:114-145`）：
-
-| 题源 | 折扣 | 每 KC 门槛 | 依据 |
-| --- | --- | --- | --- |
-| 内置题库 | 1.0 | 3 题 | 实测 360 个 KC 三题全对后 sd 最大 0.196 |
-| 模型生成（`source=generated`） | 0.8 | 4 题 | depth=13、d=2 时 3 题 sd=0.2116（不达标），4 题 0.1911 |
-| 手动录入（`source=manual`） | 1.0 | 3 题 | 与内置题同等，但界面标注「未做机器校验」 |
-| 借用（`source=borrowed`） | 1.0 | 3 题 | 按 KC 名称从内置题库借同名知识点的题（`src/lib/borrow.ts`）；服务端会用同一个函数复算，客户端不能凭空声明 |
-| 仅练习（L4 未过） | 0 | 不计 | 记录作答但不进 α/β |
-
-折扣按落库的 `source` 字段判断（`app/diagnose/page.tsx` 的 `submit`），**不按题目 id 前缀猜**。
-方向题的 id 都是 `di-` 开头（`src/lib/itemgen.ts`），用前缀判断会把 manual 误当 generated 打 0.8 折——
-这是上一版的真实 bug。
-
-**`sd` 与 `P(已掌握)` 是两个量。** `sd` 是后验精度，`P(p>0.6)` 是决策概率。实测 360 个知识点「3 题全对」后 `P(p>0.6)` 最小 0.604、中位 0.701、最大 0.848，没有一个到 0.90；要达标得把题库扩到 4–5 题/KC，会破坏数据集不变量。所以 `P` 只在界面上作为一行小字展示（`src/components/ui.tsx`），不做停测阈值。
-
-**`sd` 与证据条数一起构成「证据充分」判据**（`src/lib/mastery.ts:138-145`）：
-
-```
-hasEnoughEvidence(state, target) = evidenceN >= target && sd <= 0.20
-```
-
-两个条件都要满足。只数条数会漏掉「条数够但对错分裂」——同一点答对 2 题、答错 1 题时
-sd 比只答对 1 题还大。`CONFIDENCE_SD_THRESHOLD` 是这条判据的一半，不再是无引用的常量。
-
-需要分清两个不同的地方：
-
-| 用途 | 判据 | 位置 |
-| --- | --- | --- |
-| **停测**（还要不要继续出题） | 只看 `evidenceN < 门槛` | `app/diagnose/page.tsx` 的 `pickNext` / `kcNeedingItems` / `canPickMore` |
-| **标注「证据充分」**（结果卡） | `evidenceN >= 门槛 && sd <= 0.20` | `hasEnoughEvidence` |
-
-结果卡把「不足」拆成两种原因显示，不再统一写「未达 N 题门槛」：
-
-| 原因 | 判定 | 文案 |
-| --- | --- | --- |
-| 条数不足 | `evidenceN < 门槛` | 「已测 n 题，未达 N 题门槛」 |
-| 精度不足 | `evidenceN >= 门槛` 但 `sd > 0.20` | 「已测 n 题，题数够了但答案对错分裂，不确定度仍偏大（±X）」 |
-
-内置题按典型序列 d=1/2/3 做「2 对 1 错」时 `n=3, sd=0.2041`，会落到第二种。
-题库每 KC 恰好 3 题、停测也在 3 题时停止，所以这类 KC 的提示**不会被消除**——
-它描述的是「这个掌握度不够可信」，不是「还缺题」。两者必须分开说。
-
-停测不看 sd 是有意的：sd 在「对错各半」时最大，若拿它当停测条件，这类知识点会永远测不完。
-界面上的「已测 n 题，未达 N 题门槛，掌握度仅供参考」也是按这个口径写的——**不是**「未计入掌握度」，
-这些作答已经更新了 α/β，只是精度还不够。
-
-### 预测正确率与选题
-
-```
-predictCorrect(p, d) = 1 / (1 + exp(−(logit(p) − 0.6·(d − 3))))
-```
-
-`p=0.35` 时 d=1..5 的预测值为 `0.641 / 0.495 / 0.350 / 0.228 / 0.140`（`src/lib/mastery.ts:157`）。不叠加 0.25 的猜测率下限：加上之后 d=3 会变成 0.51，与「难度 3 对应掌握度本身」的直觉冲突，也让 0.65 的选题目标失去意义。这是产品假设，不是文献结论。
-
-### 路径：三步纯函数
-
-```
-1. 候选集  目标先修闭包 ∪ 目标点，去掉 mean ≥ 0.6 的
-2. 软排序  depth ↑ → |0.6 − mean| ↑ → sd ↓ → 拓扑序/id
-3. 装包    15 分钟/新学、8 分钟/复习，装不下进 deferred；先修被推迟则后继进 blocked
-```
-
-不用 0-1 背包求最优：知识点之间有先修约束，不能只按价值密度挑；带先修约束的预算装包是 NP-hard，本期不做精确解。贪心 + 拓扑序的每一步都能说清「为什么排在这」，这比「最优但说不清」更符合产品目标。
-
-### 可复现性：两个指纹
-
-| 指纹 | 覆盖 | 用途 |
-| --- | --- | --- |
-| `inputHash` | budget + masteryTarget + targets + mastery(α, β, evidenceN) + kgVersion（`src/lib/plan.ts:264`） | 判断输入是否变过 |
-| `pathHash` | steps 的 `kcId / kind / estMinutes / source` + algoVersion + kgVersion（`src/lib/plan.ts:234`） | 判断输出是否变过 |
-
-**不覆盖** `reason`、`deferred`、`blocked`、`totalMinutes`——`totalMinutes` 由 steps 决定，前三个是解释性字段。改 `estMinutes` 会让 `pathHash` 变，这条有专门用例（`src/lib/plan.test.ts:154`）。
-
-golden case 的两个字面量锁在 `src/lib/plan.test.ts:26-27`，可用 `npm run path:hash` 重新打印核对：
-
-```
-inputHash  f9f9999230b4c06be74c235e4f7bedc39dcb7c4b947dea80f4dbb89539e61ecd
-pathHash   ad7ccec537db36ee7b0070aca3f9f99006e92521e16ce2608def4df76f2b9e66
-```
-
-承诺的措辞是「同一个 attempt 快照 → 同一条路径」，不是「同一输入 → 同一路径」：生成题会改变作答，作答会改变掌握度，掌握度会改变路径。
-
-**路径页显示两个指纹，它们指向不同的东西：**
-
-| 面板项 | 是谁的指纹 | 什么时候会变 |
-| --- | --- | --- |
-| 算法路径指纹 | `planPath` 输出（纯算法结果） | 输入或算法版本变化 |
-| 当前显示顺序指纹 | 页面上实际列出的步骤顺序（含手动调整） | 手动上移/下移/删除，或预算变化 |
-
-手动改写后两者不同，这是**预期**而不是 bug：算法结果没变，你看到的是改过的顺序。
-面板同时显示两者，就是为了让这个差异可见，而不是让「路径指纹」指向一个用户看不到的路径。
-
-手动改写只存 kcId 顺序（`app/path/page.tsx` 的 `manualOrder`），不存整份 steps。
-所以改预算时会用新 plan 的步骤集合重放用户调整过的相对次序——
-「手动 16 步 → 预算改 30 分钟」会立刻收缩到 2 步，而不是停在 16 步。
-手动步骤的 `reason` 仍是算法排序时的理由，页面会补一句「理由说明的是算法排序依据；当前位置是你手动调整的」，
-不假装理由跟着位置重算。
-
-### 复杂度实测
-
-`npm run bench`（Node 24.15.0 / Windows 10.0.26300 x64，本机多次运行；样本间差异主要来自机器负载与热状态，所以给区间）：
-
-| 项目 | 40 节点 | 500 节点 |
-| --- | --- | --- |
-| 拓扑排序 | 0.0017 ms/次 | 0.0055 ms/次 |
-| ZPD 贪心路径（40 步） | 0.0028 ms/次 | 0.0094 ms/次 |
-| 先修闭包 | 0.0035 ms/次 | — |
-| Beta 更新（单次作答） | < 0.0001 ms/次 | — |
-
-以上是最近一次 `npm run bench` 的原始输出（多数项目 2000 次循环取均值，500 节点路径为 500 次）。
-不同机器与负载下会有 ±30% 波动，所以**不写成硬阈值**；要复核就自己跑一遍。
-
-波动来自机器负载（本机最慢与最快样本差 3–4 倍），不是算法不稳定。即便取最慢样本，40 点图的规划也在 0.02 ms 量级，所以路径页改预算可以同步重算，不需要 loading 状态。
-
----
-
-## 7. 工程与验证
-
-### 一个被测试抓到的真实 bug
-
-`pathHash` 依赖一个手写的同步 SHA-256——Web Crypto 是异步的，而 `planPath` 必须是同步纯函数。初版实现在消息填充边界（55、119 字节）算错了填充块数，哈希值错误。`src/lib/hash.test.ts` 用 Node 内置 `crypto` 逐条交叉验证时发现了它（修复记录见提交 `12fe2c6` 的「过程中修复的真实缺陷」第 1 条）：现在 14 个用例覆盖空串、55/56/63/64/119/120/128/1000 字节与中英混合，全部一致（`src/lib/hash.test.ts:19-40`）。
-
-如果不测，`pathHash` 的整个「可复现」承诺就是假的。
-
-### 验证命令与实测结果
-
-| 命令 | 验证什么 | 本轮实测（2026-10-29） |
-| --- | --- | --- |
-| `npm run typecheck` | TypeScript strict | exit 0（无输出） |
-| `npm run test` | 单元测试（64 个文件：60 个 `src/lib` + 4 个 `src/components`） | **1570 passed / 64 files**，exit 0 |
-| `npm run kg:validate` | 9 学科逐科：无环、无悬空边、每 KC 恰好 3 题、难度均值在 1.8–2.9 | 0 error（9 学科 / 360 点 / 540 边 / 1080 题） |
-| `npm run check:secrets` | 仓库无真实密钥 | **exit 0**：扫 224 个文件，未发现疑似密钥（`config-route.test.ts` 的测试假值已改为非凭据形状的占位符，见 §11 第 19 条） |
-| `npm run path:hash` | 打印 golden case 双指纹 | 与 `src/lib/plan.test.ts:26-27` 字面量一致（`inputHash f9f99992…` / `pathHash ad7ccec5…`） |
-| `npm run lint` | ESLint 9 扁平配置（`eslint.config.mjs`） | 0 error / 23 warning（均为 `react-hooks/set-state-in-effect`） |
-| `npm run build` | Next 16 生产构建 | **exit 0**，24 个路由（9 页面 + 14 API + `_not-found`） |
-| `npm run eval:rag` | 50 条检索评测 | **exit 0**；完整输出见 §15，混合检索打印「未测」 |
-| `BASE_URL=http://127.0.0.1:4321 npx tsx scripts/auth-smoke.ts` | 注册/登录/进度隔离/配置 401/ KB / 记忆卡 LWW / 市场 | **34/34 通过**，exit 0 |
-| `BASE_URL=http://127.0.0.1:4321 npx tsx scripts/mcp-smoke.ts` | MCP 三种原语与错误码 | **16/16 通过**，exit 0 |
-| `npm run probe:external` | DeepSeek 搜索 / MiMo TTS / Embedding 真机探测 | 通过 0 / 失败 0 / **未验证 3**（缺凭据），exit 0；原始输出见 §15.6 |
-| `npm run bench` | 路径算法性能 | **本轮未跑**；`plan.ts` 未改，§6 数字沿用上一轮 |
-| `npm run verify` | typecheck + test + kg + secrets 串跑 | **exit 0**（四个子命令串跑通过） |
-
-`npm run verify` 本轮已整体串跑，exit 0（typecheck → test → kg:validate → check:secrets）。`npm run build` 与 `npm run eval:rag` 的退出码来自本轮实跑，不沿用旧 README 的自述。
-
-### 最终门禁原始输出（2026-10-29 本机）
-
-环境：Windows 10.0.26300 x64 / Git Bash / Node v24.15.0。以下为逐条命令的实际终端输出（长输出只截取判定行，未改数字）。
-
-```text
-$ npm run typecheck
-> tsc --noEmit
-EXIT=0
-```
-
-```text
-$ npm run test
- Test Files  64 passed (64)
-      Tests  1570 passed (1570)
-EXIT=0
-```
-
-```text
-$ npm run kg:validate
-合计 9 个学科 · 360 知识点 · 540 先修边 · 1080 题（每知识点 3 题）
-校验通过：0 error。
-EXIT=0
-```
-
-```text
-$ npm run check:secrets
-密钥扫描：检查 224 个文件
-────────────────────────────────────────────────────
-未发现疑似密钥。
-EXIT=0
-```
-
-```text
-$ npm run build
-▲ Next.js 16.4.2 (Turbopack)
-✓ Compiled successfully in 1165ms
-✓ Generating static pages using 26 workers (24/24) in 721ms
-Route (app)
-┌ ○ /
-├ ○ /_not-found
-├ ○ /about
-├ ƒ /api/auth
-├ ƒ /api/config
-├ ƒ /api/directions
-├ ƒ /api/directions/generate
-├ ƒ /api/directions/items
-├ ƒ /api/health
-├ ƒ /api/kb
-├ ƒ /api/llm/chat
-├ ƒ /api/llm/embeddings
-├ ƒ /api/mcp
-├ ƒ /api/memories
-├ ƒ /api/progress
-├ ƒ /api/search
-├ ƒ /api/tts
-├ ○ /diagnose
-├ ○ /directions
-├ ○ /login
-├ ○ /market
-├ ○ /path
-├ ○ /settings
-└ ○ /tutor
-EXIT=0
-```
-
-```text
-$ npm run eval:rag
-[BM25 基线]
-  recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
-  MRR@10                   1.000（30/30）
-  goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   1.000（10/10）
-  out-of-domain emptyRate        0.000（0/10）   falseContextRate 1.000（10/10）
-  unanswerableEmptyRate    0.000（0/20）   （answer-absent ∪ out-of-domain）
-混合检索：未测（未提供 --vectors，且未配置 ALP_EMBED_BASE_URL / ALP_EMBED_API_KEY / ALP_EMBED_MODEL）
-EXIT=0
-```
-
-```text
-$ npm run path:hash
-algoVersion  plan-v2
-kgVersion    kg-v1
-inputHash    f9f9999230b4c06be74c235e4f7bedc39dcb7c4b947dea80f4dbb89539e61ecd
-pathHash     ad7ccec537db36ee7b0070aca3f9f99006e92521e16ce2608def4df76f2b9e66
-steps        c01:15 c02:15 c15:15 c35:15 c03:15 c05:15 c16:15 c22:15
-totalMinutes 120
-EXIT=0
-```
-
-```text
-$ git diff -- src/lib/plan.ts
-（空输出）
-$ git diff -- package.json
-@@ -17,6 +17,9 @@
-     "bench": "node bench/bench-path.mjs",
-     "smoke": "tsx scripts/smoke.ts",
-     "smoke:mcp": "tsx scripts/mcp-smoke.ts",
-+    "smoke:auth": "tsx scripts/auth-smoke.ts",
-+    "probe:external": "tsx scripts/probe-external.ts",
-+    "eval:rag": "tsx scripts/eval-rag.ts",
-     "verify": "npm run typecheck && npm run test && npm run kg:validate && npm run check:secrets",
-     "path:hash": "tsx scripts/path-hash.ts"
-（只有 scripts 三行；dependencies / devDependencies 无变化）
-```
-
-```text
-$ DATABASE_URL= npx next start -p 4321 -H 127.0.0.1   # 3211/3218 在本机被 Windows 保留端口占用（EACCES）
-$ BASE_URL=http://127.0.0.1:4321 npx tsx scripts/auth-smoke.ts
-34/34 通过
-EXIT=0
-```
-
-> 端口说明：本机 `3211`、`3218` 监听时返回 `EACCES: permission denied`（被系统保留），换 `4321` 后正常。脚本只读 `BASE_URL`，端口不是功能差异。
-
-**生产构建本轮已跑（exit 0）**，但 PDF worker 的浏览器侧仍未验证：`src/lib/pdf.ts` 用 `new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)` 交给 Turbopack；构建通过只说明产物能生成，不说明运行时会加载 worker。`scripts/pdf-smoke.ts` 用 Playwright 在真实 Chromium 里验证「有文本层 PDF 能抽两页、纯图片 PDF 报无文本层、Network 里加载了 pdf.worker」，本轮**未跑**（需要先 `npx playwright install chromium` 并起 Next 服务）。
-
-**E2E 必须显式清空 `DATABASE_URL`**：仓库的 `.env.local` 里可能有真实 Neon 连接串，
-`next dev` 会自动读取它，于是 E2E 会往远端库写测试账号与方向。
-命令前缀加 `DATABASE_URL=` 后 `getDb()` 退化为进程内内存存储，测试数据随进程退出消失。
-
-三个脚本都要求先起服务（`DATABASE_URL= npx next start -p 4321` 或 `next dev`）。**E2E 的数字是在
-内存库上跑出来的**；Postgres 路径没有实跑（会写用户库），只按 neon 驱动的类型定义与
-`fullResults` 文档修正了 `run()` 的返回值口径，并用假 Db 的接口测试锁住调用方语义。
-本轮 `auth-smoke.ts` 34/34、`mcp-smoke.ts` 16/16 实跑；`smoke.ts` 未重跑（上一轮 53/53），
-新增的流式 / 思考、引用核对、联网、上传知识库、记忆、校准、朗读与账号同步仍未进入 `smoke.ts`。
-
-密钥扫描的反向自测是上一轮做的：临时写入一个 `sk-` 开头的假密钥，`npx tsx scripts/check-secrets.ts` 报「发现 1 处疑似密钥」并以退出码 1 结束；删除后恢复退出码 0。上一轮它确实被测试文件里模仿真实 key 的假值打红；本轮把这些值改成非凭据形状的占位符后，扫描恢复 exit 0。
-
-### 端到端测试
-
-需要先 `npm run build && npm start`：
-
-| 脚本 | 覆盖 | 最近一次实测 |
-| --- | --- | --- |
-| `DATABASE_URL= BASE_URL=http://localhost:3211 npx tsx scripts/smoke.ts` | 首页/主题/设置/诊断/路径/导师/方向/市场 UI 流程，含 7 条自定义方向回归 | 53/53（上一轮；本轮未重跑） |
-| `DATABASE_URL= BASE_URL=http://127.0.0.1:4321 npx tsx scripts/auth-smoke.ts` | 注册/登录/登出/进度隔离/配置 401/密钥写入拒绝/KB 往返/记忆卡 LWW/方向权限/市场复制 | **34/34（本轮实跑）** |
-| `DATABASE_URL= BASE_URL=http://127.0.0.1:4321 npx tsx scripts/mcp-smoke.ts` | MCP 三种原语与错误码 | **16/16（本轮实跑）** |
-
-> 用 `localhost` 而不是 `127.0.0.1`：Next 16 开发服务器默认拦截 `127.0.0.1` 的 HMR 请求，客户端组件不会 hydrate，页面看起来「点了没反应」。
-
-### 可控 Mock 供应商（生成链路集成检查）
-
-`scripts/mock-provider.ts` 是一个只监听 `127.0.0.1` 的 OpenAI 兼容端点，按 baseUrl 路径分档；`scripts/mock-gen-check.ts` 用真实 `ensureItems` 跑生成链路（L1–L4 + 落库），只把 `/api/directions/items` stub 成内存回显。两条命令都不需要数据库、Next 服务或真实 key：
-
-```bash
-# 单独启动 mock（127.0.0.1:3212），用于在设置页里手填供应商
-node node_modules/tsx/dist/cli.mjs scripts/mock-provider.ts
-
-# 一键跑集成检查（脚本自己起 mock，不需要先开服务）
-node node_modules/tsx/dist/cli.mjs scripts/mock-gen-check.ts
-```
-
-在设置页填 `http://127.0.0.1:3212/v1`、密钥任意非空、模型名 `mock-model`（mock 不校验 key 与模型名，只要求请求体是 OpenAI 兼容形状）。各档证明什么：
-
-| baseUrl | mock 行为 | 证明什么 |
-| --- | --- | --- |
-| `/v1` | 按题目当前选项顺序返回正确文本 | 正常链路：4 题全部 accepted，`checks` 同时带「双解校验」与「依据：」 |
-| `/shuffle/v1` | `answers` 数组整体倒序，但每条 `index` 仍是正确题号 | L4 必须按 `index` 落槽：按 index 对齐后 4 题全 accepted；同一响应若按数组顺序取，`compareSolverAnswers` 4 题全 false（脚本里的哨兵） |
-| `/badsolve/v1` | 反转批次里第 3、4 题故意答错 | 双解不一致只降级为 practice：2 accepted + 2 practice，并报「未达到 3 题门槛」 |
-| `/truncate/v1` | 返回 `finish_reason=length`、空 content | `callChat` 抛 `ChatError(kind=truncated)`；`ensureItems` 会吞掉异常，所以脚本直接对 `callChat` 断言 |
-| `/stream/v1` | SSE：先 `reasoning_content` 增量，再正文增量，最后 usage 与 `[DONE]` | 浏览器手测流式思考面板：思考先出现、正文开始后自动折叠 |
-| `/think400/v1` | 请求带 `thinking` / `reasoning_effort` 时返回 400，去掉后正常流式返回 | 验证 `callChatStream` 的「思考参数被拒 → 降级一次」与设置页的 unsupported 写回 |
-
-上一轮实跑（本轮未重跑）：`node node_modules/tsx/dist/cli.mjs scripts/mock-gen-check.ts` → **19 项 PASS**（exit 0）。除上表前四档外，脚本还覆盖**坏 JSON**（两次都不可解析时报「模型输出无法解析」，而不是静默 0 题）与**同批重复题干**（L2 去重拒题、本批凑不够 4 题）。
-
-> `mock-gen-check.ts` 显式传 `verification: false`：它只验证出题 + L4 + 落库，mock 没有实现核对档；开着 L6 会多打一次非批解请求并把「依据核对：未完成」写进 `checks`，打穿现有 19 项断言。L6 的通过 / 未通过 / 未完成 / 跳过由 `src/lib/directionItems.test.ts` 覆盖；`/stream` 与 `/think400` 两档只用于浏览器手测，不在 19 项里。
-
-**它不替代什么。** `mock-gen-check.ts` 把 `/api/directions/items` stub 掉，不经过 Next 路由、数据库与浏览器：服务端落库语义仍由 `src/lib/items-route.test.ts` 锁，完整 UI 流程仍靠 `scripts/smoke.ts` / `scripts/auth-smoke.ts`。mock 固定回答 4 道栈题，也不检查出题质量。
-
-### 可访问性
-
-`node research/tools/contrast-audit.mjs` 对 5 套配色 × 明暗两种模式逐对计算 WCAG 对比度：**210 对，未通过 0 对**（含参考项）。正文最低 15.50:1，次要文字最低 7.24:1。
-
-### 其他可验证的工程点
-
-- **PBKDF2-HMAC-SHA256 600,000 次**（`src/lib/auth.ts:20`），常量时间比较（`:100`），账号不存在时也跑一次哈希以免暴露时序（`:213`）。参数对齐 OWASP Password Storage Cheat Sheet 对 PBKDF2-HMAC-SHA256 的建议值。
-- **Postgres 10 表 + 内存双实现**（`src/lib/db.ts:763` 的 `getDb`、`:394` 的内存 INSERT 分支、`:781` 的 `SCHEMA`），同一套 SQL 接口，测试不需要外部服务。内存实现的删除 / 分页形状有精确分支，见 §14。
-- **BM25 中文 bigram + 单字降权 0.35**（`src/lib/rag.ts:33`、`:61`），不引分词库、不装向量数据库；标题加权默认关（`titleBoost = 1` 时整段分支不执行），评测用 ×2。
-- **混合检索纯函数**：RRF `k=60`、每路候选 20、注入 3 条、余弦阈值 0.25、相邻切块重叠 ≥20 码点去重（`src/lib/hybrid.ts:39-52`）；向量无效 / 维度不符一律拒绝而不是当 0 分（`src/lib/vector.ts:38`）。
-- **供应商预检**：地址为空/格式错/粘了 `/chat/completions`/HTTPS 页面填 HTTP 地址，都在发请求前分类拦下（`src/lib/provider.ts:447` 的 `checkBaseUrl`）；错误按 401/404/429/5xx/CORS/超时分类给修复建议（`src/lib/provider.ts:646` 的 `testConnection`）。
-- **服务端密钥与 SSRF**：AES-256-GCM（12 字节 IV、16 字节 tag、AAD=`user_secrets:${userId}:${kind}`），掩码固定四个圆点；出站地址三层判定（形状 → DNS 逐条 → 连接钉 IP，`src/lib/ssrf.ts`、`src/lib/ssrfGuard.ts:153`、`:262`）；搜索端点写死，不接受调用方传 URL。
-- **CSRF 与体积上限**：有副作用的请求走 `assertMutationOrigin` / `sameOriginFromRequest`；`/api/config` 32 KiB、`/api/llm/chat` 2 MiB、`/api/llm/embeddings` 1 MiB、`/api/kb` 8 MiB、`/api/memories` 1 MiB；`/api/search` 与 `/api/tts` 目前**没有**请求体上限（已知缺口，见 §11）。
-- **三个新增纯函数层**：`memory.ts` 的所有时间由调用方传入 `now`；`calibration.ts` 只做统计；`knowledge.ts` 不做 IO。三者的单测分别覆盖容量拒绝、Wilson 数值与切块不变量。
-- **IndexedDB 单事务**：`kbStore.ts` 先在事务外准备全部行，`putDocWithChunks` 用一个 readwrite 事务写入 docs + chunks；失败整体回滚，错误文案写「已导入 0/M 段，未写入任何内容」。
-- **SSE 解析与正文 / 思考分流**：`reasoning.ts` 的 `createSseDecoder` 支持跨 chunk 半行、`\r\n`、多行 `data:` 与 `[DONE]`；`reasoning` 永不拼进 `text`。服务端代理的 SSE 头带 `X-Accel-Buffering: no`，见 §9 的 nginx 配置。
-- **密钥与资料按模式分开存**：server 模式的三类供应商密钥进 `user_secrets` 密文列，任何响应只回掩码；local 模式仍是 `alp.provider.v1` / `alp.search.v1` / `alp.tts.v1`；教材 / 讲义 `alp.materials.v1`；上传知识库本机 IndexedDB + 登录后账号同步。
-
----
-
-## 8. 功能清单
-
-按用户旅程排列，每条写「你能看到什么」。
-
-| 功能 | 你能看到什么 | 界面证据 |
-| --- | --- | --- |
-| 诊断 | 按先修顺序出题，答完立刻显示该点掌握度从 x% 变到 y%，附解析；题卡同时显示「这题系统预测 65%，你答对了」 | [diagnose.png](screenshots/diagnose.png) |
-| 记忆复习 | 顶部「记忆卡 N 张未解决 · 其中 M 张已到期」；错题 / 易混卡可翻面看答案，自评「记住了 / 没记住」，旁边写「复习自评不计入掌握度」 | 诊断页 `MemoryReview`，无独立截图 |
-| 预测校准 | 一句话结论 + 档位 Pill（样本不足 / 初步 / 弱校准 / 较稳结论）；折叠「查看计算口径」显示 O/E、Brier、Wilson 区间与 5 个分箱；常驻「最多约 120/80 题，不承诺 ±5pp」 | 诊断页 `CalibrationCard`，无独立截图 |
-| 学习路径 | 每步带数值理由（截图里是「尚无作答记录，先修深度 0，先建立基线（当前掌握度 35% ±28）」）；改预算立即重算 | [path.png](screenshots/path.png) |
-| 按章节设目标 | 路径页多选教材章节，只收窄候选；跨章先修点自动带上，全选或清空都回到整科；「候选 N 点」与「预算排入 M 步」分开显示 | 路径页顶部，无独立截图（`src/components/chapter-goals.tsx`） |
-| 反事实 | 选一个对照预算，被推迟或因先修阻塞的步骤分别计数，阻塞点给出阻塞者 | 同上，第二张卡片 |
-| 知识口径与出处 | 设置页选教材 / 讲义优先级、逐条裁定口径分歧、粘贴「我的讲义」；题卡显示「依据：[教材·《…》·第3章·第45–46页]」 | 设置页「知识口径与出处」，无独立截图 |
-| 方向知识库 | 每个「我的方向」下显示「知识库 N 份 · M 段」；展开后可上传、改绑定、删除；登录后同步到账号，换设备能拿回；引用抬头是「[讲义·《文件名》·上传资料·第X页]」 | 方向页 `KnowledgeBasePanel` / `KnowledgeUpload`，无独立截图 |
-| 上传资料 | 支持 Markdown / TXT / 带文本层 PDF；显示解析进度、编码、页数 / 段数 / 字数；扫描件与超限文件明确拒绝；未登录仅写本机，登录后本地 + 账号副本 | 同上 |
-| 手动改写 | 每步右侧 ↑ ↓ ×，违规时顶部红条列出具体哪条先修被违反 | 同上 |
-| 路径指纹 | 输入指纹、路径指纹、算法版本、图谱版本、推迟/阻塞数量 | 同上，页尾 |
-| 课程导师 | 流式回答；正文上方可折叠「思考过程（可能不完整 / 不忠实）」；回答下方列引用的知识点 `[c09]`；无 key 或服务端没配置时标「知识库检索」 | [tutor.png](screenshots/tutor.png) |
-| 引用核对 | 每条 `[kcId]` 说法旁标「已核对 / 未找到依据 / 与原文冲突」，顶部汇总「5 条引用中 4 条有原文支持」；失败写「核对未完成；回答内容未改动」 | 同上 |
-| 联网补充 | 输入区开关「联网补充（外部网页，未核对）」；回答下方单独列 `[网络n]` 标题 / 域名 / URL，未引用时标「未采用」；未登录选 DeepSeek 时显示「已改用维基百科」 | 同上 |
-| 朗读 | 每条助手回答一个「朗读 / 停止」按钮；只朗读正文，超过 2000 字提示「只朗读前 2000 字」；server 模式支持 speech 与 mimo chat-audio 两种协议 | 同上 |
-| 出题轨迹 | 方向页「生成全部题目」与诊断页「当前 KC 生成」显示 L1–L6 流程面板：每层 ok / warn / fail / skip 与原因 | 方向页 `GenerateAllButton` 展开区，无独立截图 |
-| 自定义方向 | 一句话生成 5–20 个知识点与先修边；预览标题可直接改（≤60 字，可恢复建议名）；保存后 `/path?direction=<id>` 直接规划路径 | [directions.png](screenshots/directions.png)、[diagnose-direction.png](screenshots/diagnose-direction.png) |
-| 方向市场 | 浏览、搜索、选用（复制图谱到自己名下，默认私有；上传知识库不随副本复制） | [market.png](screenshots/market.png) |
-| 账号 | 邮箱注册即登录；登录后进度、记忆卡（`memories` 表）、上传知识库（`kb_docs`/`kb_chunks`）写服务端，换设备能继续；换账号清本机资料与密钥 | [login.png](screenshots/login.png) |
-| 调用模式 | 设置页切换「服务端 / 本机」：服务端模式密钥加密存账号、模型/搜索/语音由本项目代发；本机模式回到浏览器直连 BYOK；未登录强制本机 | 设置页顶部「调用模式」，无独立截图 |
-| 设置 | 8 个供应商预设、两种协议、连通性测试；思考强度三档 + 依据核对开关；TTS 引擎 / 音色 / 语速 / 两种协议；搜索供应商与 Tavily / DeepSeek key；账号配置只显示掩码；5 套配色 × 明暗（+ 跟随系统） | [浅色](screenshots/settings-light.png)、[深色](screenshots/settings-dark.png)、[校验提示](screenshots/settings-validation.png) |
-| MCP 端点 | `POST /api/mcp`：tools 5 / resources 18 / prompts 2 | 无界面，见 `app/api/mcp/route.ts:57` |
-| 主题 | 5 套配色 × 明暗，210 对对比度 0 失败 | [深色首页](screenshots/home-dark.png) |
-
----
-
-## 9. 快速开始与部署
-
-环境要求：Node.js ≥ 22.13（推荐 22 或 24）、npm 10+。**Node 20 不支持**：PDF 解析用的 `pdfjs-dist@6.4.299` 的 `engines` 要求 ≥22.13，强行在 Node 20 上装会报 engine 警告、构建也可能失败；若必须保留 Node 20，需要改用 `pdfjs-dist` 5.x 并重新验证 worker，不在本轮已验证范围。它的 `@napi-rs/canvas` 只是 optionalDependency（Node 侧才可能用到），浏览器 bundle 不会引入。Vercel 项目需把 Node 版本设为 22.x。
+要求 Node.js ≥ 22.13（`pdfjs-dist@6.4.299` 的 engines 限制，Node 20 不支持）。
 
 ```bash
 npm install
-npm run dev          # http://localhost:3000
-npm run build && npm start
+npm run dev            # http://localhost:3000
 ```
 
-**不配任何 API key 也能完整使用诊断、路径、章节目标、手动改写、记忆卡、预测校准与知识库检索。** 导师回答退化为知识库检索拼装（含教材 / 上传 / 网络摘录），自定义方向退化为从现有学科挑选知识点；知识口径的教材 / 讲义选择与冲突裁定、上传资料的切块 / BM25 / 混合检索、浏览器内置朗读也不依赖模型。联网搜索即使没有 Tavily key，也还能用零密钥的维基百科。
-
-**调用模式与密钥存放**（设置页顶部切换，键 `alp.callmode.v1`）。**默认是 `server`**（`DEFAULT_CALL_MODE`，`src/lib/serverConfig.ts:23`）；未登录时界面强制按 local 运行（`app/settings/page.tsx:210` 的 `effectiveMode`），避免请求一个必然 401 的代理：
-
-| | server（默认） | local |
-| --- | --- | --- |
-| 谁发请求 | 本项目 `POST /api/llm/chat`、`/api/search`、`/api/tts`、`/api/llm/embeddings` | 浏览器直连用户填的地址 |
-| 密钥存哪 | `user_secrets` 密文列（AES-256-GCM），浏览器只拿到掩码 `hint` | `alp.provider.v1` / `alp.search.v1` / `alp.tts.v1`（localStorage） |
-| 前提 | 登录 + 部署方配置 `ALP_SECRET_KEY` + 可持久化的 `DATABASE_URL` | 浏览器允许 CORS / 无混合内容拦截 |
-| 未登录时 | 界面强制按 local 运行，不请求必然 401 的代理 | 同左 |
-
-教材 / 讲义仍在 `alp.materials.v1`（localStorage）；上传知识库本机在 IndexedDB `alp-kb-v1`，登录后额外写账号的 `kb_docs` / `kb_chunks`。**server 模式下密钥仍不会出现在响应里**：`GET /api/config` 只回 `configured` / `hint` / 白名单 options，`hint` 固定为 `••••` + 末 4 位。
-
-进度：未登录时存本浏览器 `localStorage`；登录后以服务端为准，之后每次变更防抖写回（`src/lib/useLearner.ts`）。记忆卡从 progress 剥离后单独写 `memories` 表（LWW，`max(lastSeenAt, createdAt)`）；上传知识库登录后同步到 `kb_docs` / `kb_chunks`，换设备登录同一账号能拿回；远端失败时界面显示「仅显示本机资料 / 尚未同步」，不静默假装成功。
-
-登录时的合并规则是 `{...local.subjects, ...server}`（`src/lib/useLearner.ts` 的 `merged`）：
-**服务端已有的学科覆盖本地同名学科；本地独有的学科保留**。所以准确说法是「服务端优先，本地独有的不丢」，
-而不是「拉取覆盖本地」。记忆卡按 id 求并集、`lastSeenAt` 较新者整张胜出；同一张卡不做字段级拼接。
-
-供应商预设：DeepSeek、OpenAI、Anthropic Claude、通义千问、Kimi、智谱 GLM、自定义（OpenAI 兼容）、自定义（Anthropic 兼容）。刻意不放 Ollama 预设——公开 Web 服务的大多数用户没有本地模型；需要的话用自定义端点填 `http://localhost:11434/v1`（`src/lib/provider.ts:76` 的 `PRESETS`）。
-
-### 环境变量
+不配环境变量即可试用全部离线能力。需要账号、跨设备同步与 server 模式密钥时，再补：
 
 | 变量 | 必需性 | 作用 |
 | --- | --- | --- |
-| `DATABASE_URL` | 线上必需 | Postgres 连接串；承载 10 张表。缺失时 `getDb()` 退化为进程内内存（`src/lib/db.ts:756`），重启即丢 |
-| `ALP_SECRET_KEY` | server 模式必需 | 32 字节随机数的**标准 base64**（44 字符含 `=`）；缺失或格式不对时 `/api/config` 拒绝保存（503 `KEY_ENC_UNAVAILABLE`），绝不退化为明文。生成：`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
-| `ALP_SECRET_KEY_ID` | 可选 | 密钥版本号，缺省 `v1`；轮换时修改。当前只支持一把主密钥，轮换后旧行报 `KEY_KID_UNKNOWN`，需要用户重存 |
-| `ALP_EMBED_BASE_URL` / `ALP_EMBED_API_KEY` / `ALP_EMBED_MODEL` | 可选 | 服务端级 embedding 兜底（三项齐全才生效），用于评测脚本与「账号没配 embedding」时的服务端兜底；缺失时向量检索退化为 BM25 |
-| `ALP_ALLOW_HTTP_PROVIDER_HOSTS` | 可选 | 允许服务端代理访问 `http://` 的主机名单（逗号分隔 `host[:port]`）。**命中名单即整体信任该主机**：环回与内网地址都会被放行，这是为了让本地 Ollama 可用；默认空名单，未列出的内网地址一律拦截，`metadata.google.internal` 这类元数据主机即使列出也只按名字拦截。本地联调 Ollama 写 `127.0.0.1:11434`（http 条目必须带端口） |
-| `ALP_ALLOW_MEMORY_SECRETS` | 仅本地测试 | 设 `1` / `true` 才允许内存后端写密钥；线上不要打开 |
-| `HEALTH_TOKEN` | 可选 | 配了之后，`GET /api/health` 带 `Authorization: Bearer <token>` 才额外返回 `keyEncryption` 与 `db`；不配时永远只回 `{ok:true}` |
+| `DATABASE_URL` | 线上必需 | Postgres 连接串，承载 10 张表；缺失时退化为进程内内存，重启即丢 |
+| `ALP_SECRET_KEY` | server 模式必需 | 32 字节随机数的标准 base64；缺失时拒绝保存密钥（503），绝不退化为明文 |
+| `ALP_SECRET_KEY_ID` | 可选 | 密钥版本号，缺省 `v1`；当前只支持一把主密钥 |
+| `ALP_EMBED_BASE_URL` / `_API_KEY` / `_MODEL` | 可选 | 服务端 embedding 兜底，三项齐全才生效；缺失时向量检索退化为 BM25 |
+| `ALP_ALLOW_HTTP_PROVIDER_HOSTS` | 可选 | 允许代理访问 `http://` 的主机名单；**命中即整体信任该主机**（含环回 / 内网），默认空 |
+| `ALP_ALLOW_MEMORY_SECRETS` / `HEALTH_TOKEN` | 仅测试 / 可选 | 前者只允许本地测试写内存密钥；后者给 `/api/health` 开详细检查 |
 
-`.env.example` 只放键名与说明，可提交；真实值写 `.env.local`（已在 `.gitignore`）。
+生成主密钥：`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`。真实值写 `.env.local`（已 gitignore）。
 
-### 部署到 Vercel
+部署到 Vercel：`vercel --prod`，并在项目里配置 `DATABASE_URL`（可用 Neon 集成）与 `ALP_SECRET_KEY`。自托管反向代理必须对 `/api/llm/chat` 关闭 `proxy_buffering`。调用模式、进度合并规则、完整环境变量与 nginx 示例见 [部署说明](docs/deploy.md)。
 
-```bash
-npm i -g vercel
-vercel login
-vercel --prod
-```
-
-**需要配置 `DATABASE_URL`**（Postgres 连接串，Vercel 上可用 Neon 集成一键注入）。它承载 10 张表：`users`、`sessions`、`progress`、`directions`、`direction_picks`、`direction_items`、`user_secrets`、`kb_docs`、`kb_chunks`、`memories`（建表语句在 `src/lib/db.ts:781` 的 `SCHEMA` 常量，每次进程首次 `getDb()` 幂等执行）。教材 / 讲义选择与冲突裁定仍只属于浏览器（`alp.materials.v1`）；上传知识库登录后同步到账号，但**不随方向公开 / 复制**。
-
-**不配 `DATABASE_URL` 会发生什么**：`getDb()` 会退化为**进程内内存存储**（`src/lib/db.ts:756-760`）。本地开发与测试没问题，但部署环境里重启即丢，账号、跨设备进度、方向市场与知识库同步都不可用；`/api/config` 还会拒绝写密钥（503 `PERSISTENCE_UNAVAILABLE`）。所以「不需要数据库」只对匿名本地试用成立，对线上服务不成立。
-
-**模型供应商不需要预置环境变量**：密钥由用户在设置页填。server 模式需要 `ALP_SECRET_KEY` 才能加密保存；local 模式不需要任何服务端密钥。两种模式都没有项目自有的模型 / 搜索 key。
-
-### 自托管与反向代理
-
-```bash
-npm ci && npm run build && npm start   # 默认 3000 端口
-```
-
-需要 Node ≥ 22.13（`pdfjs-dist@6.4.299` 的 engines 要求，Node 20 不支持）；要账号、跨设备进度、知识库/记忆卡同步与 server 模式密钥，需要可达的 Postgres（`DATABASE_URL`）与 `ALP_SECRET_KEY`。PDF 解析在浏览器里完成，不需要服务端文件存储。
-
-**SSE 必须关闭代理缓冲**，否则流式回答会整段卡住到结束：
-
-```nginx
-location /api/llm/chat {
-  proxy_pass http://127.0.0.1:3000;
-  proxy_http_version 1.1;
-  proxy_set_header Connection "";
-  proxy_buffering off;          # 必须
-  proxy_read_timeout 300s;      # 与 maxDuration / STREAM_TIMEOUT_MS 对齐
-  client_max_body_size 2m;      # /api/llm/chat 请求体上限
-}
-location /api/kb { client_max_body_size 8m; proxy_read_timeout 60s; }
-```
-
-服务端自己也会写 `X-Accel-Buffering: no`（`app/api/llm/chat/route.ts`），但 nginx 的 `proxy_buffering off` 仍建议显式配置。`/api/search` 与 `/api/tts` 目前没有请求体上限，放在公网时应在代理层限流 / 限体积（见 §11）。
-
----
-
-## 10. 项目结构
-
-只列核心决策模块、本轮新增的可选能力模块与入口页；其余文件用 `git ls-files src app` 查看。
+## 架构
 
 ```
-src/lib/plan.ts        路径排序、装包、双指纹、SHA-256、先修校验（纯函数）
-src/lib/mastery.ts     Beta 后验、sd、P(已掌握)、预测正确率
-src/lib/graph.ts       DAG 校验、深度、拓扑序、先修闭包
-src/lib/direction.ts   描述 → 图谱草稿 + 八条硬门禁 + 标题校验
-src/lib/itemgen.ts     生成题 L1–L5 校验 + contentHash + 批解解析
-src/lib/db.ts          Postgres / 内存双实现，10 张表
+诊断出题 → Beta 后验 → 排序（深度 → ZPD → sd → 兜底）→ 预算装包 → 手动改写 → 先修校验
+                              │
+                              └─ pathHash = SHA-256(steps + algoVersion + kgVersion)
 
-src/lib/rag.ts         BM25 bigram、单字降权、标题加权、MIN_SCORE（纯函数）
-src/lib/hybrid.ts      RRF k=60、候选 20、top3、余弦 0.25、相邻去重（纯函数）
-src/lib/vector.ts      向量校验、余弦、topK（纯函数）
-src/lib/embedding.ts   两个维度确定的预设、嵌入输入、FNV-1a（纯函数）
-src/lib/ragEval.ts     50 条评测解析与 recall@3 / MRR@10 / 全文金句指标（纯函数）
-src/lib/memory.ts      记忆卡：错题 / 易混、1/3/7/21 天到期、200 张容量（纯函数）
-src/lib/calibration.ts Wilson 区间、O/E、Brier、30/60/100 档位（纯函数）
-src/lib/knowledge.ts   切块、编码探测、uploadsToPack、BM25 检索（纯函数）
-src/lib/materialStore.ts 教材 / 讲义 localStorage 读写与订阅
-src/lib/materials.ts   资料包、冲突检测、上下文裁剪（纯函数）
-src/lib/kbStore.ts     存储契约 + useKnowledgeBase hook + 重新导出解析器
-src/lib/kbLocal.ts     IndexedDB 适配器（docs / chunks）
-src/lib/kbRemote.ts    远端适配器 + 本地/远端复合存储 + getKbStorageForUser
-src/lib/kbServer.ts    行映射、上传校验、文档级 CAS、向量分页（服务端）
-src/lib/vectorCache.ts 片段向量缓存（IndexedDB，按 model+FNV 键）
-src/lib/embeddingClient.ts /api/llm/embeddings 客户端、LRU 50 条
-src/lib/hybridSearchClient.ts 检索适配层：BM25 + 向量 + RRF + 降级说明
-src/lib/pdf.ts         pdfjs-dist 抽文本；无文本层如实拒绝（不做 OCR）
-src/lib/textFile.ts    File → Uint8Array，解码复用 knowledge.ts
-src/lib/verify.ts      逐字 quote 校验、L6 整批解析、引用核对判定（纯函数）
-src/lib/verifyClient.ts 核对请求：每 KC 一次 / 每回答一次，失败 fail-open
-src/lib/reasoning.ts   SSE 解码、reasoning/正文分流、三档思考请求体（纯函数）
-src/lib/chat.ts        callChat / callChatStream / probeThinking（local 直连 / server 代理）
-src/lib/websearch.ts   网络结果归一化、[网络n] 解析（纯函数）
-src/lib/searchClient.ts 三家搜索的客户端分发、30 分钟会话缓存、供应商回退 notice
-src/lib/tts.ts         浏览器语音 / 在线语音、文本清洗（2000 字）、两种协议
-src/lib/mimo.ts        chat-audio 请求体、base64 解码、响应解析（纯函数）
-src/lib/memoryServer.ts / memoryClient.ts / memorySync.ts  记忆卡 LWW、显式删除、合并纯函数
-src/lib/accountTransition.ts 换账号时清哪些浏览器存档（纯函数）
-src/lib/serverConfig.ts 调用模式、GET/PUT/DELETE /api/config 客户端
-src/lib/userSecrets.ts 密钥 CRUD、options 白名单、公开响应只回掩码
-src/lib/secretCrypto.ts AES-256-GCM、AAD、kid、掩码（服务端）
-src/lib/serverEmbedding.ts / serverSearch.ts / serverTts.ts  服务端代发适配
-src/lib/upstream.ts    LLM 配置解密、端点拼装、SSE 代理、错误脱敏
-src/lib/ssrf.ts / ssrfGuard.ts  出站地址形状、DNS、钉 IP 三层判定
-src/lib/routeAuth.ts / origin.ts  登录校验、同源校验、统一 JSON 错误
-src/lib/apiContracts.ts 7 组请求契约（config / llm / embeddings / search / tts / kb / memories，zod strictObject）
-
-app/diagnose/page.tsx  诊断出题、记忆复习、预测校准、生成轨迹
-app/path/page.tsx      路径、章节范围、反事实、手动改写、指纹
-app/tutor/page.tsx     流式回答、思考面板、联网、上传混合检索、引用核对、朗读
-app/directions/page.tsx + market/page.tsx  自定义方向、知识库上传/同步、市场
-app/settings/page.tsx  调用模式、账号配置（掩码）、TTS / 搜索 / 配色
-app/api/*              14 个路由：auth、progress、directions(×3)、config、llm(×2)、
-                       search、tts、kb、memories、mcp、health
+可选能力（失败只降级自己，不阻塞核心路径）：
+导师/方向 ─┬─ BM25 / 混合检索 ── 流式回答 ── 逐字引用核对
+           ├─ 联网检索（DeepSeek / Tavily / 维基百科）
+           ├─ 上传资料（IndexedDB + 账号 kb_docs / kb_chunks）
+           └─ 语音朗读（浏览器 / mimo chat-audio）
 ```
 
-知识口径的纯函数在 `src/lib/materials.ts`，localStorage 读写与订阅在 `src/lib/materialStore.ts`；章节聚合与候选范围在 `src/lib/chapters.ts`；反事实汇总在 `src/lib/planDiff.ts`；方向题目的 IO 与流程轨迹在 `src/lib/directionItems.ts`。
+关键约束：**决策层不 import 触点层**。`plan.ts` 的依赖只有 `graph.ts` 与 `mastery.ts`，所以模型、搜索、存储全部不可用时，排序行为完全不变。模型只参与「生成图谱 / 生成题目 / 写解释」，不参与排序。
 
-学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **64 个非测试模块 + 60 个测试文件**；`src/components/` 另有 4 个测试文件（`calibration-card`、`knowledge-upload`、`memory-review`、`tutor-logic`），合计 **64 个测试文件、1570 条用例**（`npm run test` 本轮实测）。
+分层图、每个节点的输入输出、Beta 后验公式、排序键与复杂度实测见 [架构与算法](docs/architecture.md)。
 
----
+## RAG 与存储
 
-## 11. 已知限制与下一步
+RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必须有出处**：
 
-### 已验证能力
+```
+提问 ─┬─ 知识点：BM25 top3 ─────────────────────────────────┐
+      └─ 上传资料：BM25 top20 ∥ 向量 top20 → RRF(k=60) → top3 ─┤
+                                                                ▼
+                              注入 [kcId] / [资料n] → 模型流式回答 → 逐字核对引用
+```
 
-- 9 学科图谱与题库规模一致：`npm run kg:validate` → 0 error（360 点 / 540 边 / 1080 题）。
-- 掌握度、排序、装包、指纹、检索、混合检索、题目校验、知识口径、数据库双实现、方向题目接口语义、记忆、校准、切块、引用核对、SSE 解析、搜索、TTS、密钥加密、SSRF、同源校验、KB / 记忆卡同步语义：`npm run test` → **1570 passed / 64 files**（本轮实测）。
-- 主流程、认证与市场、MCP 协议：`auth-smoke` **34/34**、`mcp-smoke` **16/16** 本轮实跑；`smoke.ts` 53/53 为上一轮结果，本轮未重跑。新增能力仍未进 `smoke.ts`。
-- 生产构建：`npm run build` exit 0（24 个路由）；`npm run typecheck` exit 0。
-- 5 套配色 210 对对比度：0 失败（上一轮实测；本轮未重跑）。
-- 密钥扫描：`npm run check:secrets` 扫 224 个文件，未发现疑似密钥，exit 0（上一轮 4 处命中是 `src/lib/config-route.test.ts` 的测试假值，已改为非凭据形状的占位符）。
-- ESLint：0 error / 23 warning（本轮实测）。
-
-### 一轮独立审读发现并已修复的问题
-
-这些是代码层面的真实缺陷，不是文案问题。**覆盖情况按行标注**：标「单测」的有纯函数用例，
-标「E2E」的由 `scripts/smoke.ts` 实测，标「脚本」的由独立脚本实跑（`scripts/mock-gen-check.ts`），
-标「手测」的没有自动化用例、按界面操作核对，标「仅改文案」的没有测试（文案改动无法用测试表达）。
-
-| 问题 | 根因 | 修复 |
-| --- | --- | --- |
-| 路径页点一次「上移」，回诊断页显示「没有可出的题」 | `recordPathEdit` 没传 graph，`progressOf` 回落到内置学科，给方向写出 c01–c40 掌握度 | `recordPathEdit` / `attemptedQuestionIds` / `attemptCount` 加可选 graph 参数；路径页传 `target.graph`；`learner.test.ts` 有回归用例，smoke 检查 localStorage 里不出现 `cNN` 式 id |
-| 无 key 时「跳过这个知识点」点了没反应，页面永远到不了「诊断完成」 | `current?.kcId ?? gen.kind === "failed" ? ... : ""` 被解析成 `(a ?? b) ? c : d`，no-model 时取到空串 | 重写 `skipCurrentKc` 的取值与 `done` 判定；no-model 时一次性跳过所有缺题 KC（逐个跳过是把系统问题变成用户劳动） |
-| 自定义方向第一个被测点是 depth 7 | `kcNeedingItems` 按 `graph.concepts` 数组顺序取，而关键词拼装按得分排序、LLM 提示词也不要求拓扑序 | 三处一起改：`kcNeedingItems` 按深度排序、`composeFromExisting` 用 `topologicalOrder`、提示词加第 7 条要求 concepts 按先修顺序 |
-| 答案对不上的题仍展示，学生选对却被判错 | L3 失败降级成 practice，`answerIndex` 兜底 0，诊断按选项 A 判分 | L3 失败改为 `rejected`（答案不可知就不展示）；practice 只由 L4 产生，此时答案文本是确定的 |
-| Postgres 上 `run()` 恒返回 0，插入成功却报失败 | neon 驱动默认只返回行数组，INSERT 无 RETURNING 时是 `[]` | 改用 `fullResults: true` 取 `rowCount`；新增 `items-route.test.ts` 用「run 恒返回 0」的假 Db 锁住调用方语义 |
-| 手动题被打了 0.8 折，README 却写 1.0 | 用 `id.startsWith("di-")` 判断生成题，而 manual 题的 id 也是 `di-` | 改按落库的 `source` 字段判断 |
-| 手动改写后改预算不重算，指纹不反映显示顺序 | `displayed = manualSteps ?? plan.steps`，预算只重算 plan | 只存 kcId 顺序，用 `applyManualOrder` 把顺序重放到新 plan 上；面板并列「算法路径指纹」与「当前显示顺序指纹」 |
-| `CONFIDENCE_SD_THRESHOLD` 全仓库无引用，README 却说 sd 是内部判据 | `hasEnoughEvidence` 只看 evidenceN | 判据改为 `evidenceN >= target && sd <= 0.20`；并写清「停测只看条数、标注才看 sd」两个不同用途 |
-| 无 key 的 fallback 把无关知识点说成相关 | 命中不足 5 个时补基础点，描述仍写「与 X 相关的 N 个知识点」 | 补点时描述改为「其中 N 个直接相关，其余是基础知识点」 |
-| 首页「全部达到 WCAG AAA」夸大 | 实算最低 3.26:1（分隔线，非文本元素） | 改为「正文与次要文字 AAA，非文本元素 AA」 |
-| 仓库里硬编码了真实手机号与邮箱 | smoke 用它做隐私比对 | 改为正则匹配「像手机号/像邮箱」的串，仓库不再存真实值 |
-| 「强制带 [kcId] 引用」只是提示词要求 | 界面把检索到的 docs 全部列为引用 | 新增 `extractCitedKcIds`：只列回复里真的出现、且确实在检索结果里的 id |
-| 「拖动步骤」文案与实现不符 | 实现是 ↑ / ↓ / × 按钮 | 改文案，首页/路径页/关于页三处一并修（仅改文案） |
-| 「移除」是空操作，被删的步骤又回到末尾 | `applyManualOrder` 只从 order 里删 kcId，第二个循环又把 plan 里「不在 order」的它追加回来 | 手写状态改为 `ManualEdit{order, removed}`；`removed` 里的点重放时排除。单测 3 条 + smoke「移除真的减少一步且不再回来」 |
-| 点一次「上移」，整条路径都标「已手动调整」 | `applyManualOrder` 给 order 里每个点都写 `source: "manual"` | 不再改写 source；新增 `movedKcIds` 比较相对次序，只标真的换了位置的点。单测 4 条 + smoke「只标记真的挪动过的步骤」 |
-| 有题但不够门槛时空白死锁 | `pickNext` 无题可出、`kcNeedingItems` 只认 `accepted === 0`、`canPickMore` 说还有工作 → 三张卡都不渲染 | `kcNeedingItems` 改判 `accepted < 门槛`；新增「题目不够」卡，给「再生成一批 / 手动补题 / 跳过 / 只规划路径」四个出口；跳过改为批量。smoke「题不够门槛时给出明确出口」 |
-| 无 key 降级丢掉真正命中的知识点 | 补基础点时用 `scored.slice(0, N)` 按图谱顺序取，命中的 c34 被挤出前 5 | 先放 `picked` 再补基础点；单测 2 条锁「命中的点必须保留」「声称的相关数不多于实际」 |
-| 「证据不足」提示与判据矛盾（n=3 却写「未达 3 题门槛」） | 文案只提条数，而判据是「条数 ∧ sd」 | `MasteryBar` 的 `evidenceShortfall` 拆成 `count` / `precision` 两种文案；后者说明「题数够了但对错分裂」 |
-| 服务端信任客户端的 `source` | `source` 决定折扣（generated 0.8、manual 1.0），却完全由客户端声明 | manual 必须不带 `difficultyReason`（那是生成流程的字段）；borrowed 必须能被服务端用 `borrowItems` 复算出同一题干；其余按 generated。单测 2 条 |
-| `borrowed` 是不可达的 source | 类型里有、README 折扣表里有，但没有任何代码会产生它 | 实现 `src/lib/borrow.ts` 的 `borrowItems`：按 KC 名称从内置题库借用同名知识点的题；单测 6 条 |
-| L5 的 notes 从未落库 | `checkItem` 算了 notes，但 payload 没带 | notes 并入 `checks`（前缀「提示：」）落库；「已通过 N 项校验」不计提示项 |
-| **真实缺口 4（上一版）：路径页只能按整科规划，不能按章 / 按目标点收窄** | `/path` 没有把章节选择传给 `planPath`，`targets` 只在 MCP 与库函数里可用；`inputHash` 也没有体现章节范围 | 路径页新增 `ChapterGoals`（`src/components/chapter-goals.tsx:14`）：`chaptersOf` 按章号聚合、支持多选，`chapterScope` 把选中章节展开成 targets + 跨章先修点（`src/lib/chapters.ts:103`），**图谱始终完整**；`targets` 同时传给 `planPath` 与 `computeInputHash`（`src/lib/plan.ts:283`），换章节会改变输入指纹。覆盖：单测 `chapters.test.ts` 13 条 + `planDiff.test.ts` 6 条；路径页多选 / 全选 / 清空为手测 |
-| **反事实只显示「因时间不足被推迟」，对照预算下的 blocked 点不出现** | 页面直接读 `PlanResult.deferred`，没有 `blocked` 汇总；阻塞点既不在推迟数里，也没有逐条原因 | 新增 `summarizeCounterfactual`（`src/lib/planDiff.ts:31`），把 `deferred` / `blocked` / `blockedNotInPath` 分开，`blockedByOf` 给每个点列出阻塞者；步骤卡按当前显示路径判断「是否已在路径上」。覆盖：单测 `planDiff.test.ts` 6 条；路径页对照预算为手测 |
-| **「重新诊断」把掌握度一起清空，用户只想重测却丢了进度** | 重新诊断与清空进度共用一个 `reset`，都调用 `resetSubject`；`gen` 状态也没归零，失败卡会立刻重现 | 拆成 `restartSession`（清会话状态、保留 learner 与掌握度）与 `clearAll`（二次确认后 `resetSubject`，再重置会话）；`resetSubject` 的注释写明只供清空使用（`src/lib/useLearner.ts:393-395`）。覆盖：手测诊断页两个按钮（状态在页面组件里，没有单测） |
-| **L4 双解按数组顺序取答案，模型换个返回顺序就整批降级 practice** | `solveBatch` 直接 `parsed.answers.map(...)`；两次批解是 `Promise.all` 并发的，数组顺序与题号没有约定 | 新增 `parseSolverAnswers`（`src/lib/itemgen.ts:365`）按 1-based `index` 落槽：缺失留空、重复取最后一条、越界丢弃并记 issue；`solveBatch` 返回 `{ordered, missing, issues}`（`src/lib/directionItems.ts:284`）。覆盖：单测 `itemgen.test.ts` 5 条 + `scripts/mock-gen-check.ts` 的 shuffle 档与「按数组顺序取必全错」哨兵 |
-| **内存库 DELETE 不看 WHERE，一律按 (user_id, subject_id) 删并返回 1** | 两种删除形状（清空某用户全部 / 只删一个学科）共用一条路径；按 user_id 清空时行还在、返回值却是 1，界面表现为「点了清空，刷新又回来」 | `src/lib/db.ts:268-282` 按 WHERE 是否含 `subject_id` 分两种形状，返回真实删除行数；不存在的键返回 0。覆盖：单测 `src/lib/db.test.ts:162-206` 3 条 |
-| **plan 的「与 LLM 无关」用例是恒真断言** | 同一份输入跑两次再比较，永远相等；没有换掉外部状态 | 把 `fetch` / `Math.random` / `Date.now` 全换成「一调用就抛」，要求输出逐位不变（`src/lib/plan.test.ts:137-168`）。**关于模型版本只能说结构上到不了**：`PlanInput` 没有 `modelVersion` 字段，`canonicalPlanJson` 也只序列化 `steps + algoVersion + kgVersion`，多传的模型字段会被丢弃——所以「两个 modelVersion 同 hash」不可能失败，它不是证据。覆盖：单测 |
-| **推理模型第一次测连通性必红** | 探活请求只给 `max_tokens: 16`，而推理模型的思考 token 也计入这个预算：实测 deepseek-v4.1-flash 把 16 token 全用在 reasoning_content 上，`content` 为空、`finish_reason=length`，于是被判定为「响应异常」。用户会以为地址或密钥填错 | 探活预算提到 64；并把「200 + 合法响应体 + `finish_reason=length` + 正文为空」判为**连通**（端点、密钥、模型名都已验证），只对 `stop` 且正文为空才报响应异常（`src/lib/provider.ts` 的 `buildRequest` 与 `testConnection`）。覆盖：单测 `provider.test.ts` 2 条 + ego 真实模型实测（一次点击即绿） |
-| **自定义方向生成被截断后静默退化成规则拼装** | `useDirectionDraft` 只给 2000 token，推理模型把预算吃光 → `ChatError(truncated)` → catch 里直接走 `generateFallback`：用户要「图论」，拿到的是「从数据结构里挑了 18 个树/图知识点」，来源标注还是「从现有学科挑选」 | 首次给 4096，遇截断再加倍到 8192 重试一次（截断可恢复，直接降级才是浪费）；方向页的失败提示也从「N 个知识点生成失败：名字」改成带上去重后的真实原因（实测里 46 次调用全 200、落了 52 题，失败其实是没到 4 题门槛）。覆盖：ego 真实模型实测（同一句描述，修复后 `模型生成`、14 个知识点） |
-| **生成链路只有单测，没有跨模块集成检查** | `ensureItems`、L1–L5、落库回显、依据标注各自有单测，但没人把「真实 ensureItems + 模型响应 + 服务端回显」串起来跑 | 新增可控 Mock 供应商 `scripts/mock-provider.ts` 与集成脚本 `scripts/mock-gen-check.ts`：正常 / 数组倒序 / 双解不一致降级 / 截断 / 坏 JSON / 同批重复题干六种场景，共 19 项检查；本轮又加了 `/stream` 与 `/think400` 两档供手测。覆盖：脚本 19 项全 PASS（上一轮实跑，exit 0；本轮未重跑） |
-
-### 真实缺口
-
-1. **教师班级视图未实现。** 现在只有「一个学生一份进度」，没有班级聚合、没有「谁卡在哪」的视图。这是产品叙事里最大的一块空白。
-2. **4 个新学科未经学科专家复核。** 离散数学、机器学习基础、概率论与数理统计、学术英语写作的题目由模型生成后经脚本校验（题数、无环、难度分布、解析长度），但没有任课教师逐题核对。9 个学科共 1080 题的难度标注都需要教师确认。
-3. **没有真实学生数据。** 所有掌握度数字来自自测与构造的快照，不是教学现场采集。
-4. **手动改写的顺序不持久化。** 只存在页面状态，刷新回到算法排序；每次改动会记一条 `pathEdits` 审计记录（`src/lib/learner.ts:194` 的 `recordPathEdit`），但不会恢复顺序。
-5. **未做 Lighthouse / Core Web Vitals 实测。** 没有 LCP / INP / CLS 数字。
-6. **浏览器直连供应商仍受 CORS / 混合内容约束，但只在 local 模式。** server 模式由 `/api/llm/chat`、`/api/search`、`/api/tts` 代发，不受浏览器 CORS 限制；local 模式仍可能出现跨域失败，设置页会就地提示。服务端代发要求部署方持有 `ALP_SECRET_KEY`，否则只能保存失败（不会明文落库）。
-7. **自定义方向的题目依赖模型，但不是完全不可诊断。** 无 key 时不会自动生成新题；仍可**手动录题**后诊断（`/directions` 的「手动录题」，E2E 覆盖），或只规划路径。生成题的成本数字（¥0.0009–0.0066/题）是调研值，本机没有可用 key，未复测。
-8. **L4 双解与 L6 依据核对都只在浏览器侧做。** 服务端落库时重跑 L2/L3，不重跑 L4/L6（要再调模型，成本高且结论不可缓存）。恶意客户端可以把未过 L4 的题标成 accepted、把未过的 L6 结论改写成通过——在「用户自己的方向」场景下可接受，做教师共享题库时必须搬到服务端。
-9. **`P(已掌握)` 只展示，不做停测准则。** 3 题全对后 P 最高 0.848，达不到 0.90；拿它当阈值会迫使题库扩到 4–5 题/KC。
-10. **学科规模固定为 40 点 / 60 边 / 120 题。** 这是由「3 题可达证据充分」反推的约束，新增学科必须遵守；规模不同的学科需要重新校准参数。
-11. **方向删除后遗留的进度行、账号知识库行与本机知识库不清理。** 进度按方向 UUID 存在 `progress.subject_id`，方向删了行还在；`kb_docs` / `kb_chunks` 与 IndexedDB 里的 `docs` / `chunks` 同样按旧 `directionId` 留存。不影响功能（UUID 不复用），只占空间；要做清理需要级联删除或 tombstone，本轮没做。
-12. **没有 CI。** 所有检查靠本地 `npm run verify` 与三个 E2E 脚本手动跑。仓库里没有 `.github/workflows`。
-13. **界面文案与实现不符的六处已在上一轮全部修正**（不再是缺口，列在此处便于核对改了什么）：
-    - `app/page.tsx` 的「CI 会红」→「`npm test` 里的 golden 字面量会失败」；
-    - `app/page.tsx` 的 `src/lib/llm.ts` → `app/tutor/page.tsx · 引用从回复里解析`；
-    - `app/page.tsx` 的「Ollama 预设」→「DeepSeek / OpenAI / Claude / 通义 / Kimi / 智谱 预设」；
-    - `app/path/page.tsx` 与 `app/about/page.tsx` 的「拖动步骤」→「↑ / ↓ 调整顺序」；
-    - 首页「全部达到 WCAG AAA」→「正文与次要文字 AAA、非文本元素 AA」；
-    - 首页「正文对比度最低 15.5:1」→「15.50:1」（实测 forest/light）。
-
-    修正后 `grep -rn "CI 会红\|llm\.ts\|Ollama 预设\|拖动" app/` 无命中。
-14. **`.env.example` 列出的 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 仍不被应用代码读取。** `DEEPSEEK_API_KEY` 只被 `scripts/probe-external.ts` 用来做真机探测（且要求 base_url 是官方域）；应用侧供应商配置走 `/api/config`（server）或浏览器 `localStorage`（local）。本轮新增并被读取的变量是 `ALP_SECRET_KEY`、`ALP_SECRET_KEY_ID`、`ALP_EMBED_*`、`ALP_ALLOW_HTTP_PROVIDER_HOSTS`、`ALP_ALLOW_MEMORY_SECRETS`、`HEALTH_TOKEN`（`HEALTH_TOKEN` 尚未写进 `.env.example`，见 §11 第 29 条）。
-15. **方向页的「生成全部题目」已带资料上下文（不再是缺口）。** `ensureAllItems` 现在接收 `material` 与 `uploadedPack`，两个入口都走 `materialForConcept`；L6 开关会透传到每个 `ensureItems`。此前「只有诊断页懒生成会传」的描述已删除。
-16. **「依据：」与「依据核对」都是客户端声明，服务端无法复算。** `app/api/directions/items/route.ts` 不加载资料包（笔记只在 localStorage，上传资料虽同步到 `kb_chunks`，但 items 路由不读），所以只按白名单前缀放行并原样落库；公开方向的题目对匿名访问者可读，等于「作者声明的出处与核对结论」。它们不参与判分与证据计数（`status` 仍由客户端显式 `practice` 保留），但做教师共享题库前必须搬到服务端。
-17. **教材 / 讲义存储不分账号。** 存的是浏览器级键，登录时比对 `alp.materials.owner` 来清空上一位用户的存档；同一浏览器多账号快速切换仍可能在一次渲染内看到旧值（已挂载面板靠事件重读）。
-18. **`restartSession` 没有自动化回归。** 拆成「重开会话」与「清空进度」这件事只做了手测：状态在页面组件里，仓库没有组件测试环境（`vitest.config.ts` 只跑 `src/**/*.test.ts`，环境为 node）。本轮新增的组件测试也只测纯函数与文案（`calibration-card`、`knowledge-upload`、`memory-review`、`tutor-logic`），不做 DOM 渲染。
-19. **~~`npm run check:secrets` 为红~~（已修复）。** 上一轮 4 处命中都在 `src/lib/config-route.test.ts`：`const API_KEY = "<REDACTED>"` 与三处 `process.env.HEALTH_TOKEN = "<REDACTED>"`。它们是测试假值，不是真实凭据，但扫描器按仓库规则一视同仁。本轮把测试值换成非凭据形状的占位符（`fake-key-5678`、`fake-embed-4321`、`fake-health-1`，均无 `sk-` 前缀且长度 < 16），断言不变；复跑 `npm run check:secrets` 为 exit 0。
-20. **KB 的 CAS 不是事务。** `putKbDocument` 先 `SELECT` 再 `INSERT`（`src/lib/kbServer.ts:461-512`），两个并发 PUT 使用同一个 `baseUpdatedAt` 时可能都通过检查，双方都收到 200，后写者覆盖。要消除窗口需要条件 `UPDATE ... WHERE updated_at = $base` 或 `SELECT ... FOR UPDATE`，当前未实现。承诺只是「单设备顺序操作与常规重试下结果确定」，不是任意并发下的线性化。
-21. **删除没有 tombstone。** KB 的 `DELETE` 无版本前置条件，永远生效；A 删除后 B 的在途 `PUT`（`baseUpdatedAt: null`）会让文档复活。记忆卡同理：`PUT` 永不删行，旧设备快照不会让卡消失。要禁止复活需要 tombstone 表，本轮不做。
-22. **`mergeDocs` 用远端覆盖本地，不比较版本**（`src/lib/kbRemote.ts:313`）。本地有一次尚未成功上传的修改时，下一次读会显示远端旧副本，本地新内容被遮住——这是本轮唯一会**丢用户可见修改**的读路径。修法是按 id 比较 `updatedAt` 取大者，未实现。
-23. **记忆卡单卡删除没有接线。** `memoryClient.deleteMemory`（`src/lib/memoryClient.ts:91`）没有调用方；界面移除一张卡后只靠 `pushMemories` 快照同步，而 `PUT /api/memories` 永不删行，下一次 `pullMemories` 会把这张卡复活。只有「清空学科」走了显式 `clearMemories`。
-24. **账号级存储实例不回收，换号清理不等待完成。** `syncedStorages` 按 userId 缓存复合存储，登出/换号不清（只有测试用的 `__resetKbStorageCacheForTests`）；`applyAccountTransition` 用 `void clearKbDatabase()`，另一个标签页仍持连接时，新账号可能短暂读到上一位用户的文档。正确做法是 `await` 删除或在删除完成前禁用 KB 读取。
-25. **没有自建限流，两个路由没有请求体上限。** `/api/search` 与 `/api/tts` 直接 `request.json()`，没有 `readLimitedText`；搜索成功响应也没有字节上限。登录用户可以无限调用代发与 8 MiB PUT；线上必须在反向代理层限流 / 限体积。
-26. **检索层没有 OOD 拒答。** 本轮实测 `outOfDomainEmpty = 0.000`：10 条域外问题全部返回了文档，`MIN_SCORE = 0.5` 挡不住 OOD 查询里的高频 bigram。这是缺陷信号，不是通过；改进方向是在注入层加相似度门槛或让模型显式说「未找到依据」，本轮未做。
-27. **内置知识点仍只走纯 BM25，混合检索只在生产里接上传资料。** 导师页的 `kbDocuments` 检索用 `search(index, question, 3)`（`app/tutor/page.tsx:347`），只有上传片段走 `createRetriever` + RRF。50 条评测针对的是 `kbDocuments`，且已饱和（answerable 全 1.000），所以它既不能证明上传资料的混合检索，也不能证明「向量/RRF 提升」。
-28. **契约里的 `search_exhausted` / `tts_unavailable` 没有路由产出，错误体有两种形状。** `/api/config`、`/api/llm/*`、`/api/kb`、`/api/memories` 回 `{error:{code,message}}`；`/api/search`、`/api/tts` 回 `{error,code}`。客户端必须按路由选解析器（`serverConfig.errorOf` 是现成实现）；新增客户端不应假设统一。
-29. **主密钥只能有一把。** `resolveSecretKey` 只读 `ALP_SECRET_KEY` / `ALP_SECRET_KEY_ID`，轮换后旧行统一报 `KEY_KID_UNKNOWN`，必须让所有用户重存一次；没有「新旧密钥并存、逐行迁移」的自动路径。`HEALTH_TOKEN` 的详细健康检查已实现，但还没写进 `.env.example`。
-30. **`/api/kb` PUT 没有 `maxDuration`。** 向量补预算 25 秒（`KB_EMBED_BUDGET_MS`），路由未声明函数时限；在默认时限较短的平台上，大文档可能被平台超时截断，而不是返回 4xx。
-
-### 本轮新增能力的边界（2026-10-29）
-
-**文件与知识库**
-
-- **不做 OCR。** 扫描件 PDF 没有文本层时整份拒绝，提示「请上传可复制文字的 PDF 或 Markdown/TXT」；不接 `tesseract` 或任何浏览器 OCR。PPT / DOCX 也不解析。
-- **PDF 只抽文本层**：单份 ≤300 页、≤20MB、正文 ≤20 万字；单方向 ≤800 段 / 40 万字。超过就整体拒绝，不导入半份。
-- **知识库同步是账号级副本，不是协同编辑。** 未登录只写本机 IndexedDB（`alp-kb-v1`）；登录后本地先写、再 `PUT /api/kb` 到 `kb_docs` / `kb_chunks`，换设备登录同一账号能拿回。不随方向公开 / 复制，其他用户读不到；方向市场副本默认空库。换账号时 `planAccountTransition` 清本机知识库，登出也清空。远端失败不回滚本地，只显示 `syncWarning`；409 冲突文案固定为「文档已在其他设备更新，请刷新后重试」。
-- **并发语义是文档级 LWW + 前置 CAS，片段随文档整体替换。** CAS 不是事务（见「真实缺口」第 20 条）；删除没有 tombstone（第 21 条）；`mergeDocs` 远端覆盖本地（第 22 条）。这些窗口都写清楚了，不承诺线性化。
-- **未绑定知识点的上传文档只用于导师检索**，不进出题与 L6 核对；绑定后才会以「上传资料」章节进入资料包。
-- 生产构建本轮 exit 0；PDF worker 的浏览器侧仍未验证（`scripts/pdf-smoke.ts` 需要 Playwright Chromium 与 Next 服务，本轮未跑）。
-
-**记忆与校准**
-
-- **记忆卡不是第二个掌握度。** 不做 FSRS 参数拟合、不给 α/β 乘时间衰减、不用 LLM 自动 ADD/UPDATE/DELETE 记忆；复习自评与易混标记都不进 α/β。
-- **记忆卡独立成表，LWW 版本取 `max(lastSeenAt, createdAt)`。** `PUT /api/memories` 只 upsert，永不删除不在列表里的卡；删除必须显式 `DELETE`。设备时钟快的一方会赢，这是 LWW 的已知代价；单卡删除尚未接线（第 23 条）。
-- 每学科最多 200 张；全为 open 时拒绝新增并显示 warning。`attempts` 本身没有上限，长期使用仍可能撞进度 JSON 的 512KB 上限（本轮未解决）。
-- **校准只做单目标内的弱校准。** 不做 ECE / BSS / 按知识点可靠性图 / 单学生 Platt 或 isotonic 曲线；`n < 30` 只说样本不足；不承诺 ±5pp，`n ≥ 100` 只在内置学科可达。校准样本只来自诊断作答。
-
-**思考、联网与语音**
-
-- **不做 debate / router / ReAct / 同模型第二 solver / 跨供应商核对。** 只做「生成者 + 只读核对者」，且核对者必须逐字引用原文；没有原文时不核对。
-- 思考强度只作用于导师回答；出题、批解、方向生成始终非思考。server 模式的档位来自账号配置，请求体没有这个字段。OpenAI 官方 Chat Completions 不暴露原始推理正文，面板可能为空；端点拒绝思考参数时自动降级一次并把标准 / 深入置灰。
-- **联网支持 DeepSeek / Tavily / 维基百科。** server 模式经 `/api/search` 代发，local 模式 Tavily / 维基百科浏览器直连；DeepSeek 搜索没有浏览器直连路径。服务端不静默换供应商，`search_exhausted` 未实现；网络来源始终标「未核对」，不进入教材命名空间，也不作为 L6 / 引用核对的依据。本轮真机探测三端点均「未验证」（缺凭据），见 §15。
-- **TTS 在 server 模式下不再受浏览器 CORS 限制**：`/api/tts` 支持 `speech` 与 mimo `chat-audio` 两种协议；local 模式仍直连，失败自动回退浏览器语音。只朗读正文、单段最多 2000 字，不自动播放、不做逐字高亮 / 字幕同步；语音密钥与聊天密钥分开保存。
-- **换账号会清本机存档。** `planAccountTransition` 对 A→B / A→匿名清空 learner、本机知识库、搜索 / 语音密钥与教材讲义；匿名→B 保留并登记归属；登出无条件清空并删除调用模式键（`src/lib/useAuth.ts:73-116`、`:239`）。服务端账号里的配置不会因切换被删除。
-
-**运行环境**
-
-- **Node 20 不支持。** `pdfjs-dist@6.4.299` 要求 Node ≥22.13；要保留 Node 20 只能降级 `pdfjs-dist` 5.x 并重验 PDF worker，不在本轮已验证范围。
-- 本轮新增的流式 / 思考、引用核对、联网、上传、记忆、校准、朗读、账号同步与 server 模式**没有进入 `smoke.ts`**；`auth-smoke` 覆盖了配置 401、KB 往返、记忆卡 LWW 与市场，但浏览器交互仍需手测（清单见下）。
-
-### 浏览器手测清单（本轮新增能力）
-
-单元测试覆盖纯函数与调用语义，下面这些交互按界面操作核对；没有自动化 DOM 回归：
-
-1. **流式 + 思考**：mock `/stream/v1`；思考面板先出现，正文开始后自动折叠；点停止只保留已输出部分；400 降级后设置页显示「不支持」。
-2. **思考强度**：三档分别发请求，抓包确认「关」没有 `reasoning_effort` / `thinking`；Anthropic 档没有 `temperature`。
-3. **联网**：无 Tavily key 时用维基；有 key 时用 Tavily；断网 / 429 不阻塞回答；网络来源与教材来源分块显示。
-4. **上传**：2 页中文 PDF → 段数 / 页码正确；纯图片 PDF → 明确报「无文本层」；GBK txt → 中文正常；换方向看不到；删除后 BM25 检索不到。
-5. **记忆**：答错生成 1 张卡；同题再答错不新增；答对变 resolved；复习自评前后 Beta 数值不变。
-6. **校准**：模拟 30 / 60 / 100 条作答（100 标注为模拟）；档位文案与 Wilson 区间一致；`n<30` 不出现「可信」；页面写明单方向最多约 80 题、不承诺 ±5pp。
-7. **TTS**：浏览器 voice 可切换、可停止；OpenAI / SiliconFlow 端点可出声；CORS 失败回退并提示。
-8. **方向名**：改名保存刷新仍在；空名 / 61 字被拒。
-9. **配置往返**：保存 `thinking` / `thinkingStatus` / `verification`，刷新设置页与导师页仍读到；400 降级写回的 unsupported 也在。
-10. **L6 整批**：一次生成 3–4 题只发 1 次核对；通过的题显示「依据核对」，未过降 practice，网络 / JSON 失败显示「依据核对：未完成」且仍 accepted；「已通过 N 项」不计未通过 / 未完成。
-11. **quote 最小长度**：mock 返回 2–4 个常见字的 quote，必须判 `not_found`；返回 12+ 字真正原文才 `supported`。
-12. **PDF worker**：`npm run build` 后 Network 里有 `pdf.worker` 资源，不是主线程 fake worker；若 404 按 public/ 或 `?url` 退化方案修。
-13. **server 模式配置**：登录后保存 llm 配置 → 刷新只显示掩码；删除配置后提问，服务端回 404「还没有保存模型配置」，页面回退知识库拼装；未配 `ALP_SECRET_KEY` 时保存回 503 并提示联系部署者。
-14. **知识库同步**：浏览器 A 上传 → 刷新 / 换浏览器 B 登录同一账号 → 文档与片段出现；B 改绑定后 A 再改同一文档 → A 收到「文档已在其他设备更新」；断网后上传仍成功但显示「仅显示本机资料」。
-15. **记忆卡同步**：A 答错生成卡 → B 登录拉回；B 复习后 A 再同步，`lastSeenAt` 较新者胜出；清空学科后不再复活。
-16. **搜索回退**：未登录选 DeepSeek → 显示「已改用维基百科（免密钥）」；server 模式未配 Tavily → 同样回退；配好之后响应 provider 与请求一致。
-17. **TTS 两种协议**：server 模式分别用 `speech` 端点与 mimo `chat-audio` 端点朗读；404 / 409 回退浏览器语音并显示原因。
-
-### 下一步
-
-教师班级视图 → 4 个新学科的专家审题 → 真实课程小规模试用 → Lighthouse 实测与演示视频。工程侧 `check:secrets` 的测试假值已改掉、`npm run verify` 已能为绿，接下来补 `/api/search`、`/api/tts` 的请求体上限与限流。
-
----
-
-## 12. 团队与合规
-
-**2026 第九届传智杯全国大学生数智创新与 AI 应用大赛**
-
-| 项 | 内容 |
+| 参数 | 值 |
 | --- | --- |
-| 竞赛名称 | 2026 第九届传智杯全国大学生数智创新与 AI 应用大赛 |
-| 报名赛道 | AI WEB 网页开发挑战赛（技术应用赛 · 团队赛） |
-| 团队名称 | 胆子肥嘟嘟队 |
-| 团队编号 | 38543 |
-| 所属院校 | 北京电子科技学院 |
-| 参赛组别 | B 组 |
-| 团队成员 | 李双、于凯、王一超 |
-| 指导教师 | 李浩亮 |
+| BM25 `K1` / `B` | 1.5 / 0.75，中文 bigram + 单字降权 0.35，最低分 0.5 |
+| 混合检索 | 每路候选 20，RRF `k=60`，注入 top3，余弦阈值 0.25，相邻切块去重 |
+| 切块 | 500 字 + 50 字重叠，单方向上限 800 段 / 40 万字 |
+| 评测 | 50 条（字面 15 / 同义 15 / 答不上 10 / 域外 10） |
 
-赛程：预指导作品提交 2026-10-31 15:00 截止；省赛报名与作品提交 2026-11-18 截止，评审意见约 2027 年 1 月底发布。页面上的团队信息从 `src/data/team.ts` 取数，本文内容与之一致（[关于页截图](screenshots/about.png)）。
+**存储链路**：浏览器解析 PDF / Markdown → 切块 → 未登录写 IndexedDB（单事务）；登录后本地先写，再 `PUT /api/kb` 做文档级 CAS 写入 `kb_docs` / `kb_chunks`，向量以 JSON 文本存列、按游标分页取回（不引 pgvector）。10 张表：`users`、`sessions`、`progress`、`directions`、`direction_picks`、`direction_items`、`user_secrets`、`kb_docs`、`kb_chunks`、`memories`。
 
-### 合规与数据
+**实测与边界**（`npm run eval:rag`，2026-10-29 本机）：recall@3 `1.000`、MRR@10 `1.000`、全文金句 `1.000`。但这套评测**已饱和**，只能证明基础检索没坏，不能证明标题加权或向量 / RRF 的提升；域外查询 emptyRate 为 `0.000`（10 条全部返回了文档，是缺陷信号不是通过）；混合检索只接上传资料且尚未评测。
 
-- **数据最小化**：注册只收邮箱、密码、显示名；不采集电话、住址、身份证号等联系方式与身份信息。
-  仓库里**没有**任何真实手机号或邮箱：`scripts/smoke.ts` 的隐私检查用正则匹配「像手机号/像邮箱」的串，
-  不再硬编码真实号码做比对（旧写法本身就是一次泄露）。`src/data/team.ts` 只存姓名。
-  注意：Git 提交历史里的作者邮箱由 Git 配置决定，不在本仓库的文件内容中。
-- **不使用未成年人数据**，也不使用任何真实学生数据集；演示数据全部由项目自行构造。
-- **密码**：PBKDF2-HMAC-SHA256，600,000 次迭代，每用户随机盐，常量时间比较；不存明文。
-- **密钥**：仓库内无真实 API 密钥，`npm run check:secrets` 可验证（本轮 exit 0；上一轮的测试假值已修复，见 §11 第 19 条）。用户自填的模型 / 搜索 / 语音密钥按调用模式存放：**server 模式**用 AES-256-GCM 加密后写 `user_secrets`（`secret_ct` / `secret_iv` / `secret_tag`，AAD 绑定 `userId:kind`），任何响应只回 `••••` + 末 4 位的掩码，明文只在服务端一次上游请求里出现；**local 模式**只存浏览器 localStorage（`alp.provider.v1`、`alp.search.v1`、`alp.tts.v1`）。两种模式都不写入日志，上游错误体先脱敏再出网。
-- **上传资料**：只保存抽取后的文本与切块，不保存原始文件。未登录只写本机 IndexedDB；登录后额外写账号的 `kb_docs` / `kb_chunks`（按 `user_id` 隔离），不随方向公开 / 复制，其他用户读不到。绑定知识点后，命中的段落会随出题 / 导师请求**发给你配置的模型供应商**：server 模式经本项目 `/api/llm/chat` 转发，local 模式由浏览器直连。不配置模型时不上传。
-- **联网与语音**：开启联网时查询词发往 DeepSeek / Tavily / 维基百科；server 模式经本项目 `/api/search` 转发，local 模式浏览器直连。使用在线语音时回答正文发往你配置的语音端点；server 模式经 `/api/tts`，local 模式直连。两条代发路由都不把查询词或正文写入数据库，结果只在当前标签页缓存 30 分钟。换账号 / 登出时本机密钥、知识库与教材讲义按 `planAccountTransition` 清除。
-- **许可**：MIT，见 `LICENSE`（其中另有一段说明：题库为教学演示用途，正式使用前须由任课教师逐题核对）。`research/` 下引用的外部资料版权归原作者，正式材料引用时保留出处。PDF 解析使用 `pdfjs-dist`（Apache-2.0）。
+完整链路、参数出处、降级矩阵、数据表与评测明细见 [检索与存储](docs/rag.md)。
 
----
+## 验证
 
-## 13. 检索与存储（RAG 是核心）
+测试、图谱、学科数三个徽章都能当场跑出来，数字为 2026-10-29 本机实测：
 
-RAG 在本项目里不是「给聊天加点上下文」的装饰，而是**回答必须有出处**的实现方式：导师回答先检索、再注入、最后逐字核对引用；上传资料同样先切块、再混合召回。它**不进入**路径排序与掌握度——`plan.ts` 仍然只依赖图谱与 Beta 后验（§4 的硬边界）。
-
-### 13.1 一次提问的完整链路
-
-```mermaid
-flowchart TD
-  Q["用户提问"] --> KP["知识点检索<br/>buildIndex(concepts) → BM25 top3"]
-  Q --> UP["上传资料检索（本方向 chunks）"]
-  UP --> B1["BM25 top20<br/>rag.ts search()"]
-  UP --> V1["向量 top20<br/>vector.ts topKNormalized()"]
-  V1 --> VS["向量来源<br/>kb.vectors（账号，游标分页）<br/>→ vectorCache（IndexedDB）<br/>→ /api/llm/embeddings 补算"]
-  B1 --> RRF["RRF 融合<br/>k=60, weights 1:1, candidates 20"]
-  V1 --> RRF
-  RRF --> TOP["top3 + 相邻切块去重"]
-  KP --> CTX["注入上下文<br/>[kcId] / [资料n]"]
-  TOP --> CTX
-  CTX --> LLM["模型回答（流式）<br/>/api/llm/chat 或浏览器直连"]
-  LLM --> CITE["extractCitedKcIds<br/>只列回复里真的出现、且在检索结果里的 id"]
-  CITE --> VER["verifyClaims<br/>逐字 quote 核对，只标注不改写"]
-```
-
-<details>
-<summary>ASCII 版</summary>
-
-```
-提问
- ├─ 知识点：buildIndex → BM25 top3（titleBoost=1）
- └─ 上传资料：
-      BM25 top20 ─┐
-                   ├─ RRF(k=60, 1:1, candidates=20) → top3 → 相邻去重
-      向量 top20 ──┘
-      向量：kb.vectors（账号）→ vectorCache（IndexedDB）→ /api/llm/embeddings
- → 注入 [kcId]/[资料n] → 模型流式回答
- → extractCitedKcIds（回复里出现 ∩ 检索结果）→ verifyClaims（逐字，只标注）
-```
-
-</details>
-
-两条检索的范围不同，必须分开说：
-
-| 检索对象 | 路径 | 是否用向量 | 代码 |
-| --- | --- | --- | --- |
-| 内置 / 自定义方向的**知识点文档** | 现建 BM25 索引 → `search(index, question, 3)` | **否**，纯 BM25 | `app/tutor/page.tsx:347` |
-| 用户**上传片段** | BM25 top20 + 向量 top20 → RRF → top3 → 相邻去重 | 有 embedding 时是；否则只 BM25 | `app/tutor/page.tsx:436-443`、`src/lib/hybridSearchClient.ts:104` |
-
-所以「RAG 是核心」指的是**证据链是核心**，不是「所有检索都已接向量」。内置知识点接向量仍是缺口（§11 第 27 条）。
-
-> 知识点索引不是评测用的 `kbDocuments`：导师页用 `target.graph.concepts` 现建（名称 + 章节 + 摘要 + 该点题目解析，`app/tutor/page.tsx:277-289`），自定义方向没有内置题库时只收名称与摘要。`kbDocuments` 40 篇只用于 50 条评测（§15），两者不能互相证明。
-
-### 13.2 参数表
-
-| 参数 | 值 | 位置 | 说明 |
-| --- | --- | --- | --- |
-| BM25 `K1` / `B` | 1.5 / 0.75 | `src/lib/rag.ts:67-68` | 词频饱和 / 长度归一化 |
-| 单字 token 权重 | 0.35 | `src/lib/rag.ts:61` | 中文单字区分度低，压住跨领域误命中 |
-| BM25 最低分 `MIN_SCORE` | 0.5 | `src/lib/rag.ts:64` | 低于它不返回；宁可不给依据 |
-| 标题加权 `titleBoost` | 默认 1；评测用 2 | `src/lib/rag.ts:94-103`、`scripts/eval-rag.ts:85` | 1 表示整段标题分支不执行，分数与旧实现逐位一致 |
-| 每路候选 | 20 | `src/lib/hybrid.ts:43`、`src/lib/hybridSearchClient.ts:30-33` | BM25 与向量各取 20 再融合 |
-| RRF 平滑常数 `k` | 60 | `src/lib/hybrid.ts:40` | 原论文默认值；rank1 与 rank3 相对差约 3.2% |
-| 两路权重 | 1 : 1 | `src/lib/hybridSearchClient.ts:140` | 缺省权重 1；非正数按 0 计（该路不参与） |
-| 融合后注入条数 | 3 | `src/lib/hybrid.ts:46` | 3 条依据足够回答，再多稀释提示词 |
-| 向量余弦阈值 | 0.25 | `src/lib/hybrid.ts:49` | 低于它不进融合，不凑满 k 条 |
-| 相邻切块去重 | ≥20 码点重叠 | `src/lib/hybrid.ts:52` | 切块本身有 50 码点重叠 |
-| 嵌入输入上限 | 2000 码点 | `src/lib/embedding.ts:49` | 标题 + 空行 + 正文，按码点截断 |
-| 已知 embedding 维度 | OpenAI 1536 / 百炼 1024 | `src/lib/embedding.ts:27-46` | 模型名认不出来返回 null，宁可退回 BM25 |
-| 切块 | 500 字 + 50 字重叠 | `src/lib/knowledge.ts:17-38` | 常规块 ≤500，只有边界尾块可能 <80 |
-
-RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只按名次不看原始分数，所以 BM25 与余弦的尺度差异不影响融合；同一路重复 id 只计第一次，同分按 id 升序（`src/lib/hybrid.ts:81-114`）。检索结果必须带 `kcId` / `资料n`，否则回答无法引用到具体出处。
-
-### 13.3 降级矩阵
-
-| 条件 | 检索行为 | 界面 / 响应 |
+| 命令 | 验证什么 | 最近实测（2026-10-29） |
 | --- | --- | --- |
-| 未配置 embedding（llm 行无 `embeddingModel`） | 只走 BM25 | `retrievalNotice(false)`：「本次未使用语义检索（未配置 embedding 模型）」 |
-| `/api/llm/embeddings` 返回 404 / 503 | 本次只用 BM25，并把 `embeddingStatus` 记为 `unsupported` | 不弹错误框；显示「本次未使用语义检索」提示；后续不再请求 |
-| embedding 网络 / 5xx / 超时 | 本次只用 BM25，`embeddingStatus` 不变 | 显示同一提示；不把一次抖动永久记成「不支持」 |
-| 查询向量与索引模型不一致 | 放弃向量路 | 只 BM25；不把两种模型的向量混进同一索引 |
-| 向量维度不符 / 含非有限值 / 零范数 | 该片段跳过，不当作 0 分 | 无提示（逐条提示会刷屏） |
-| 所有向量分数 < 0.25 | 向量路为空，RRF 只剩 BM25 一路 | 同「未使用语义检索」的说明 |
-| BM25 分数 < 0.5 | 该文档不返回 | 可能 0 条依据，按「未找到依据」渲染 |
-| 两路皆空 | 返回 `[]`，不注入检索依据 | 导师回答没有检索片段；教材 / 上传 / 网络摘录与掌握度 / 题库解析仍可能拼装，界面必须把「有依据」与「无依据」分开 |
-| KB 远端不可用 / 未登录 | 只用本机片段；向量表为空 | `syncWarning` 说明「仅显示本机资料」 |
-| 片段补嵌入失败（单批超时） | 该批片段 `embedding` 落 null，BM25 仍可命中 | 无提示；不把坏向量写进索引 |
-| 引用校验失败（模型引了不存在的 id） | 引用列表为空 | 「本次回复未包含可核对的引用」 |
+| `npm run verify` | typecheck + 单测 + 图谱 + 密钥扫描 | **exit 0** |
+| `npm run test` | 66 个测试文件 | **1594 passed** |
+| `npm run kg:validate` | 9 学科图谱与题库 | **0 error**（360 点 / 540 边 / 1080 题） |
+| `npm run build` | Next 16 生产构建 | **exit 0**（24 个路由） |
+| `npm run eval:rag` | 50 条检索评测 | recall@3 `1.000`，OOD empty `0.000` |
+| `npm run check:secrets` | 仓库无真实密钥 | 扫 236 个文件，**0 命中** |
+| `auth-smoke` / `mcp-smoke` | 注册登录隔离 / MCP 协议 | **34/34** / **16/16**（内存库） |
 
-**「两路皆空 → 拒答」的准确含义**：检索层不生成答案，也不伪造依据；它返回空列表，导师页按「没有检索到可引用的知识点」渲染，模型仍可能按自身知识回答——界面必须让「有依据」与「无依据」可区分。真正的「拒答」只发生在没有模型、走 `composeDeterministic` 且没有命中片段时：它不会编造出处。
+E2E 必须在命令前加 `DATABASE_URL=`，否则 `next dev` 会读到真实连接串并把测试账号写进线上库。原始终端输出、Mock 供应商的 19 项集成检查、可访问性对比度实测见 [验证记录](docs/verification.md)。
 
-### 13.4 存储链路（一次上传到哪里）
+## 项目结构
 
-1. 浏览器解析文件（`pdf.ts` / `textFile.ts`）→ `knowledge.ts` 切块（500 + 50 重叠）。
-2. `getKbStorageForUser(userId)` 解析存储（`src/lib/kbRemote.ts:512`）：
-   - 未登录 → `kbLocal.ts` 的 IndexedDB `alp-kb-v1`（`docs` / `chunks`，按 `directionId` 建索引）；
-   - 已登录 → 复合存储：**本地先写**（单事务），成功后 `PUT /api/kb`；远端失败只记 `syncWarning`，不回滚本地（409 例外：会抛 `KbConflictError`，让界面提示刷新后重试）。
-3. 服务端 `putKbDocument`（`src/lib/kbServer.ts:450`）：CAS → upsert `kb_docs` → 补向量 → upsert `kb_chunks` → 删本次列表外的旧片段。向量以 JSON 文本存 `kb_chunks.embedding`，不引 pgvector；`embedding_dim` 校验维度。
-4. 读取：`GET /api/kb?directionId=` 回 docs + chunks（**不含向量**）；`?vectors=1&after=&limit=` 按 `chunk_id` 游标分页取向量（`src/lib/kbServer.ts:623`）。
-5. 检索时向量缓存：`useKnowledgeBase.ensureVectors()`（`src/lib/kbStore.ts:539`）→ `vectorCache.ensureVectors`（`src/lib/vectorCache.ts:111`）→ 缺失的经 `/api/llm/embeddings` 补算并写回 IndexedDB `alp-vectors-v1`。
-
-**为什么不装向量数据库**：知识点文档只有几十 KB，上传片段最多 800 段 / 方向；进程内 BM25 与 `Float32Array` 余弦足够，且不增加运维与迁移成本。代价是向量检索在应用层做，跨方向不能共享索引，也没有 ANN 加速——这是当前规模下的取舍，不是通用方案。
-
----
-
-## 14. 数据表
-
-10 张表全部在 `src/lib/db.ts:781` 的 `SCHEMA` 常量里，进程首次 `getDb()` 时幂等执行。Postgres 与内存实现共用同一套 SQL 形状；内存实现的删除 / 分页分支必须逐条精确匹配（否则会静默返回 0 / `[]`）。
-
-| 表 | 用途 | 主键 | 关键列 / 加密 | 跨设备语义 |
-| --- | --- | --- | --- | --- |
-| `users` | 账号 | `id` | `email` 唯一、`password_hash`（PBKDF2） | 所有设备同一账号 |
-| `sessions` | 登录会话 | `token` | `user_id`、`expires_at`；Cookie `alp_session`（httpOnly / sameSite=lax / 14 天） | **不跨设备**：每个浏览器一份会话 |
-| `progress` | 每用户每学科进度 JSON | `(user_id, subject_id)` | `data`（掌握度、attempts、pathEdits；**不含 memories**） | 登录后服务端权威；本地独有的学科保留 |
-| `directions` | 自定义方向 | `id` | `graph_json`、`is_public`、`user_id` | 服务端；公开方向任何人可读 |
-| `direction_picks` | 用户选用过的方向 | `(user_id, direction_id)` | `created_at` | 服务端 |
-| `direction_items` | 方向题目缓存 | `id`，`UNIQUE(direction_id, content_hash)` | `stem` / `options_json` / `answer_index` / `checks_json` / `source` / `status` | 服务端；公开方向题目匿名可读 |
-| `user_secrets` | 账号级供应商配置 | `(user_id, kind)` | **密文字段**：`secret_ct` / `secret_iv` / `secret_tag` / `secret_kid`；`secret_hint` 只存掩码；`options_json` 只存白名单字段 | 服务端；浏览器永远拿不到明文 |
-| `kb_docs` | 上传文档元数据 | `(user_id, doc_id)` | `title` / `file_name` / `kind` / `size` / `page_count` / `char_count` / `chunk_count` / `kc_ids_json` | 登录后本地 + 账号副本；不公开 / 不复制 |
-| `kb_chunks` | 上传片段 | `(user_id, chunk_id)`，外键 `(user_id, doc_id)` 级联 | `text` / 页码 / `embedding`（JSON 文本）/ `embedding_model` / `embedding_dim` | 同上；向量按游标分页取 |
-| `memories` | 记忆卡 | `(user_id, mem_id)` | `payload`（整张卡 JSON）/ `kind` / `kc_id` / `status` / `updated_at` | 登录后 LWW 同步；`PUT` 不删行，删除显式 `DELETE` |
-
-### 14.1 `user_secrets`：只回掩码，密钥 AES-256-GCM
-
-- `kind` 四选一：`llm` / `search-deepseek` / `search-tavily` / `tts`；同一 `(user_id, kind)` 只有一行。
-- 加密参数：`aes-256-gcm`，主密钥 = `ALP_SECRET_KEY` 的 32 字节标准 base64；IV 12 字节随机；tag 16 字节；AAD = `user_secrets:${userId}:${kind}`（`src/lib/secretCrypto.ts:18-24`、`:108-116`）。把一行的密文贴到另一行 / 另一个用户上，解密直接失败。
-- 明文下限 8 个码点；短于它拒绝保存，避免把占位符存成正式配置。
-- `GET /api/config` 只返回 `configured` / `hint` / `label` / `api` / `baseUrl` / `model` / `options` / `updatedAt`；`hint` 固定 `••••` + 末 4 位，长度不随密钥变化（`secretHint`，`src/lib/secretCrypto.ts:218`）。
-- 没有 `ALP_SECRET_KEY` 时 `/api/config` 拒绝保存（503 `KEY_ENC_UNAVAILABLE`），**绝不退化为明文落库**；内存后端也拒绝写密钥（503 `PERSISTENCE_UNAVAILABLE`，测试可设 `ALP_ALLOW_MEMORY_SECRETS=1`）。
-- 当前只支持一把主密钥：`ALP_SECRET_KEY_ID` 改变后旧行统一报 `KEY_KID_UNKNOWN`，需要用户重存（§11 第 29 条）。
-
-### 14.2 同步语义速查
-
-| 数据 | 未登录 | 登录后 | 冲突 / 删除 |
-| --- | --- | --- | --- |
-| 进度 | `localStorage` | `progress` 表；服务端优先，本地独有学科保留 | 同学科单权威，不做逐条合并 |
-| 记忆卡 | `SubjectProgress.memories` | `memories` 表；LWW `max(lastSeenAt, createdAt)` | `PUT` 只 upsert；删除显式 `DELETE`；单卡删除未接线 |
-| 知识库 | IndexedDB `alp-kb-v1` | 本地 + `kb_docs` / `kb_chunks`；本地先写 | 文档级 CAS，409 不写行；删除无 tombstone |
-| 教材 / 讲义 | `alp.materials.v1` | 仍只在本机（浏览器级键） | 换账号时清空；不随账号同步 |
-| 供应商密钥 | local `alp.*.v1` | `user_secrets` 密文 | 换账号清本机；服务端行保留 |
-
-**账号切换**：`planAccountTransition` 对「A→B / A→匿名」清空 learner、本机 KB、搜索 / 语音密钥、教材讲义；「匿名→B」保留并登记归属；登出无条件清空并删调用模式键（`src/lib/useAuth.ts:73-116`、`:239`）。服务端已保存的配置不会因切换被删除。
-
-### 14.3 内存实现的精确分支
-
-内存库不是 SQL 引擎，靠「归一化后按子串匹配」分派；漏一个分支就是静默 `return 0` / `[]` / `null`。因此每条形状都必须有独立测试（`src/lib/db.test.ts`）。
-
-| 操作 | 形状 | 判定顺序 | 返回值 |
-| --- | --- | --- | --- |
-| 删配置 | `DELETE FROM user_secrets WHERE user_id = $1 AND kind = $2` | 唯一形状 | 1 / 0 |
-| 删文档 | `DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2` | **先判 `doc_id =`** | 删文档 1 / 0，并级联删片段 |
-| 删方向文档 | `DELETE FROM kb_docs WHERE user_id = $1 AND direction_id = $2` | 再判 `direction_id =` | 文档数，并级联删该方向片段 |
-| 删片段 | `DELETE FROM kb_chunks WHERE user_id = $1 AND chunk_id = $2` | **先判 `chunk_id =`** | 1 / 0 |
-| 删文档片段 | `DELETE FROM kb_chunks WHERE user_id = $1 AND doc_id = $2` | 再判 `doc_id =` | 删除条数 |
-| 删方向片段 | `DELETE FROM kb_chunks WHERE user_id = $1 AND direction_id = $2` | 最后判 `direction_id =` | 删除条数 |
-| 删单卡 | `DELETE FROM memories WHERE user_id = $1 AND mem_id = $2` | **先判 `mem_id =`** | 1 / 0 |
-| 清学科卡 | `DELETE FROM memories WHERE user_id = $1 AND subject_id = $2` | 再判 `subject_id =` | 删除条数 |
-| 向量分页 | `SELECT chunk_id, embedding, ... WHERE user_id = $1 AND direction_id = $2 AND chunk_id > $3 ORDER BY chunk_id LIMIT $4` | **先判 `chunk_id >`**，参数顺序固定 | 升序切片 |
-| 按文档列片段 | `SELECT ... WHERE user_id = $1 AND doc_id = $2 ORDER BY chunk_id` | 方向过滤可选，`order by chunk_id` 单独分支 | 行数组 |
-
-两个顺序是硬要求：`kb_docs` 先判 `doc_id` 再判 `direction_id`，否则「删一篇」会被当成「删整个方向」；`kb_chunks` 先判 `chunk_id` 再 `doc_id` 再 `direction_id`，三种键都含 `id =`，顺序错了会把「删一段」当成「删整篇」。分页必须先于方向过滤，否则游标永远推不动（`src/lib/db.ts:545-575`）。
-
-「静默成功」的四个出口是 `run` 末尾 `return 0`、`all` 末尾 `return []`、`one` 末尾 `return null`，以及 `ensureSchema` 吞掉「内存实现不认 CREATE TABLE」。这四处都靠 `db.test.ts` 的「写 → 读」成对断言与每条删除形状的返回值断言兜住，不靠肉眼。
-
----
-
-## 15. RAG 评测
-
-### 15.1 50 条构成
-
-评测集在 `scripts/eval-data/rag-eval-50.jsonl`，每行一个 JSON 对象，共 50 条：
-
-| 类别 | 条数 | `goldKcIds` | `relatedKcIds` | `goldPhrase` |
-| --- | --- | --- | --- | --- |
-| `literal`（字面） | 15 | 非空 | 任意 | **必填**，逐字摘自语料 |
-| `paraphrase`（同义改写） | 15 | 非空 | 任意 | **必填** |
-| `answer-absent`（有相关点但答不上） | 10 | **必须为空** | **必须非空** | 可选 |
-| `out-of-domain`（域外） | 10 | 必须为空 | 必须为空 | 可选 |
-
-`parseEvalItems`（`src/lib/ragEval.ts:147`）逐行校验 id 唯一、类别合法、字段类型与每类约束；坏行带行号报错，不静默少测。脚本另加三道检查（`scripts/eval-rag.ts:128-163`）：总数 50、分类 15/15/10/10、语料恰好 40 篇、`goldKcIds` / `relatedKcIds` 都在 `kbDocuments` 里、`goldPhrase` 必须逐字出现在某个 gold 文档正文中。
-
-### 15.2 指标定义
-
-设 answerable = `literal ∪ paraphrase`（30 条）。
-
-| 指标 | 定义 | 分母 |
-| --- | --- | --- |
-| `recall@3` | 每条「gold 与 top3 的交集大小 ÷ gold 大小」，再取平均 | 30 |
-| `recall@3Literal` / `recall@3Paraphrase` | 同上，按类别 | 15 / 15 |
-| `MRR@10` | 每条 `1 / 第一个 gold 在 top10 中的名次`；未命中记 0 | 30 |
-| `goldPhraseInFullText` | top3 中至少一篇的**全文**（title + text）包含 `goldPhrase` 的条目比例 | 有 `goldPhrase` 的条目（30） |
-| `answerAbsentRelatedHit`（answer-absent relatedHitRate） | top3 至少命中一个 `relatedKcIds` 的 answer-absent 条目比例 | 10 |
-| `answerAbsentEmpty` | 检索结果完全为空的 answer-absent 条目比例 | 10 |
-| `outOfDomainEmpty` | 检索结果完全为空的 out-of-domain 条目比例 | 10 |
-| `outOfDomainFalseContext` | `1 − outOfDomainEmpty`，即「把无关内容当成依据」的比例 | 10 |
-| `unanswerableEmpty` | answer-absent ∪ out-of-domain 的空检索率 | 20 |
-
-**金句判定为什么必须用全文**：`search()` 返回的 `snippet` 是 `text.slice(0, 160)`（`src/lib/rag.ts:160`），而 40 篇知识库正文有 230–322 个码点，例题解析大多落在 160 字之后。用 snippet 判「金句是否被检索到」会把大量真实命中记成未命中——这是上一版的 blocker。现在 `evaluateRetrieval` 在调用方传入的 `corpus`（kcId → `title + "\n" + text`）里做 `includes`（`src/lib/ragEval.ts:290-306`）；top3 里出现 corpus 之外的 id 直接抛 `EvalDataError`，不静默记未命中。
-
-**answer-absent 为什么主指标是 relatedHitRate 而不是「必须为空」**：这类问题的答案不在任何知识点里，但存在一个「相关、可提供背景」的知识点。检索命中它是有用的（导师可以据此说明「这属于 X 的范畴，但教材没有展开」），所以 `answerAbsentRelatedHit` 越高越好；`answerAbsentEmpty` 是另一种可接受形态的观察值，两者都不单独构成通过条件。
-
-### 15.3 复现命令
-
-```bash
-# 基线 + 标题加权（默认 ×2）
-npm run eval:rag
-
-# 调整标题词频放大倍数（1–10）
-npm run eval:rag -- --title-boost 3
-
-# 混合检索：提供文档 / 查询向量文件（示例路径；仓库未附带 vectors.json）
-npm run eval:rag -- --mode hybrid --vectors scripts/eval-data/vectors.json
-
-# 混合检索：或配置服务端 embedding（三项齐全）
-ALP_EMBED_BASE_URL=... ALP_EMBED_API_KEY=... ALP_EMBED_MODEL=... \
-  npm run eval:rag -- --mode hybrid
+```
+src/lib/plan.ts          路径排序、装包、双指纹、先修校验（纯函数）
+src/lib/mastery.ts       Beta 后验、sd、P(已掌握)、预测正确率
+src/lib/graph.ts         DAG 校验、深度、拓扑序、先修闭包
+src/lib/rag.ts           BM25 bigram + 标题加权（纯函数）
+src/lib/hybrid.ts        RRF 融合与相邻去重（纯函数）
+src/lib/kbServer.ts      知识库行映射、文档级 CAS、向量分页
+src/lib/secretCrypto.ts  AES-256-GCM、AAD、kid、掩码（服务端）
+app/                     9 个页面 + 14 个 API 路由
+scripts/                 validate-kg / eval-rag / check-secrets / 三个 E2E
 ```
 
-向量文件形状：`{ "documents": { "c01": [数字...] }, "queries": { "lit-01": [数字...] } }`；`queries` 可省略，缺的会用 embedding 端点补算。脚本同时校验总数、分类、语料与向量维度；缺向量时**不会**偷偷跳过，而是报错。
+完整模块清单见 [架构与算法](docs/architecture.md#项目结构)。
 
-### 15.4 本轮实跑
+## 已知限制
 
-```text
-$ npm run eval:rag
-RAG 检索评测
-════════════════════════════════════════════════════════════════════════
-评测集：scripts/eval-data/rag-eval-50.jsonl（50 条）
-分类：literal 15 / paraphrase 15 / answer-absent 10 / out-of-domain 10
-语料：kbDocuments 40 篇完整正文（title+text）；金句在 top3 全文判定
-模式：auto；title 加权 ×2
+- **没有教师班级视图**，也不使用任何真实学生数据；4 个新增学科未经任课教师逐题复核。
+- **检索评测饱和且不拒答域外问题**：recall@3 已到 1.000，证明力有限；OOD 全部返回文档。
+- **内置知识点仍走纯 BM25**，混合检索只接上传资料，且这部分没有评测集。
+- **没有 CI**，所有门禁靠本地 `npm run verify` 与 E2E 脚本手动跑。
+- **知识库同步不承诺线性化**：删除无 tombstone、CAS 不是事务、远端读会覆盖本地未上传的修改。
+- **没有自建限流**，`/api/search` 与 `/api/tts` 没有请求体上限，公网部署需在代理层补。
 
-[BM25 基线]
-  recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
-  MRR@10                   1.000（30/30）
-  goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   1.000（10/10）
-  out-of-domain emptyRate        0.000（0/10）   falseContextRate 1.000（10/10）
-  unanswerableEmptyRate    0.000（0/20）   （answer-absent ∪ out-of-domain）
+30 条缺口与每条的原因、修法见 [已知限制](docs/limits.md)；评分点逐项对照与「不可宣称」的措辞见 [评分对照](docs/scoring.md)。
 
-[BM25 + title×2]
-  recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
-  MRR@10                   1.000（30/30）
-  goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   1.000（10/10）
-  out-of-domain emptyRate        0.000（0/10）   falseContextRate 1.000（10/10）
-  unanswerableEmptyRate    0.000（0/20）   （answer-absent ∪ out-of-domain）
+## 文档
 
-混合检索：未测（未提供 --vectors，且未配置 ALP_EMBED_BASE_URL / ALP_EMBED_API_KEY / ALP_EMBED_MODEL）
+| 文档 | 内容 |
+| --- | --- |
+| [架构与算法](docs/architecture.md) | 流程图、分层约束、Beta 后验公式、排序键、复杂度实测、模块清单 |
+| [AI 触点、硬门禁与降级](docs/ai.md) | 六个 AI 触点、只读核对、思考强度、联网、TTS、知识口径、L1–L6 校验、降级矩阵 |
+| [检索与存储](docs/rag.md) | 提问链路、参数表、降级矩阵、上传存储链路、10 张表、50 条评测 |
+| [部署说明](docs/deploy.md) | Node 版本要求、调用模式、进度合并规则、环境变量、Vercel 与自托管 |
+| [功能清单](docs/features.md) | 按用户旅程排列的 23 项能力与界面证据 |
+| [验证记录](docs/verification.md) | 门禁原始输出、E2E、Mock 供应商、可访问性、工程细节 |
+| [已知限制](docs/limits.md) | 已验证能力、已修复问题、真实缺口、能力边界、下一步 |
+| [评分对照](docs/scoring.md) | 评分表逐项映射到代码路径与可跑命令 |
 
-对比（列 = 检索配置，值 = 指标）
-metric                      BM25        title×2
-recall@3                    1.000       1.000
-recall@3 literal            1.000       1.000
-recall@3 paraphrase         1.000       1.000
-MRR@10                      1.000       1.000
-goldPhraseInFullText        1.000       1.000
-answer-absent relatedHit    1.000       1.000
-out-of-domain empty         0.000       0.000
-out-of-domain falseContext  1.000       1.000
-unanswerableEmpty           0.000       0.000
-EXIT=0
-```
+## 团队与合规
 
-### 15.5 结论与不可宣称
+2026 第九届传智杯全国大学生数智创新与 AI 应用大赛 · AI WEB 网页开发挑战赛（技术应用赛 · 团队赛）
 
-1. **金句 blocker 已关闭**：判定改在全文，30/30 命中；上一版用 160 字 snippet 的误判不再存在。
-2. **评测集已饱和**：BM25 基线在 answerable 上全部 1.000，`title×2` 与基线逐项相同。因此这份 50 条**不能**用来证明「标题加权有效」或「向量 / RRF 提升」——它只能证明「基础检索没有坏」。
-3. **`outOfDomainEmpty = 0.000`**：10 条域外问题全部返回了文档。检索层没有拒答能力（BM25 的 `MIN_SCORE = 0.5` 挡不住 OOD 查询里的高频 bigram）。这是**缺陷信号，不是通过**；改进列入 §11 第 26 条。
-4. **混合检索未测**：没有 `--vectors` 文件，也没有 `ALP_EMBED_*`。脚本如实打印「未测」并以 0 退出——没测就是没测，不编数字。原因写在这里，不写成「效果与 BM25 相当」。
-5. **发布门槛**（口径定义，本轮均满足）：`recallAt3 ≥ 0.90`、`goldPhraseInFullText ≥ 0.95`、`answerAbsentRelatedHit ≥ 0.90`。`outOfDomainEmpty` 不设门槛，因为它当前为 0；设一个「≥0.5」的门槛只会让 CI 永远红。
-6. **评测对象不是上传资料**：50 条跑的是 `kbDocuments` 40 篇知识点；生产里接 RRF 的是用户上传片段。上传资料的混合检索目前没有评测集，只有单测覆盖 `createRetriever` / `retrieveUploadsHybrid` 的排序与降级。
+| 团队 | 编号 | 院校 | 组别 | 成员 | 指导教师 |
+| --- | --- | --- | --- | --- | --- |
+| 胆子肥嘟嘟队 | 38543 | 北京电子科技学院 | B 组 | 李双、于凯、王一超 | 李浩亮 |
 
-### 15.6 外部端点真机探测（2026-10-29）
+- **数据最小化**：注册只收邮箱、密码、显示名；仓库与测试数据里没有真实手机号或邮箱。
+- **密码**：PBKDF2-HMAC-SHA256 600,000 次，每用户随机盐，常量时间比较。
+- **密钥**：仓库内无真实密钥（`check:secrets` 可验证）；用户密钥按模式存放，server 模式加密落库、只回掩码，local 模式仅存浏览器。
+- **上传资料**：只保存抽取后的文本与切块，不保存原文件；按 `user_id` 隔离，不随方向公开或复制。
 
-脚本：`scripts/probe-external.ts`，入口 `npm run probe:external`；单端点开关 `--deepseek-search` / `--mimo` / `--embedding`。输出纪律：只打印 status、content-type、顶层 keys、结果数、音频字节数与首 4 字节；不打印密钥、Authorization、base64 或完整响应正文。退出码：0 = 跑完（含「未验证」），1 = 有凭据但探测失败，2 = 参数错误。
-
-```text
-$ npm run probe:external
-外部端点真机探测
-════════════════════════════════════════════════════════════════════════
-只打印 status / content-type / 顶层 keys / 结果数 / 音频头；不打印密钥与正文。
-
-== DeepSeek 搜索 ==
-POST https://api.deepseek.com/v1/tools/search
-未验证：缺少 DeepSeek 官方搜索凭据：ALP_E2E_LLM_BASE_URL 的主机是 api.jasonsome.cn，不是 api.deepseek.com；也没有 DEEPSEEK_API_KEY
-
-== MiMo 语音合成 ==
-端点：<未配置>
-未验证：缺少 MIMO_BASE_URL / MIMO_API_KEY / MIMO_MODEL
-
-== Embedding 向量 ==
-端点：<未配置>
-未验证：缺少 ALP_EMBED_BASE_URL / ALP_EMBED_API_KEY / ALP_EMBED_MODEL
-
-────────────────────────────────────────────────────────────────────────
-汇总：通过 0 / 失败 0 / 未验证 3
-EXIT=0
-```
-
-结论：**三个端点本轮都没有完成带凭据的成功调用**，所以不能写「DeepSeek 搜索已验证」「mimo 已验证」「embedding 已验证」。`.env.local` 里的 `ALP_E2E_LLM_*` 指向中转域 `api.jasonsome.cn`，脚本坚持「只有 base_url 主机是 `api.deepseek.com` 才把该 key 当 DeepSeek 搜索密钥」，不拿中转密钥请求官方端点。完整记录（含无凭据 curl 的 401、MiMo 假凭据失败路径）在 `docs/verification/2026-10-29-external-endpoints.md`。
-
----
-
-## 16. 评分对照
-
-评分表把「AI 技术深度」拆成 35%，下面逐项给出**代码路径 + 可当场跑的命令 + 缺口**。这是可验证映射，不是自评得分；标「缺口」的地方不应在答辩里说成已实现。
-
-| 子项 | 权重 | 对应代码路径 | 可验证命令 | 缺口 / 准确措辞 |
-| --- | --- | --- | --- | --- |
-| **大模型集成** | 8% | `src/lib/provider.ts`（8 个预设、`checkBaseUrl`、`testConnection`）、`src/lib/chat.ts`（`callChat` / `callChatStream` / `probeThinking`，local 直连 + server 代理）、`src/lib/reasoning.ts`（三档思考请求体、SSE 分流）、`src/lib/upstream.ts`（服务端解密、端点拼装、SSE 代理、错误脱敏）、`app/api/llm/chat/route.ts`、`src/lib/direction.ts` / `itemgen.ts`（结构化 JSON 生成与校验） | `npm run test`（`provider.test.ts`、`chat.test.ts`、`reasoning.test.ts`、`thinking.test.ts`、`llm-route.test.ts`）；`node node_modules/tsx/dist/cli.mjs scripts/mock-gen-check.ts`（19 项 PASS，上一轮；本轮未重跑）；`probe:external` 三端点未验证 | 没有模型 router、没有跨供应商自动切换、没有微调；真实模型端到端只有 mock 与历史 ego 实测，DeepSeek / mimo 官方端点本轮未验证 |
-| **Agent / 工作流** | 8% | 固定工作流编排：诊断 → Beta → `planPath` → 预算装包 → 手动改写（`app/diagnose/page.tsx`、`src/lib/plan.ts`）；方向生成 → 八条门禁 → L1–L6 → 落库（`src/lib/directionItems.ts`、`itemgen.ts`、`verifyClient.ts`）；导师链路 检索 → 流式 → 引用解析 → 逐字核对（`app/tutor/page.tsx`、`tutor-logic.ts`）；MCP tools 暴露同一批纯函数（`app/api/mcp/route.ts`） | `npm run test`（`plan.test.ts`、`directionItems.test.ts`、`itemgen.test.ts`、`verify.test.ts`、`tutor-logic.test.ts`）；`node node_modules/tsx/dist/cli.mjs scripts/mock-gen-check.ts`（上一轮 19 项 PASS；本轮未重跑）；`BASE_URL=... npx tsx scripts/mcp-smoke.ts` 16/16 | **不做 ReAct / ToolLoopAgent / 自主多步规划**；「Agent」这里是确定性工作流 + 只读核对者，不是自循环代理；没有工具选择的运行时决策 |
-| **RAG** | 6% | `src/lib/rag.ts`（BM25 bigram + 标题加权）、`hybrid.ts`（RRF k=60 / 候选 20 / top3 / 阈值 0.25）、`vector.ts`（余弦 / topK）、`embedding.ts`（维度确定的预设）、`hybridSearchClient.ts`（BM25+向量适配层）、`ragEval.ts` + `scripts/eval-rag.ts`（50 条评测）、`src/lib/kbServer.ts` / `kbRemote.ts`（知识库存储与同步） | `npm run eval:rag`（本轮 exit 0，recall@3 1.000、全文金句 1.000、OOD empty 0.000）；`npm run test`（`rag.test.ts`、`hybrid.test.ts`、`vector.test.ts`、`ragEval.test.ts`、`embedding.test.ts`） | 内置知识点仍纯 BM25；混合检索只接上传资料且**本轮未测**；评测集饱和、OOD 拒答为 0；没有 reranker / query rewrite / 多轮检索 |
-| **多模态** | 5% | 文本侧：`src/lib/pdf.ts`（`pdfjs-dist` 抽文本层，不做 OCR）、`src/lib/knowledge.ts`（编码探测 / 切块）；语音输出：`src/lib/tts.ts`（浏览器语音 / 在线语音）、`src/lib/mimo.ts`（`chat-audio` 协议、base64 音频）、`app/api/tts/route.ts`；界面：`src/components/read-aloud.tsx` | `npm run test`（`tts.test.ts`、`mimo.test.ts`、`knowledge.test.ts`）；`npm run build`（构建通过；PDF worker 浏览器侧未检查）；`scripts/pdf-smoke.ts` **本轮未跑**（需 Playwright Chromium） | **没有图像 / 视频输入，没有 OCR，没有语音识别（ASR）**；多模态只覆盖「PDF 文本抽取 + 语音合成」，不是视觉理解。PDF worker 浏览器侧未验证 |
-| **AI 安全** | 4% | `src/lib/secretCrypto.ts`（AES-256-GCM / AAD / kid）、`userSecrets.ts`（白名单 / 掩码 / 内存后端拒绝）、`ssrf.ts` + `ssrfGuard.ts`（形状 → DNS → 钉 IP）、`routeAuth.ts` + `origin.ts`（登录 / 同源）、`apiContracts.ts`（strictObject 拒绝 baseUrl/apiKey/model）、`upstream.ts` / `serverSearch.ts` / `serverTts.ts`（错误脱敏）、`tutor-logic.ts` + `verify.ts`（引用逐字核对）、`websearch.ts`（提示词注入边界） | `npm run test`（`secretCrypto.test.ts`、`userSecrets.test.ts`、`ssrf.test.ts`、`ssrfGuard.test.ts`、`routeAuth.test.ts`、`origin.test.ts`、`config-route.test.ts`、`search-tts-route.test.ts`）；`BASE_URL=... npx tsx scripts/auth-smoke.ts`（401/503 分支 34/34）；`npm run check:secrets`（**本轮 exit 0**） | **没有自建限流**；`/api/search`、`/api/tts` 没有请求体上限；CAS 不是事务；没有审计日志；`check:secrets` 已恢复为绿。安全是「默认拒绝 + 最小暴露」，不是「已完成渗透测试」 |
-| **MCP / 工具集成** | 4% | `app/api/mcp/route.ts`：JSON-RPC 2.0 over HTTP，协议 `2025-06-18`；**tools 5 个**（`list_subjects`、`get_learner_state`、`plan_path`、`search_knowledge`、`get_prerequisites`）；**resources 18 个**（9 学科 × 图谱 / 题库）；**prompts 2 个**（`explain_path_step`、`review_weak_point`） | `BASE_URL=... npx tsx scripts/mcp-smoke.ts`（**本轮 16/16 通过**）；工具函数本身由 `plan.test.ts` / `rag.test.ts` / `graph.test.ts` 覆盖，MCP 协议层由 smoke 覆盖 | **全部只读**：没有写工具、没有创建 / 修改方向、没有触发诊断；端点无鉴权（公开只读）；只有 HTTP POST，没有 SSE / stdio transport |
-
-**总体口径**：35% 的六个子项都有可指到的代码与可跑的命令，但「有实现」不等于「拿满」——上表的缺口就是扣分点。答辩时建议按「已实现 + 证据命令 + 明确缺口」三句话讲，不把 mock 结果说成真机结果，不把「工作流编排」说成「自主 Agent」，不把「PDF 文本 + TTS」说成「多模态理解」。
+许可：[MIT](LICENSE)（题库为教学演示用途，正式使用前须由任课教师逐题核对）。
