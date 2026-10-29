@@ -20,13 +20,22 @@ export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /** 两次输入的密码不一致时，就地提示而不是等提交后才报错。 */
+  const confirmMismatch =
+    mode === "register" && confirmPassword !== "" && confirmPassword !== password;
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (mode === "register" && password !== confirmPassword) {
+      setError("两次输入的密码不一致，请重新输入。");
+      return;
+    }
     setBusy(true);
 
     try {
@@ -66,6 +75,7 @@ export default function LoginPage() {
             onClick={() => {
               setMode("login");
               setError(null);
+              setConfirmPassword("");
             }}
             aria-pressed={mode === "login"}
             className={`rounded-lg px-4 py-1.5 text-sm ${
@@ -143,6 +153,31 @@ export default function LoginPage() {
               />
             </label>
 
+            {mode === "register" ? (
+              <label className="block">
+                <span className="block text-sm font-medium">确认密码</span>
+                <input
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  type="password"
+                  className={`mt-1.5 w-full rounded-lg border bg-[var(--surface)] px-3 py-2 text-sm ${
+                    confirmMismatch
+                      ? "border-[var(--bad)]"
+                      : "border-[var(--line-strong)]"
+                  }`}
+                  placeholder="再输入一次密码"
+                  autoComplete="new-password"
+                  required
+                  aria-invalid={confirmMismatch || undefined}
+                />
+                {confirmMismatch ? (
+                  <span className="mt-1 block text-xs text-[var(--bad)]">
+                    两次输入的密码不一致
+                  </span>
+                ) : null}
+              </label>
+            ) : null}
+
             {error ? (
               <div className="rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-3 text-sm">
                 <p className="text-[var(--bad)]">{error}</p>
@@ -151,7 +186,12 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={busy || email.trim() === "" || password === ""}
+              disabled={
+                busy ||
+                email.trim() === "" ||
+                password === "" ||
+                (mode === "register" && (confirmPassword === "" || confirmMismatch))
+              }
               className="w-full rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy ? "处理中…" : mode === "login" ? "登录" : "创建账号"}

@@ -39,8 +39,8 @@ export default function HomePage() {
             <ButtonLink href="/path" variant="ghost">
               直接看路径
             </ButtonLink>
-            <ButtonLink href="/about" variant="ghost">
-              这是什么
+            <ButtonLink href="/guide" variant="ghost">
+              使用指南
             </ButtonLink>
           </div>
         </section>
@@ -85,6 +85,22 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* 上传教材：最容易被忽略的能力，给一个显眼的直达入口 */}
+        <section className="mb-12">
+          <Card className="border-[var(--accent)]">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="max-w-2xl">
+                <h3 className="font-medium">上传自己的教材、讲义或 PPT 文字稿</h3>
+                <p className="mt-1.5 text-sm text-[var(--ink-soft)]">
+                  自定义方向支持上传 Markdown / TXT / 带文本层的 PDF：导师回答会检索你上传的片段并标注出处，
+                  绑定知识点后还会进入出题依据。解析全部在本浏览器完成，不保存原始文件。
+                </p>
+              </div>
+              <ButtonLink href="/directions?kb=open">去上传教材</ButtonLink>
+            </div>
+          </Card>
+        </section>
+
         {/* 学科列表 */}
         <section className="mb-12">
           <SectionTitle hint="每个学科规模一致，是为了共用同一套模型参数与界面。">
@@ -126,7 +142,7 @@ export default function HomePage() {
                 配浅色 / 深色 / 跟随系统三种模式，共 {THEMES.length * 2} 个组合。
                 正文对比度最低 15.50:1，次要文字最低 7.24:1。
               </p>
-              <Link href="/settings" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
+              <Link href="/settings?panel=appearance" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
                 切换主题
               </Link>
             </Card>
@@ -139,7 +155,7 @@ export default function HomePage() {
               <p className="mt-2 text-xs text-[var(--ink-faint)]">
                 密钥只存本浏览器，请求由浏览器直连供应商，不经过本项目后端。
               </p>
-              <Link href="/settings" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
+              <Link href="/settings?panel=provider" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
                 配置供应商
               </Link>
             </Card>

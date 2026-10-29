@@ -6,6 +6,7 @@ import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
+import { ErrorRetrainPanel } from "@/components/error-retrain-panel";
 import { useSubject } from "@/lib/subject";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
 import {
@@ -727,6 +728,44 @@ export default function DiagnosePage() {
   };
 
   /**
+   * 错题重训：把指定题设为当前题。
+   *
+   * 题目可能不属于本次 pickNext 的候选（已答过），所以要绕过出题 effect 直接设。
+   * 作答仍走 submit：掌握度、记忆卡、预测校准与正常答题完全同一条路径。
+   * 该题所在 KC 若在本次会话被跳过，一并放开，否则 answered 之外没有出口。
+   */
+  const retrainQuestion = (question: Question) => {
+    if (!graph) return;
+    setSkippedKcs((prev) => {
+      if (!prev.has(question.kcId)) return prev;
+      const nextSkipped = new Set(prev);
+      nextSkipped.delete(question.kcId);
+      return nextSkipped;
+    });
+    const concept = graph.concepts.find((c) => c.id === question.kcId);
+    const item = directionItems.find((i) => i.id === question.id);
+    const checks = item?.checks ?? [];
+    setSelected(null);
+    setRevealed(false);
+    setConfusionWith("");
+    setConfusionSaved(false);
+    setCurrent({
+      question,
+      kcName: concept?.name ?? question.kcId,
+      depth: depths.get(question.kcId) ?? 0,
+      origin: item?.source,
+      practiceOnly: item ? item.status === "practice" : false,
+      checkCount: checks.filter(isPassingCheck).length,
+      evidenceFailed: checks.some(
+        (c) => c.startsWith(EVIDENCE_CHECK) && c !== EVIDENCE_CHECK,
+      ),
+      checkNotes: checks.filter((c) => c.startsWith("提示：")).map((c) => c.slice(3)),
+      materialLabel: checks.find((c) => c.startsWith(MATERIAL_CHECK_PREFIX)) ?? null,
+      chapter: concept?.chapter ?? "",
+    });
+  };
+
+  /**
    * 重置本次会话，保留 learner（掌握度与历史作答都不动）。
    *
    * 必须把 gen 归到 idle：failed / no-model 卡片的渲染条件是 `!done && gen.kind === …`，
@@ -1042,6 +1081,15 @@ export default function DiagnosePage() {
           now={nowIso}
           kcName={(id) => kcName.get(id) ?? id}
           onReview={reviewCard}
+          className="mb-5"
+        />
+
+        {/* 错题重训与知识点总结：重做走 submit 同一条作答路径 */}
+        <ErrorRetrainPanel
+          attempts={progress.attempts}
+          questions={availableQuestions}
+          kcName={(id) => kcName.get(id) ?? id}
+          onRetrainQuestion={retrainQuestion}
           className="mb-5"
         />
 
