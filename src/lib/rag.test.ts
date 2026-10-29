@@ -106,11 +106,56 @@ describe("真实知识库", () => {
 
   it("每条结果都带可引用的 kcId 与标题", () => {
     const results = search(kbIndex, "栈和队列的区别", 3);
+    expect(results.length).toBeGreaterThan(0);
     for (const r of results) {
       expect(r.kcId).toMatch(/^c\d+$/);
       expect(r.title.length).toBeGreaterThan(0);
       expect(r.snippet.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("域外门控", () => {
+  it("域外问题返回空，而不是硬塞看似相关的知识点", () => {
+    expect(search(kbIndex, "红烧肉怎么做才好吃？", 3)).toEqual([]);
+  });
+
+  it("域内同义问法仍然命中", () => {
+    const results = search(kbIndex, "什么是渐进分析方法？", 3);
+    expect(results.map((r) => r.kcId)).toContain("c04");
+  });
+
+  it("单字查询没有非单字词可比，仍按分数返回", () => {
+    expect(search(kbIndex, "栈", 3).map((r) => r.kcId)).toContain("c09");
+  });
+
+  it("常见短查询不会被中位数或命中数条件误杀", () => {
+    // 「排序」命中大量同分文档，top1 相对中位数并不突出，但它确实是域内主题
+    expect(search(kbIndex, "排序", 3).length).toBeGreaterThan(0);
+    // 「平衡树」的第二个 bigram「衡树」跨了词典里的「平衡二叉树」，不能因此清空
+    expect(search(kbIndex, "平衡树", 3).map((r) => r.kcId)).toContain("c32");
+  });
+
+  it("只命中一个通用词时清空，不把整条查询当成命中", () => {
+    const docs: KbDocument[] = [
+      { kcId: "x", title: "排序", text: "排序算法怎么实现，怎么排序，怎么分析" },
+      { kcId: "y", title: "图", text: "图的遍历与最短路径" },
+    ];
+    const index = buildIndex(docs);
+    // 「红烧肉怎么做才好吃」里只有「怎么」在 x 中出现，覆盖率 1/8
+    expect(search(index, "红烧肉怎么做才好吃", 3)).toEqual([]);
+  });
+
+  it("候选分数持平时视为没有突出命中", () => {
+    const repeated = "排序算法排序算法排序算法排序算法排序算法";
+    const docs: KbDocument[] = [
+      { kcId: "a", title: "排序", text: repeated },
+      { kcId: "b", title: "排序", text: repeated },
+      { kcId: "c", title: "排序", text: repeated },
+    ];
+    const index = buildIndex(docs);
+    // 三篇同分且都过 MIN_SCORE：top1 等于中位数，门控按「没有峰」处理
+    expect(search(index, "排序算法", 3)).toEqual([]);
   });
 });
 
@@ -170,11 +215,23 @@ describe("BM25 标题加权", () => {
     expect(index.docTokens[2]).toContain("后进");
   });
 
-  it("默认不读标题加权，分数与旧实现逐位一致", () => {
+  it("默认不读标题加权，通过门控的结果与旧实现逐位一致", () => {
     for (const query of ["heap", "树", "heap 树", "栈", "不存在"]) {
-      expect(search(index, query, 10)).toEqual(legacySearch(index, query, 10));
-      expect(search(kbIndex, query, 10)).toEqual(legacySearch(kbIndex, query, 10));
+      for (const target of [index, kbIndex]) {
+        const legacy = legacySearch(target, query, 10);
+        const gated = search(target, query, 10);
+        /*
+         * 门控是整体放行或整体清空，不会改写分数、顺序或截断，
+         * 因此结果必须是旧实现的严格前缀；「heap 树」这类域外查询会被清空。
+         */
+        expect(gated).toEqual(legacy.slice(0, gated.length));
+      }
     }
+
+    // 域内查询必须完整通过，否则上面的前缀断言会退化成 0 === 0
+    const legacy = legacySearch(kbIndex, "时间复杂度怎么算", 10);
+    expect(legacy.length).toBeGreaterThan(0);
+    expect(search(kbIndex, "时间复杂度怎么算", 10)).toEqual(legacy);
   });
 
   it("titleBoost 为 1、非有限值或不大于 1 时与默认完全相同", () => {

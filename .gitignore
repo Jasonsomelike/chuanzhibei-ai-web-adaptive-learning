@@ -75,3 +75,12 @@ venv/
 !.env.example
 
 .env*
+
+# .env* 会把需要入库的模板一起排除，必须在它之后重新否定
+!.env.example
+
+# 评审临时 ego 脚本（含测试凭据，禁止入库；只保留截图）
+screenshots/review-2026-10-29/
+
+# 评审报告：含内部证据与未脱敏细节，不入库（提交材料里另附脱敏版）
+docs/review/

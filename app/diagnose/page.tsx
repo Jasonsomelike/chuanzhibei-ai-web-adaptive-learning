@@ -20,6 +20,7 @@ import { loadProvider, type ProviderConfig } from "@/lib/provider";
 import type { Question } from "@/data/questions";
 import {
   attemptedQuestionIds,
+  clearKcEvidence,
   progressOf,
   recordAttempt,
   updateMemories,
@@ -245,6 +246,34 @@ export default function DiagnosePage() {
     }
     return map;
   }, [graph, availableQuestions]);
+
+  /*
+   * 有作答证据的知识点（按首次出现顺序）。完成卡的逐 KC 汇总以它为准，
+   * 而不是只看「本次已答」——刷新后本次记录为空，但历史证据还在，
+   * 用户仍需要看到每个知识点的采集时间并清空它。练习记录也在这里出现。
+   */
+  const evidenceKcIds = useMemo(() => {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const a of progress?.attempts ?? []) {
+      if (seen.has(a.kcId)) continue;
+      seen.add(a.kcId);
+      ids.push(a.kcId);
+    }
+    return ids;
+  }, [progress]);
+
+  /** 每个知识点最近一次作答时间（attempts 里 at 的最大值）；坏时间戳忽略。 */
+  const lastAttemptAt = useMemo(() => {
+    const latest = new Map<string, { at: string; ms: number }>();
+    for (const a of progress?.attempts ?? []) {
+      const ms = Date.parse(a.at);
+      if (!Number.isFinite(ms)) continue;
+      const prev = latest.get(a.kcId);
+      if (prev === undefined || ms > prev.ms) latest.set(a.kcId, { at: a.at, ms });
+    }
+    return new Map([...latest].map(([kcId, v]) => [kcId, v.at] as const));
+  }, [progress]);
 
   // 切目标时清空本次答题与生成状态
   useEffect(() => {
@@ -727,6 +756,39 @@ export default function DiagnosePage() {
     if (!window.confirm("确定清空当前目标记录的全部掌握度与作答记录？此操作不可撤销。")) return;
     resetSubject();
     restartSession();
+  };
+
+  /**
+   * 清空某个知识点的全部作答证据（显式按钮 + 二次确认）。
+   *
+   * 内置题每个知识点只有 3 道，答满即达证据门槛；同一题重复作答 `counted=false`，
+   * 所以不清空的话「再测一次」不会改变掌握度。清空后该 KC 回到先验、
+   * attemptedQuestionIds 重新为空，出题 effect 会让这个知识点的题重新出现。
+   * 已登录时 setLearner 负责写穿同步，不新增同步路径。
+   */
+  const clearEvidenceOfKc = (kcId: string) => {
+    if (!learner || !graph) return;
+    const name = kcName.get(kcId) ?? kcId;
+    const confirmed = window.confirm(
+      `确定清空「${name}」的全部作答证据？\n该知识点的掌握度会回到初始先验，已答过的题会重新出现并重新计入证据。`,
+    );
+    if (!confirmed) return;
+
+    setLearner(clearKcEvidence(learner, targetId, kcId, graph));
+    /*
+     * 清空后这个 KC 重新可测：放开当前题与本次的「跳过」标记，
+     * 出题 effect 会按新掌握度重新选题（同一道题会再次出现）。
+     * 本次答题记录 answered 保留——那是历史，不是证据。
+     */
+    setCurrent(null);
+    setSelected(null);
+    setRevealed(false);
+    setSkippedKcs((prev) => {
+      if (!prev.has(kcId)) return prev;
+      const nextSkipped = new Set(prev);
+      nextSkipped.delete(kcId);
+      return nextSkipped;
+    });
   };
 
   /**
@@ -1436,10 +1498,10 @@ export default function DiagnosePage() {
         {/* 诊断完成 */}
         {done ? (
           <Card className="mb-5">
-            <SectionTitle hint="诊断结束。下面是这次测评带来的变化。">
+            <SectionTitle hint="诊断结束。下面是每个已测知识点的当前状态与最近一次作答时间。">
               诊断完成
             </SectionTitle>
-            {answered.length === 0 ? (
+            {evidenceKcIds.length === 0 ? (
               <p className="text-sm text-[var(--ink-soft)]">
                 {target.kind === "direction"
                   ? "这个方向暂时没有可出的题（可能题目还没生成，或已全部作答）。可以先去看学习路径——路径规划不需要题目。"
@@ -1447,18 +1509,43 @@ export default function DiagnosePage() {
               </p>
             ) : (
               <div className="space-y-3">
-                {summarize(answered, progress, perKcTarget).map((row) => (
-                  <MasteryBar
-                    key={row.kcId}
-                    mean={row.mean}
-                    sd={row.sd}
-                    evidenceN={row.n}
-                    label={kcName.get(row.kcId) ?? row.kcId}
-                    probabilityAbove={row.probAbove}
-                    evidenceShortfall={row.shortfall}
-                    evidenceTarget={row.target}
-                  />
-                ))}
+                {summarize(evidenceKcIds, progress, perKcTarget).map((row) => {
+                  const lastAt = lastAttemptAt.get(row.kcId);
+                  return (
+                    <div
+                      key={row.kcId}
+                      className="rounded-lg border border-[var(--line)] px-3 py-2.5"
+                    >
+                      <MasteryBar
+                        mean={row.mean}
+                        sd={row.sd}
+                        evidenceN={row.n}
+                        label={kcName.get(row.kcId) ?? row.kcId}
+                        probabilityAbove={row.probAbove}
+                        evidenceShortfall={row.shortfall}
+                        evidenceTarget={row.target}
+                      />
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs text-[var(--ink-faint)]">
+                          {lastAt !== undefined
+                            ? `最近作答：${formatAttemptAt(lastAt)}`
+                            : "没有可用的作答时间"}
+                        </span>
+                        {/*
+                          显式清空：内置题答满 3 题后重复作答不计证据，
+                          不清空就无法复测。必须二次确认，不能顺手触发。
+                        */}
+                        <button
+                          type="button"
+                          onClick={() => clearEvidenceOfKc(row.kcId)}
+                          className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                        >
+                          清空该知识点证据
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
             <div className="mt-5 flex flex-wrap gap-3">
@@ -1547,9 +1634,22 @@ function traceStatusLabel(status: ItemTraceStep["status"]): string {
   }
 }
 
-/** 把作答汇总成每个知识点的最新状态。用传入的 progress，不读存储。 */
+/** 作答时间的展示格式：本地时区、精确到分钟；坏时间戳显示「时间未知」。 */
+function formatAttemptAt(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "时间未知";
+  return new Date(ms).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** 把给定知识点汇总成最新状态。用传入的 progress，不读存储。 */
 function summarize(
-  answered: AnsweredRow[],
+  kcIds: readonly string[],
   progress: {
     mastery: readonly { kcId: string; alpha: number; beta: number; evidenceN: number }[];
   },
@@ -1564,8 +1664,6 @@ function summarize(
   shortfall: "count" | "precision" | null;
   target: number;
 }[] {
-  const kcIds = [...new Set(answered.map((a) => a.question.kcId))];
-
   return kcIds.map((kcId) => {
     const m = progress.mastery.find((x) => x.kcId === kcId);
     const n = m?.evidenceN ?? 0;

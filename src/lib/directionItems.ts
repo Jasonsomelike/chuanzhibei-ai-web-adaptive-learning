@@ -14,7 +14,12 @@
  * 调用次数是 1 次生成 + 2 次批解 = 3 次/KC，不是 3 次/题。
  */
 
-import { callChat } from "@/lib/chat";
+import {
+  callChat,
+  runStructuredCall,
+  type StructuredCallResult,
+  type StructuredValidation,
+} from "@/lib/chat";
 import { extractJson } from "@/lib/direction";
 import type { ProviderConfig } from "@/lib/provider";
 import {
@@ -28,6 +33,7 @@ import {
   type DirectionItem,
   type ItemCheckResult,
   type ItemStatus,
+  type RawBatch,
   type RawItem,
 } from "@/lib/itemgen";
 import type { KnowledgeGraph, KnowledgeConcept } from "@/lib/graph";
@@ -295,6 +301,7 @@ export async function solveBatch(
     jsonMode: true,
     timeoutMs: 45000,
     signal,
+    purpose: "verify",
   });
 
   const { answers, issues } = parseSolverAnswers(extractJson(text), items.length);
@@ -431,24 +438,34 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
   const need = Math.max(1, threshold - acceptedNow);
   const seenStems = new Set(existing.map((i) => normalizeText(i.stem)));
 
-  let raw: string;
+  let outcome: StructuredCallResult<RawBatch>;
   try {
-    ({ text: raw } = await callChat(provider, {
-      system: ITEM_SYSTEM_PROMPT,
-      user: withMaterialContext(
-        `知识点：${concept.name}
+    outcome = await runStructuredCall(
+      provider,
+      {
+        system: ITEM_SYSTEM_PROMPT,
+        user: withMaterialContext(
+          `知识点：${concept.name}
 说明：${concept.summary}
 所属章节：${concept.chapter}
 
 请出 ${Math.max(need, 3)} 道题，覆盖三个难度档。`,
-        opts.material,
-      ),
-      maxTokens: 3500,
-      temperature: 0.3,
-      jsonMode: true,
-      timeoutMs: 90000,
-      signal: opts.signal,
-    }));
+          opts.material,
+        ),
+        maxTokens: 3500,
+        temperature: 0.3,
+        jsonMode: true,
+        timeoutMs: 90000,
+        signal: opts.signal,
+        purpose: "items",
+      },
+      (text): StructuredValidation<RawBatch> => {
+        const parsed = parseBatch(extractJson(text));
+        return parsed.ok ? { ok: true, value: parsed.batch } : { ok: false, reason: parsed.reason };
+      },
+      // 只降一点温度；maxTokens 保持 3500（截断重试在这里没有更大预算可用）
+      { temperature: 0.2 },
+    );
   } catch (err) {
     return {
       items: existing,
@@ -459,47 +476,25 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
     };
   }
 
-  // 截断的 JSON 不硬 parse——宁可判失败重试一次
-  let parsed = parseBatch(extractJson(raw));
-  if (!parsed.ok) {
-    try {
-      const { text: retry } = await callChat(provider, {
-        system: ITEM_SYSTEM_PROMPT,
-        user: withMaterialContext(
-          `知识点：${concept.name}
-说明：${concept.summary}
-
-上一次输出有结构问题：${parsed.reason}
-请严格按 JSON schema 重新输出 ${Math.max(need, 3)} 道题，不要任何解释文字。`,
-          opts.material,
-        ),
-        maxTokens: 3500,
-        temperature: 0.2,
-        jsonMode: true,
-        timeoutMs: 90000,
-        signal: opts.signal,
-      });
-      parsed = parseBatch(extractJson(retry));
-    } catch {
-      /* 落到下面统一报错 */
-    }
-  }
-
-  if (!parsed.ok) {
+  const raw = outcome.firstText;
+  // 截断的 JSON 不硬 parse——runStructuredCall 已按失败原因重问过一次
+  const parsed = outcome.value;
+  if (parsed === null) {
+    const reason = outcome.reason ?? "结构不合格";
     return {
       items: existing,
       generated: 0,
-      error: `模型输出无法解析：${parsed.reason}`,
+      error: `模型输出无法解析：${reason}`,
       trace: [
         traceStep("generate", "ok", `模型返回 ${raw.length} 字`),
-        traceStep("L1", "fail", parsed.reason),
+        traceStep("L1", "fail", reason),
       ],
       verification: emptyVerification("结构未通过，未发起核对"),
     };
   }
 
   const now = new Date().toISOString();
-  const checked = checkBatch(parsed.batch, {
+  const checked = checkBatch(parsed, {
     directionId,
     kcId: concept.id,
     now,
@@ -512,7 +507,7 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
    * 用下标而不是再查一遍，是为了避免 normalize 后题干相同的两题错配。
    */
   const pairs = checked.map((result, i) => ({
-    raw: parsed.ok ? parsed.batch.items[i] : undefined,
+    raw: parsed.items[i],
     result,
   }));
 
@@ -555,7 +550,7 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
   const l3Bad = checked.filter((r) => r.l3Issues.length > 0).length;
   const trace: ItemTraceStep[] = [
     traceStep("generate", "ok", `模型返回 ${raw.length} 字`),
-    traceStep("L1", "ok", `结构通过，共 ${parsed.batch.items.length} 题`),
+    traceStep("L1", "ok", `结构通过，共 ${parsed.items.length} 题`),
     l2Bad === 0
       ? traceStep("L2", "ok", `${checked.length} 题通过卫生检查`)
       : traceStep(

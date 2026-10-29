@@ -13,9 +13,10 @@
  * 非流式与流式共用同一套响应解析（extractNonStreamingText /
  * extractNonStreamingReasoning / createSseDecoder / parseStreamPayload），
  * 差别只在响应怎么读：结构化 JSON 调用必须走 callChat，
- * 否则半截 JSON 会打穿 extractJson 与 callChatWithRepair。
+ * 否则半截 JSON 会打穿 extractJson 与 runStructuredCall。
  */
 
+import type { ChatPurpose } from "@/lib/apiContracts";
 import {
   buildChatBody,
   buildProviderHeaders,
@@ -46,6 +47,11 @@ export interface ChatRequest extends ChatBodyRequest {
    * 普通调用不能打开，否则空返回会被当成成功。
    */
   readonly allowEmptyText?: boolean;
+  /**
+   * 服务端代发时的调用用途。服务端据此决定思考档：出题/批解/核对关闭思考，
+   * 导师与缺省沿用账号配置。local 模式忽略。
+   */
+  readonly purpose?: ChatPurpose;
   /** 超时毫秒数，默认 60 秒。 */
   readonly timeoutMs?: number;
   /**
@@ -190,9 +196,10 @@ function headersOf(provider: ProviderConfig): Record<string, string> {
  * /api/llm/chat 的请求体。
  *
  * 刻意不出现 baseUrl / apiKey / model：apiContracts.llmChat 是 strictObject，
- * 多一个字段就 400。jsonMode 同样没有位置——服务端按自己的配置决定结构，
- * 需要 JSON 的调用方靠提示词约束，再用 extractJson 兜底。
- * 思考档也不在请求体里：服务端读它保存的 options.thinking，客户端无法降级。
+ * 多一个字段就 400。jsonMode 与 purpose 是契约里的显式字段：
+ * - jsonMode 让服务端在 OpenAI 兼容协议上写 response_format；
+ * - purpose 让服务端按用途选择思考档，避免出题 JSON 被推理 token 吃光。
+ * 思考强度本身仍不进请求体（除了 purpose 这个用途标签），客户端不能直接改档位。
  */
 function buildServerChatBody(
   provider: ProviderConfig,
@@ -208,6 +215,8 @@ function buildServerChatBody(
     ],
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+    ...(req.jsonMode === true ? { jsonMode: true } : {}),
+    ...(req.purpose !== undefined ? { purpose: req.purpose } : {}),
     stream,
   };
 }
@@ -746,27 +755,113 @@ export async function probeThinking(
   }
 }
 
-// ── 一次 repair 重试 ──────────────────────────────────────────────
+// ── 结构化调用：一次 repair 重试 ──────────────────────────────────
 
 /**
- * 一次 repair 重试：第一次失败（结构不合格/截断）后，把失败原因拼进提示词再问一次。
+ * 一次校验的结论。value 是调用方要的解析结果；reason 会原样拼进第二次提示词，
+ * 因此必须是一句模型能据此改正的话。
+ */
+export type StructuredValidation<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: string };
+
+/** 第二次请求的覆盖项。方向草稿用 maxTokens 翻倍；出题用更低温度。 */
+export interface StructuredRetryOptions {
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+}
+
+export interface StructuredCallResult<T> {
+  /** 第一次调用返回的正文；第一次就抛错（如截断）时为空串。 */
+  readonly firstText: string;
+  /** 最终采信的正文：第一次合格就是第一次的，否则是第二次的。 */
+  readonly text: string;
+  /** 校验通过时的解析结果；两次都不合格为 null。 */
+  readonly value: T | null;
+  /** 最后一次校验的失败原因；value 非 null 时为 null。 */
+  readonly reason: string | null;
+  /** 实际发起的模型调用次数：1（没有重试）或 2。 */
+  readonly attempts: 1 | 2;
+  /** 最终那次的完整结果（用量、finishReason 等）。 */
+  readonly result: ChatResult;
+}
+
+/**
+ * 结构化 JSON 调用的唯一重试入口。
  *
- * 只重试一次。第二次还不行就交给调用方降级——
- * 无限重试会把「模型不稳定」变成「页面卡住」。
+ * 第一次调用后由调用方校验；不合格就把原因拼进提示词再问一次，只重试一次——
+ * 无限重试会把「模型不稳定」变成「页面卡住」。第二次的结果无论好坏都交给调用方，
+ * 由它决定降级（规则拼装 / 报错 / practice）。
+ *
+ * 截断（finish_reason=length）只在调用方给了更大的 maxTokens 时才重试：
+ * 原样重发一次必然会再次截断，白花一次 token。其它错误（网络、4xx、超时）
+ * 一律直接抛出，重发不解决问题。
+ */
+export async function runStructuredCall<T>(
+  provider: ProviderConfig,
+  req: ChatRequest,
+  validate: (text: string) => StructuredValidation<T>,
+  retry: StructuredRetryOptions = {},
+): Promise<StructuredCallResult<T>> {
+  let firstText = "";
+  let failure: string;
+
+  try {
+    const first = await callChat(provider, req);
+    firstText = first.text;
+    const check = validate(first.text);
+    if (check.ok) {
+      return {
+        firstText,
+        text: first.text,
+        value: check.value,
+        reason: null,
+        attempts: 1,
+        result: first,
+      };
+    }
+    failure = check.reason;
+  } catch (err) {
+    if (!(err instanceof ChatError) || err.kind !== "truncated" || retry.maxTokens === undefined) {
+      throw err;
+    }
+    failure = err.message;
+  }
+
+  const repairUser = `${req.user}
+
+上一次的输出有以下问题：${failure}
+请严格按要求的 JSON 格式重新输出，不要任何解释文字。`;
+
+  const second = await callChat(provider, {
+    ...req,
+    user: repairUser,
+    ...(retry.maxTokens !== undefined ? { maxTokens: retry.maxTokens } : {}),
+    ...(retry.temperature !== undefined ? { temperature: retry.temperature } : {}),
+  });
+  const checked = validate(second.text);
+  return {
+    firstText,
+    text: second.text,
+    value: checked.ok ? checked.value : null,
+    reason: checked.ok ? null : checked.reason,
+    attempts: 2,
+    result: second,
+  };
+}
+
+/**
+ * 一次 repair 重试的旧入口，行为与 runStructuredCall 一致。
+ * 保留它只为兼容已有 import；新代码请直接调用 runStructuredCall。
  */
 export async function callChatWithRepair(
   provider: ProviderConfig,
   req: ChatRequest,
   validate: (text: string) => { ok: true } | { ok: false; reason: string },
 ): Promise<ChatResult> {
-  const first = await callChat(provider, req);
-  const check = validate(first.text);
-  if (check.ok) return first;
-
-  const repairUser = `${req.user}
-
-上一次的输出有以下问题：${check.reason}
-请严格按要求的 JSON 格式重新输出，不要任何解释文字。`;
-
-  return callChat(provider, { ...req, user: repairUser });
+  const outcome = await runStructuredCall(provider, req, (text) => {
+    const check = validate(text);
+    return check.ok ? { ok: true, value: text } : check;
+  });
+  return outcome.result;
 }

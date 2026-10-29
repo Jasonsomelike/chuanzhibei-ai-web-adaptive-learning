@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-/*
+/**
  * 假模型：按提示词内容分派响应，不发真实请求。
  * 用内容而不是调用序号分派，是因为 L4 的两次批解是 Promise.all 并发的，
  * 谁先到达不确定；按次数排队会把测试绑在竞态上（mock-provider 同理）。
+ *
+ * 这里替换的是 fetch 而不是 @/lib/chat：directionItems 的生成链路现在会经过
+ * runStructuredCall（首次结构不合格会真实重试一次），只 mock callChat 的话
+ * 重试逻辑会被跳过，测不到「第二次提示词带失败原因」这一层。
  */
 interface MockChatRequest {
   readonly system?: string;
@@ -18,14 +22,6 @@ interface MockChatResult {
 const chat = vi.hoisted(() => ({
   calls: [] as { system?: string; user: string }[],
   responder: null as null | ((req: MockChatRequest) => MockChatResult),
-}));
-
-vi.mock("@/lib/chat", () => ({
-  callChat: async (_provider: unknown, req: MockChatRequest) => {
-    chat.calls.push(req);
-    if (chat.responder === null) throw new Error("测试里不访问模型");
-    return chat.responder(req);
-  },
 }));
 
 import { ensureAllItems, ensureItems, materialForConcept } from "@/lib/directionItems";
@@ -205,6 +201,29 @@ function installFetchStub(): void {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+      // 模型端点：按提示词分派，返回 OpenAI 兼容的非流式响应
+      if (url.includes("/chat/completions")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          messages?: { role: string; content: string }[];
+        };
+        const messages = body.messages ?? [];
+        const system = messages.find((message) => message.role === "system")?.content;
+        const user =
+          [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        chat.calls.push({ system, user });
+        if (chat.responder === null) throw new Error("测试里不访问模型");
+        const result = chat.responder({ system, user });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: result.text }, finish_reason: result.finishReason },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
       const method = (init?.method ?? "GET").toUpperCase();
       if (!url.includes("/api/directions/items") || method !== "POST") {
         return { ok: true, json: async () => ({ items: [] }) } as unknown as Response;
@@ -587,6 +606,25 @@ describe("ensureItems 的 trace 失败路径", () => {
     expect(result.trace.map((step) => step.key)).toEqual(["generate", "L1"]);
     expect(result.trace[1].status).toBe("fail");
     expect(evidenceCalls()).toHaveLength(0);
+  });
+
+  it("首次结构不合格时只重问一次，并把失败原因拼进第二次提示词", async () => {
+    useScript({ batch: [{ ...BATCH[0], options: ["只有", "两个"] }] });
+
+    await ensureItems({
+      directionId: "d1",
+      concept: CONCEPT,
+      provider: PROVIDER,
+      cached: [],
+      material: ITEM_MATERIAL,
+    });
+
+    const generateCalls = chat.calls.filter(
+      (call) => !call.user.includes("待核对题目") && !call.user.includes("answerText"),
+    );
+    expect(generateCalls).toHaveLength(2);
+    expect(generateCalls[1].user).toContain("上一次的输出有以下问题");
+    expect(generateCalls[1].user).toContain("结构不合格");
   });
 });
 

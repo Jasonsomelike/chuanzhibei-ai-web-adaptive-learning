@@ -40,6 +40,8 @@ export interface UpstreamChatRequest {
   readonly temperature?: number;
   readonly maxTokens?: number;
   readonly stream: boolean;
+  /** 要求上游返回 JSON 对象；OpenAI 兼容协议写 response_format。 */
+  readonly jsonMode?: boolean;
 }
 
 /** 拒绝用户通过 extraHeaders 覆盖的传输层头：它们会改变连接目标或分帧。 */
@@ -95,8 +97,9 @@ export function endpointFor(kind: ProviderKind, baseUrl: string): string {
 /**
  * 构造上游对话请求体。
  *
- * 复用 provider.buildChatBody 的思考字段规则：浏览器直连与服务端代发必须写出
- * 同一份请求体，否则「设置页能用的思考档位，切到服务端模式就失效」。
+ * 复用 provider.buildChatBody 的思考字段规则（以及 OpenAI 兼容协议的 jsonMode →
+ * response_format）：浏览器直连与服务端代发必须写出同一份请求体，否则
+ * 「设置页能用的思考档位 / JSON 模式，切到服务端模式就失效」。
  * buildChatBody 只接受单条 user 消息，因此这里用它生成基底（含 system 与思考字段，
  * 并让它在 off 档删掉 temperature 复制），再把 messages 换成完整多轮数组。
  */
@@ -124,6 +127,7 @@ export function buildUpstreamChatBody(
       user: lastUser?.content ?? fallback?.content ?? "",
       maxTokens: request.maxTokens,
       temperature: request.temperature,
+      jsonMode: request.jsonMode === true,
     },
     strength,
   );

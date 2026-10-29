@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useState } from "react";
-import { callChat, ChatError } from "@/lib/chat";
+import { runStructuredCall, type StructuredValidation } from "@/lib/chat";
 import {
   extractJson,
   validateTitle,
@@ -108,32 +108,34 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
         /*
          * 推理模型的思考 token 也计入 max_tokens。实测 2000 会被推理吃光、
          * finish_reason=length，整条链路退化成规则拼装，用户以为模型不会用。
-         * 先给 4096；真遇到截断就加倍重试一次——截断是可恢复的，直接降级才是浪费。
+         * 先给 4096；截断或返回的不是 JSON 时由 runStructuredCall 重试一次，
+         * 预算翻倍（8192）——截断是可恢复的，直接降级才是浪费。
          */
-        const ask = (maxTokens: number) =>
-          callChat(provider, {
+        const outcome = await runStructuredCall(
+          provider,
+          {
             system: meta.systemPrompt,
             user: text,
-            maxTokens,
+            maxTokens: 4096,
             temperature: 0.4,
             jsonMode: true,
             timeoutMs: 120000,
-          });
+            purpose: "direction",
+          },
+          (raw): StructuredValidation<string> =>
+            extractJson(raw)
+              ? { ok: true, value: raw }
+              : { ok: false, reason: "返回内容不是合法 JSON（可能被截断或夹杂了解释文字）" },
+          { maxTokens: 8192 },
+        );
 
-        let raw = "";
-        try {
-          ({ text: raw } = await ask(4096));
-        } catch (err) {
-          if (!(err instanceof ChatError) || err.kind !== "truncated") throw err;
-          ({ text: raw } = await ask(8192));
-        }
-
-        // 抽不出 JSON 时不必浪费一次服务端往返
-        if (!extractJson(raw)) {
+        // 两次都抽不出 JSON 时不必再浪费一次服务端往返
+        if (outcome.value === null) {
           setError("模型返回的内容不是 JSON。可以重试，或到设置页换一个模型。");
           await generateFallback(text);
           return;
         }
+        const raw = outcome.value;
 
         const checkRes = await fetch("/api/directions/generate", {
           method: "POST",

@@ -291,6 +291,25 @@ describe("llmChat", () => {
   it("拒绝 provider / endpoint 等其它多余字段", () => {
     expect(accepts(llmChat, { ...CHAT, provider: "deepseek" })).toBe(false);
     expect(accepts(llmChat, { ...CHAT, headers: {} })).toBe(false);
+    // 思考档只能由服务端按 purpose 取，客户端不能直接写字段
+    expect(accepts(llmChat, { ...CHAT, thinking: "deep" })).toBe(false);
+  });
+
+  it("purpose 只接受四个用途值，缺省为 undefined", () => {
+    expect(llmChat.parse(CHAT).purpose).toBeUndefined();
+    for (const purpose of ["tutor", "items", "verify", "direction"]) {
+      expect(accepts(llmChat, { ...CHAT, purpose })).toBe(true);
+    }
+    expect(accepts(llmChat, { ...CHAT, purpose: "agent" })).toBe(false);
+    expect(accepts(llmChat, { ...CHAT, purpose: "" })).toBe(false);
+  });
+
+  it("jsonMode 缺省 false，只接受布尔值", () => {
+    expect(llmChat.parse(CHAT).jsonMode).toBe(false);
+    expect(accepts(llmChat, { ...CHAT, jsonMode: true })).toBe(true);
+    expect(accepts(llmChat, { ...CHAT, jsonMode: false })).toBe(true);
+    expect(accepts(llmChat, { ...CHAT, jsonMode: "true" })).toBe(false);
+    expect(accepts(llmChat, { ...CHAT, jsonMode: 1 })).toBe(false);
   });
 
   it("拒绝空消息、未知角色与越界正文", () => {

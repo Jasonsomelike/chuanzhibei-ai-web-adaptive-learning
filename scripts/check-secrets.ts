@@ -6,20 +6,29 @@
  *
  * 用法：npm run check:secrets
  * 发现疑似密钥时以非 0 退出码结束。
+ *
+ * 规则本身在 src/lib/secretScan.ts：这里只负责遍历、放行文件与输出，
+ * 匹配逻辑有单测（src/lib/secretScan.test.ts），改规则不必靠手工造文件验证。
  */
 
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative, extname } from "node:path";
 
+import { ALLOWLIST, scanText, type SecretHit } from "@/lib/secretScan";
+
 const ROOT = process.cwd();
 
-/** 不扫描的目录。 */
+/**
+ * 不扫描的目录。
+ *
+ * 这里只放构建产物与依赖；`screenshots/` 不再跳过——评审脚本含明文口令
+ * 正是因为整目录被跳过（见 docs/review/2026-10-29-full-review.md 的 P0-1）。
+ */
 const SKIP_DIRS = new Set([
   "node_modules",
   ".git",
   ".next",
   ".zcode",
-  "screenshots",
   "dist",
   "out",
 ]);
@@ -30,34 +39,6 @@ const TEXT_EXT = new Set([
   ".json", ".md", ".txt", ".css", ".html",
   ".yml", ".yaml", ".env", ".example", "",
 ]);
-
-/**
- * 疑似密钥的模式。
- * 刻意写得宽一些：宁可误报，也不要漏报。
- * 每条都排除本文件自身与 .env.example 里的空键名。
- */
-const PATTERNS: { name: string; re: RegExp }[] = [
-  { name: "OpenAI 风格 key", re: /\bsk-[A-Za-z0-9_-]{20,}/ },
-  { name: "GitHub token", re: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
-  { name: "AWS Access Key", re: /\bAKIA[0-9A-Z]{16}\b/ },
-  { name: "Google API key", re: /\bAIza[0-9A-Za-z_-]{35}/ },
-  { name: "私钥块", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { name: "Bearer 长串", re: /Bearer\s+[A-Za-z0-9._-]{40,}/ },
-  {
-    name: "赋了值的密钥变量",
-    re: /(?:API_KEY|SECRET|TOKEN|PASSWORD)\s*[:=]\s*["']?[A-Za-z0-9_\-]{16,}["']?/,
-  },
-];
-
-/** 允许出现的例外：示例文件里的空值、文档里的占位符。 */
-const ALLOWLIST = [
-  /\.env\.example$/,
-  /\.env\.local$/,
-  /PLACEHOLDER/,
-  /<REDACTED>/,
-  /your[_-]?api[_-]?key/i,
-  /xxx+/i,
-];
 
 async function* walk(dir: string): AsyncGenerator<string> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -75,20 +56,13 @@ async function* walk(dir: string): AsyncGenerator<string> {
   }
 }
 
-interface Hit {
-  file: string;
-  line: number;
-  pattern: string;
-  preview: string;
-}
-
-const hits: Hit[] = [];
+const hits: (SecretHit & { file: string })[] = [];
 let scanned = 0;
 
 for await (const file of walk(ROOT)) {
   const rel = relative(ROOT, file).replace(/\\/g, "/");
 
-  // 跳过扫描器自身（它的正则里就含这些模式）
+  // 跳过扫描器自身：遍历/输出代码里的示例文本没有扫描价值。
   if (rel === "scripts/check-secrets.ts") continue;
   if (ALLOWLIST.some((re) => re.test(rel))) continue;
 
@@ -103,24 +77,8 @@ for await (const file of walk(ROOT)) {
   }
   scanned += 1;
 
-  const lines = content.split("\n");
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line.length > 500) continue;
-    if (ALLOWLIST.some((re) => re.test(line))) continue;
-
-    for (const p of PATTERNS) {
-      if (p.re.test(line)) {
-        hits.push({
-          file: rel,
-          line: i + 1,
-          pattern: p.name,
-          // 只留前 40 字符，避免把疑似密钥本身打印出来
-          preview: line.trim().slice(0, 40),
-        });
-        break;
-      }
-    }
+  for (const hit of scanText(content)) {
+    hits.push({ ...hit, file: rel });
   }
 }
 

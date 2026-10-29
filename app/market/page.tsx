@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { MARKET_RETRY_LABEL, marketStatusOf } from "@/components/market-status";
 import { useAuth } from "@/lib/useAuth";
 
 /**
@@ -31,20 +32,30 @@ export default function MarketPage() {
 
   const [items, setItems] = useState<MarketItem[]>([]);
   const [loading, setLoading] = useState(true);
+  /** 加载失败与「没有数据」是两件事：失败时不能落到空态文案。 */
+  const [error, setError] = useState(false);
   const [q, setQ] = useState("");
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [copying, setCopying] = useState<string | null>(null);
 
   const load = useCallback(async (query: string) => {
     setLoading(true);
+    setError(false);
     try {
       const params = new URLSearchParams({ scope: "market" });
       if (query.trim() !== "") params.set("q", query.trim());
       const res = await fetch(`/api/directions?${params.toString()}`, { cache: "no-store" });
-      if (res.ok) {
-        const data = (await res.json()) as { directions: MarketItem[] };
-        setItems(data.directions ?? []);
+      if (!res.ok) {
+        setItems([]);
+        setError(true);
+        return;
       }
+      const data = (await res.json()) as { directions?: MarketItem[] };
+      setItems(data.directions ?? []);
+    } catch {
+      // 网络错误 / 非法 JSON 同样走错误态，异常内容不进入界面
+      setItems([]);
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -53,6 +64,8 @@ export default function MarketPage() {
   useEffect(() => {
     void load("");
   }, [load]);
+
+  const status = marketStatusOf({ loading, error, count: items.length, query: q });
 
   const copy = async (id: string) => {
     if (!user) {
@@ -112,7 +125,7 @@ export default function MarketPage() {
             />
             <button
               type="submit"
-              className="shrink-0 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
+              className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] touch-target sm:min-h-0"
             >
               搜索
             </button>
@@ -123,7 +136,7 @@ export default function MarketPage() {
                   setQ("");
                   void load("");
                 }}
-                className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-sm"
+                className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-[var(--line-strong)] px-3 py-2 text-sm touch-target sm:min-h-0"
               >
                 清除
               </button>
@@ -155,26 +168,10 @@ export default function MarketPage() {
         ) : null}
 
         {/* 列表 */}
-        <section>
-          <SectionTitle hint={loading ? "加载中…" : `共 ${items.length} 个公开方向`}>
-            公开方向
-          </SectionTitle>
+        <section aria-busy={loading}>
+          <SectionTitle hint={status.hint}>公开方向</SectionTitle>
 
-          {!loading && items.length === 0 ? (
-            <Card>
-              <p className="text-sm text-[var(--ink-soft)]">
-                {q.trim() !== ""
-                  ? `没有匹配「${q}」的方向。`
-                  : "还没有人公开方向。你可以先创建并公开一个。"}
-              </p>
-              <Link
-                href="/directions"
-                className="mt-3 inline-flex rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
-              >
-                创建方向
-              </Link>
-            </Card>
-          ) : (
+          {items.length > 0 ? (
             <div className="space-y-2">
               {items.map((d) => (
                 <Card key={d.id}>
@@ -195,7 +192,7 @@ export default function MarketPage() {
                       type="button"
                       onClick={() => void copy(d.id)}
                       disabled={copying === d.id}
-                      className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
+                      className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--on-accent)] touch-target disabled:opacity-40 sm:min-h-0"
                     >
                       {copying === d.id ? "复制中…" : "选用"}
                     </button>
@@ -203,6 +200,39 @@ export default function MarketPage() {
                 </Card>
               ))}
             </div>
+          ) : status.kind === "error" ? (
+            <Card className="border-[var(--bad)] bg-[var(--bad-soft)]">
+              <p role="alert" className="text-sm text-[var(--bad)]">
+                {status.message}
+              </p>
+              {status.canRetry ? (
+                <button
+                  type="button"
+                  onClick={() => void load(q)}
+                  className="mt-3 inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--line-strong)] px-4 text-sm touch-target sm:min-h-0"
+                >
+                  {MARKET_RETRY_LABEL}
+                </button>
+              ) : null}
+            </Card>
+          ) : status.kind === "empty" ? (
+            <Card>
+              <p className="text-sm text-[var(--ink-soft)]">{status.message}</p>
+              {status.showCreate ? (
+                <Link
+                  href="/directions"
+                  className="mt-3 inline-flex min-h-11 items-center rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm touch-target sm:min-h-0"
+                >
+                  创建方向
+                </Link>
+              ) : null}
+            </Card>
+          ) : (
+            <Card>
+              <p role="status" className="text-sm text-[var(--ink-soft)]">
+                {status.message}
+              </p>
+            </Card>
           )}
         </section>
 

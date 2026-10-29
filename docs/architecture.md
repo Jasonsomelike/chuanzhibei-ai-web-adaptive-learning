@@ -315,7 +315,7 @@ src/lib/direction.ts   描述 → 图谱草稿 + 八条硬门禁 + 标题校验
 src/lib/itemgen.ts     生成题 L1–L5 校验 + contentHash + 批解解析
 src/lib/db.ts          Postgres / 内存双实现，10 张表
 
-src/lib/rag.ts         BM25 bigram、单字降权、标题加权、MIN_SCORE（纯函数）
+src/lib/rag.ts         BM25 bigram、单字降权、域外门控、MIN_SCORE（标题加权仅评测用；纯函数）
 src/lib/hybrid.ts      RRF k=60、候选 20、top3、余弦 0.25、相邻去重（纯函数）
 src/lib/vector.ts      向量校验、余弦、topK（纯函数）
 src/lib/embedding.ts   两个维度确定的预设、嵌入输入、FNV-1a（纯函数）
@@ -364,4 +364,4 @@ app/api/*              14 个路由：auth、progress、directions(×3)、config
 
 知识口径的纯函数在 `src/lib/materials.ts`，localStorage 读写与订阅在 `src/lib/materialStore.ts`；章节聚合与候选范围在 `src/lib/chapters.ts`；反事实汇总在 `src/lib/planDiff.ts`；方向题目的 IO 与流程轨迹在 `src/lib/directionItems.ts`。
 
-学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **66 个非测试模块 + 62 个测试文件**；`src/components/` 另有 4 个测试文件（`calibration-card`、`knowledge-upload`、`memory-review`、`tutor-logic`），合计 **66 个测试文件、1594 条用例**（`npm run test` 本轮实测）。
+学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **69 个非测试模块 + 67 个测试文件**；`src/components/` 另有 7 个测试文件（`calibration-card`、`knowledge-upload`、`market-status`、`memory-review`、`mini-markdown`、`nav-links`、`tutor-logic`），合计 **74 个测试文件、1721 条用例**（`npm run test` 本轮实测）。

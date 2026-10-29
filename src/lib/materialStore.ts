@@ -16,11 +16,11 @@ import {
   MATERIALS_STORAGE_KEY,
   coerceMaterialsForSave,
   emptyMaterialsState,
-  emptySelection,
   mergePacks,
   notesAsPack,
   normalizeSelection,
   parseMaterialsState,
+  selectionForTarget,
   serializeMaterialsState,
   unresolvedConflicts,
   type MaterialConflict,
@@ -141,7 +141,7 @@ export interface UseMaterialPackResult {
  *
  * 首屏用空状态渲染再在 effect 里读存储：服务端渲染没有 localStorage，
  * 直接在 render 里读会造成 hydration 不一致。因此没有浏览器环境时
- * 返回的是可用的默认值（内置包 + 未选择来源），不是 null。
+ * 返回的是可用的默认值（内置包 + 默认选中内置来源），不是 null。
  *
  * graph 用于让笔记继承知识点章节；自定义方向应把自己的图传进来。
  */
@@ -159,15 +159,25 @@ export function useMaterialPack(targetId: string, graph?: KnowledgeGraph): UseMa
     return subscribeMaterials(read);
   }, []);
 
+  /*
+   * 默认口径只看内置包：内置学科首次进入就选中内置教材，
+   * 自定义方向没有内置资料（emptyPack），默认仍是「模型通用知识」。
+   * 笔记是用户另外选用的来源，不能在自定义方向里被默认勾上。
+   */
+  const builtin = useMemo(() => getMaterialPack(targetId), [targetId]);
+
   const pack = useMemo(() => {
-    const builtin = getMaterialPack(targetId);
     if (state.notes.length === 0) return builtin;
     return mergePacks([builtin, notesAsPack(state.notes, graph)]);
-  }, [targetId, state.notes, graph]);
+  }, [builtin, state.notes, graph]);
 
+  /*
+   * 有存档用存档（含显式保存的空选择），没有才落默认口径；
+   * 规范化放在合并后的 pack 上，避免把显式选中的「我的笔记」当成未知来源丢掉。
+   */
   const selection = useMemo(
-    () => normalizeSelection(state.targets[targetId] ?? emptySelection(), pack),
-    [state.targets, targetId, pack],
+    () => normalizeSelection(selectionForTarget(state.targets[targetId], builtin), pack),
+    [state.targets, targetId, builtin, pack],
   );
 
   const unresolved = useMemo(() => unresolvedConflicts(pack, selection), [pack, selection]);

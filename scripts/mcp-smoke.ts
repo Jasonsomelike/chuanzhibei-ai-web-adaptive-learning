@@ -61,6 +61,25 @@ check(
   Object.keys(initResult?.capabilities ?? {}).join(", "),
 );
 
+// 1b. 版本协商：支持列表内的旧版本回显客户端值，未知版本回落最新 2025-06-18
+const legacyInit = await rpc("initialize", {
+  protocolVersion: "2024-11-05",
+  capabilities: {},
+  clientInfo: { name: "smoke", version: "0" },
+});
+const legacyProtocol = (legacyInit.result as { protocolVersion?: string })?.protocolVersion;
+const unknownInit = await rpc("initialize", {
+  protocolVersion: "1999-01-01",
+  capabilities: {},
+  clientInfo: { name: "smoke", version: "0" },
+});
+const unknownProtocol = (unknownInit.result as { protocolVersion?: string })?.protocolVersion;
+check(
+  "initialize 按客户端版本协商（2024-11-05 回显 / 未知版本回落 2025-06-18）",
+  legacyProtocol === "2024-11-05" && unknownProtocol === "2025-06-18",
+  `${legacyProtocol} / ${unknownProtocol}`,
+);
+
 // 2. tools/list
 const list = await rpc("tools/list");
 const tools = (list.result as { tools?: { name: string }[] })?.tools ?? [];
@@ -183,6 +202,23 @@ check(
     typeof osPlanData.pathHash === "string" &&
     (osPlanData.steps?.[0]?.kcId ?? "").startsWith("o"),
   `${osPlanData.subject} / 首步 ${osPlanData.steps?.[0]?.kcId} / hash ${osPlanData.pathHash?.slice(0, 12)}`,
+);
+
+// 7d. 未知学科不再静默回落成 data-structures
+const unknownSubjectPlan = await rpc("tools/call", {
+  name: "plan_path",
+  arguments: { subject: "operating-systems", budgetMinutes: 30 },
+});
+const unknownSubjectPrompt = await rpc("prompts/get", {
+  name: "explain_path_step",
+  arguments: { subject: "operating-systems", kcId: "o01", masteryMean: "0.4" },
+});
+check(
+  "未知学科返回 -32602（tools/call 与 prompts/get）",
+  unknownSubjectPlan.error?.code === -32602 &&
+    unknownSubjectPlan.result === undefined &&
+    unknownSubjectPrompt.error?.code === -32602,
+  `plan=${unknownSubjectPlan.error?.code} prompt=${unknownSubjectPrompt.error?.code}`,
 );
 
 // 8. prompts

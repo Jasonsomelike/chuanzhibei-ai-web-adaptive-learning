@@ -42,21 +42,21 @@ flowchart TD
 
 | 检索对象 | 路径 | 是否用向量 | 代码 |
 | --- | --- | --- | --- |
-| 内置 / 自定义方向的**知识点文档** | 现建 BM25 索引 → `search(index, question, 3)` | **否**，纯 BM25 | `app/tutor/page.tsx:347` |
-| 用户**上传片段** | BM25 top20 + 向量 top20 → RRF → top3 → 相邻去重 | 有 embedding 时是；否则只 BM25 | `app/tutor/page.tsx:436-443`、`src/lib/hybridSearchClient.ts:104` |
+| 内置 / 自定义方向的**知识点文档** | 现建 BM25 索引 → `search(index, question, 3)` | **否**，纯 BM25 | `app/tutor/page.tsx:338`、`:399` |
+| 用户**上传片段** | BM25 top20 + 向量 top20 → RRF → top3 → 相邻去重 | 有 embedding 时是；否则只 BM25 | `app/tutor/page.tsx:488-494`、`src/lib/hybridSearchClient.ts:104` |
 
 所以「RAG 是核心」指的是**证据链是核心**，不是「所有检索都已接向量」。内置知识点接向量仍是缺口（[§11](limits.md) 第 27 条）。
 
-> 知识点索引不是评测用的 `kbDocuments`：导师页用 `target.graph.concepts` 现建（名称 + 章节 + 摘要 + 该点题目解析，`app/tutor/page.tsx:277-289`），自定义方向没有内置题库时只收名称与摘要。`kbDocuments` 40 篇只用于 50 条评测（见下文「RAG 评测」），两者不能互相证明。
+> 知识点索引不是评测用的 `kbDocuments`：导师页用 `target.graph.concepts` 现建（名称 + 章节 + 摘要 + 该点题目解析，`app/tutor/page.tsx:324-338`），自定义方向没有内置题库时只收名称与摘要。`kbDocuments` 40 篇只用于 50 条评测（见下文「RAG 评测」），两者不能互相证明。
 
 ## 13.2 参数表
 
 | 参数 | 值 | 位置 | 说明 |
 | --- | --- | --- | --- |
-| BM25 `K1` / `B` | 1.5 / 0.75 | `src/lib/rag.ts:67-68` | 词频饱和 / 长度归一化 |
+| BM25 `K1` / `B` | 1.5 / 0.75 | `src/lib/rag.ts:89-90` | 词频饱和 / 长度归一化 |
 | 单字 token 权重 | 0.35 | `src/lib/rag.ts:61` | 中文单字区分度低，压住跨领域误命中 |
 | BM25 最低分 `MIN_SCORE` | 0.5 | `src/lib/rag.ts:64` | 低于它不返回；宁可不给依据 |
-| 标题加权 `titleBoost` | 默认 1；评测用 2 | `src/lib/rag.ts:94-103`、`scripts/eval-rag.ts:85` | 1 表示整段标题分支不执行，分数与旧实现逐位一致 |
+| 标题加权 `titleBoost` | 默认 1（生产不启用）；评测用 2 | `src/lib/rag.ts:179-207`、`scripts/eval-rag.ts:85` | 1 表示整段标题分支不执行，分数与旧实现逐位一致 |
 | 每路候选 | 20 | `src/lib/hybrid.ts:43`、`src/lib/hybridSearchClient.ts:30-33` | BM25 与向量各取 20 再融合 |
 | RRF 平滑常数 `k` | 60 | `src/lib/hybrid.ts:40` | 原论文默认值；rank1 与 rank3 相对差约 3.2% |
 | 两路权重 | 1 : 1 | `src/lib/hybridSearchClient.ts:140` | 缺省权重 1；非正数按 0 计（该路不参与） |
@@ -189,9 +189,9 @@ RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只�
 | `outOfDomainFalseContext` | `1 − outOfDomainEmpty`，即「把无关内容当成依据」的比例 | 10 |
 | `unanswerableEmpty` | answer-absent ∪ out-of-domain 的空检索率 | 20 |
 
-**金句判定为什么必须用全文**：`search()` 返回的 `snippet` 是 `text.slice(0, 160)`（`src/lib/rag.ts:160`），而 40 篇知识库正文有 230–322 个码点，例题解析大多落在 160 字之后。用 snippet 判「金句是否被检索到」会把大量真实命中记成未命中——这是上一版的 blocker。现在 `evaluateRetrieval` 在调用方传入的 `corpus`（kcId → `title + "\n" + text`）里做 `includes`（`src/lib/ragEval.ts:290-306`）；top3 里出现 corpus 之外的 id 直接抛 `EvalDataError`，不静默记未命中。
+**金句判定为什么必须用全文**：`search()` 返回的 `snippet` 是 `text.slice(0, 160)`（`src/lib/rag.ts:223`），而 40 篇知识库正文有 230–322 个码点，例题解析大多落在 160 字之后。用 snippet 判「金句是否被检索到」会把大量真实命中记成未命中——这是上一版的 blocker。现在 `evaluateRetrieval` 在调用方传入的 `corpus`（kcId → `title + "\n" + text`）里做 `includes`（`src/lib/ragEval.ts:290-306`）；top3 里出现 corpus 之外的 id 直接抛 `EvalDataError`，不静默记未命中。
 
-**answer-absent 为什么主指标是 relatedHitRate 而不是「必须为空」**：这类问题的答案不在任何知识点里，但存在一个「相关、可提供背景」的知识点。检索命中它是有用的（导师可以据此说明「这属于 X 的范畴，但教材没有展开」），所以 `answerAbsentRelatedHit` 越高越好；`answerAbsentEmpty` 是另一种可接受形态的观察值，两者都不单独构成通过条件。
+**answer-absent 为什么主指标是 relatedHitRate 而不是「必须为空」**：这类问题的答案不在任何知识点里，但存在一个「相关、可提供背景」的知识点。检索命中它是有用的（导师可以据此说明「这属于 X 的范畴，但教材没有展开」），所以 `answerAbsentRelatedHit` 越高越好；`answerAbsentEmpty` 是另一种可接受形态的观察值，两者都不单独构成通过条件。**本轮注意**：注入前的域外门控（`passesRelevanceGate`，`src/lib/rag.ts:133-163`）同样作用于 answer-absent 查询，`answerAbsentRelatedHit` 从上一轮的 1.000 降到 0.600；这是「宁可清空也不给无关依据」的代价，不是评测坏掉。
 
 ## 15.3 复现命令
 
@@ -227,17 +227,19 @@ RAG 检索评测
   recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
   MRR@10                   1.000（30/30）
   goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   1.000（10/10）
-  out-of-domain emptyRate        0.000（0/10）   falseContextRate 1.000（10/10）
-  unanswerableEmptyRate    0.000（0/20）   （answer-absent ∪ out-of-domain）
+  answer-absent relatedHitRate   0.600（6/10）
+  out-of-domain emptyRate        1.000（10/10）
+  falseContextRate               0（0/10）
+  unanswerableEmptyRate    0.700（14/20）   （answer-absent ∪ out-of-domain）
 
 [BM25 + title×2]
   recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
   MRR@10                   1.000（30/30）
   goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   1.000（10/10）
-  out-of-domain emptyRate        0.000（0/10）   falseContextRate 1.000（10/10）
-  unanswerableEmptyRate    0.000（0/20）   （answer-absent ∪ out-of-domain）
+  answer-absent relatedHitRate   0.400（4/10）
+  out-of-domain emptyRate        1.000（10/10）
+  falseContextRate               0（0/10）
+  unanswerableEmptyRate    0.800（16/20）   （answer-absent ∪ out-of-domain）
 
 混合检索：未测（未提供 --vectors，且未配置 ALP_EMBED_BASE_URL / ALP_EMBED_API_KEY / ALP_EMBED_MODEL）
 
@@ -248,20 +250,22 @@ recall@3 literal            1.000       1.000
 recall@3 paraphrase         1.000       1.000
 MRR@10                      1.000       1.000
 goldPhraseInFullText        1.000       1.000
-answer-absent relatedHit    1.000       1.000
-out-of-domain empty         0.000       0.000
-out-of-domain falseContext  1.000       1.000
-unanswerableEmpty           0.000       0.000
+answer-absent relatedHit    0.600       0.400
+out-of-domain empty         1.000       1.000
+out-of-domain falseContext  0           0
+unanswerableEmpty           0.700       0.800
 EXIT=0
 ```
+
+> 为便于阅读，`falseContextRate` 从原输出行拆成独立行（数值不变：`0` 即 `0.000`）；`EXIT=0` 为本轮实际退出码。
 
 ## 15.5 结论与不可宣称
 
 1. **金句 blocker 已关闭**：判定改在全文，30/30 命中；上一版用 160 字 snippet 的误判不再存在。
-2. **评测集已饱和**：BM25 基线在 answerable 上全部 1.000，`title×2` 与基线逐项相同。因此这份 50 条**不能**用来证明「标题加权有效」或「向量 / RRF 提升」——它只能证明「基础检索没有坏」。
-3. **`outOfDomainEmpty = 0.000`**：10 条域外问题全部返回了文档。检索层没有拒答能力（BM25 的 `MIN_SCORE = 0.5` 挡不住 OOD 查询里的高频 bigram）。这是**缺陷信号，不是通过**；改进列入 [§11](limits.md) 第 26 条。
+2. **评测集已饱和**：BM25 基线在 answerable 的 recall@3 / MRR@10 / 全文金句上全部 1.000；`title×2` 与基线在这些指标上相同，但 answer-absent relatedHit 从 0.600 降到 0.400、unanswerableEmpty 从 0.700 升到 0.800（更差）。因此这份 50 条**不能**用来证明「标题加权有效」或「向量 / RRF 提升」——它只能证明「基础检索没有坏」，而且评测用的标题加权没有带来收益。
+3. **`outOfDomainEmpty = 1.000`**：注入前的域外门控（`passesRelevanceGate`，`src/lib/rag.ts:133-163`）把 10 条域外查询全部清空，`falseContextRate = 0`。这是本轮修复的缺陷（上一轮 10 条域外查询全部返回了文档）；代价是 answer-absent 的 relatedHit 降到 0.600。门控只覆盖内置知识点检索，上传资料的混合检索仍未测。
 4. **混合检索未测**：没有 `--vectors` 文件，也没有 `ALP_EMBED_*`。脚本如实打印「未测」并以 0 退出——没测就是没测，不编数字。原因写在这里，不写成「效果与 BM25 相当」。
-5. **发布门槛**（口径定义，本轮均满足）：`recallAt3 ≥ 0.90`、`goldPhraseInFullText ≥ 0.95`、`answerAbsentRelatedHit ≥ 0.90`。`outOfDomainEmpty` 不设门槛，因为它当前为 0；设一个「≥0.5」的门槛只会让 CI 永远红。
+5. **发布门槛**（口径定义）：`recallAt3 ≥ 0.90`、`goldPhraseInFullText ≥ 0.95`、`outOfDomainEmpty ≥ 0.80` 本轮均满足；`answerAbsentRelatedHit ≥ 0.90` 本轮**未满足**（BM25 0.600 / title×2 0.400）——门控在 answer-absent 查询上也会清空部分相关命中，这是加门控后的已知回归，不能写「本轮均满足」。
 6. **评测对象不是上传资料**：50 条跑的是 `kbDocuments` 40 篇知识点；生产里接 RRF 的是用户上传片段。上传资料的混合检索目前没有评测集，只有单测覆盖 `createRetriever` / `retrieveUploadsHybrid` 的排序与降级。
 
 ## 15.6 外部端点真机探测（2026-10-29）

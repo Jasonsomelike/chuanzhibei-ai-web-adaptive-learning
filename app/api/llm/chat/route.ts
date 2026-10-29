@@ -20,7 +20,7 @@ import type { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { apiErrorCodes, llmChat } from "@/lib/apiContracts";
+import { apiErrorCodes, llmChat, type ChatPurpose } from "@/lib/apiContracts";
 import { assertMutationOrigin, jsonError, readJsonObject, requireApiUser } from "@/lib/routeAuth";
 import {
   assertUpstreamAllowed,
@@ -99,6 +99,35 @@ function safeDetail(text: string, secret: RedactSecret): string {
   const trimmed = text.trim();
   if (trimmed === "") return "上游拒绝了这次请求";
   return redactSecrets(trimmed.slice(0, 800), secret);
+}
+
+/**
+ * 上游状态码 → 本路由状态码。
+ *
+ * 4xx 原样返回：参数被拒（400）、密钥无效（401/403）、限流（429）都是调用方
+ * 需要看见并据此换配置的信号，统一折成 502 会让「是密钥错还是服务坏了」无从判断。
+ * 5xx 与其它非 2xx 仍归 502：那是供应商侧故障，不是本路由能转达的调用错误。
+ */
+function upstreamErrorStatus(status: number): number {
+  return status >= 400 && status < 500 ? status : 502;
+}
+
+/** 服务端配置里的思考档类型；缺省回退 off。 */
+type ThinkingStrength = NonNullable<LlmConfig["options"]["thinking"]>;
+
+/**
+ * 按用途取思考档。
+ *
+ * 缺省（旧客户端 / 导师流式）沿用账号配置——这是本轮之前的基线行为，不能变；
+ * 出题、批解、核对是「一次拿到完整 JSON」的调用，思考 token 会把预算吃光，
+ * 因此显式关闭，与浏览器直连模式 callChat 的规则一致。
+ */
+function thinkingForPurpose(
+  purpose: ChatPurpose | undefined,
+  configured: ThinkingStrength | undefined,
+): ThinkingStrength {
+  if (purpose === "items" || purpose === "verify" || purpose === "direction") return "off";
+  return configured ?? "off";
 }
 
 /** 读完一小段错误体并销毁流：错误响应不能挂着不消费。 */
@@ -193,8 +222,9 @@ export async function POST(request: Request): Promise<Response> {
         temperature: body.temperature,
         maxTokens: body.maxTokens,
         stream: body.stream,
+        jsonMode: body.jsonMode,
       },
-      config.options.thinking ?? "off",
+      thinkingForPurpose(body.purpose, config.options.thinking),
     ),
   );
 
@@ -218,7 +248,7 @@ export async function POST(request: Request): Promise<Response> {
     if (upstream.status < 200 || upstream.status >= 300) {
       const detail = await drainStream(upstream.stream, MAX_ERROR_BYTES);
       return jsonError(
-        502,
+        upstreamErrorStatus(upstream.status),
         apiErrorCodes.providerError,
         `上游返回 HTTP ${upstream.status}：${safeDetail(detail, secret)}`,
       );
@@ -251,7 +281,7 @@ export async function POST(request: Request): Promise<Response> {
   const text = upstream.body.toString("utf8");
   if (upstream.status < 200 || upstream.status >= 300) {
     return jsonError(
-      502,
+      upstreamErrorStatus(upstream.status),
       apiErrorCodes.providerError,
       `上游返回 HTTP ${upstream.status}：${safeDetail(text, secret)}`,
     );

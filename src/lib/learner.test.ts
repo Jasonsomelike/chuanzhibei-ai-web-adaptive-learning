@@ -6,6 +6,7 @@ import {
   recordPathEdit,
   attemptedQuestionIds,
   attemptCount,
+  clearKcEvidence,
   progressOf,
   sanitizeProgress,
   mergeServerProgress,
@@ -24,7 +25,7 @@ import {
 import { questions } from "@/data/questions";
 import { difficultyWeight, initialMastery, masteryMean, masterySd } from "@/lib/mastery";
 import { knowledgeGraph } from "@/data/knowledge-graph";
-import type { KnowledgeGraph } from "@/lib/graph";
+import { computeDepths, type KnowledgeGraph } from "@/lib/graph";
 import { DEFAULT_SUBJECT_ID, SUBJECTS } from "@/data/subjects";
 
 const NOW = "2026-10-22T10:00:00.000Z";
@@ -272,6 +273,141 @@ describe("已做过的题", () => {
 
     const network = SUBJECTS.find((x) => x.id === "network")!;
     expect(attemptCount(s, network.id)).toBe(0);
+  });
+});
+
+describe("按知识点清空证据", () => {
+  const kcQuestions = questions.filter((x) => x.kcId === "c09");
+  const otherQuestion = questions.find((x) => x.kcId === "c10")!;
+
+  function answerAllKc(): LearnerState {
+    let s: LearnerState = createLearner();
+    for (const q of kcQuestions) s = recordAttempt(s, DS, q, true, NOW);
+    return s;
+  }
+
+  it("清空后掌握度回到先验、attempts 不含该 KC、该知识点的题重新可出", () => {
+    // 清空前先答满 c09 的三题（旧行为下这之后就冻结），再给 c10 留一条记录作对照
+    let s = answerAllKc();
+    s = recordAttempt(s, DS, otherQuestion, false, NOW);
+
+    const before = progressOf(s, DS);
+    const priorDepth = computeDepths(knowledgeGraph).get("c09") ?? 0;
+    const expectedPrior = initialMastery("c09", priorDepth);
+    // 先确认先验确实是 0.20 那一档，避免测试与数据脱节后悄悄失去意义
+    expect(masteryMean(expectedPrior)).toBeCloseTo(0.2, 10);
+
+    const cleared = clearKcEvidence(s, DS, "c09");
+    const after = progressOf(cleared, DS);
+
+    expect(after.mastery.find((m) => m.kcId === "c09")).toEqual(expectedPrior);
+    expect(after.attempts.some((a) => a.kcId === "c09")).toBe(false);
+    expect(attemptedQuestionIds(cleared, DS, "c09").size).toBe(0);
+
+    // 其它知识点逐字段不变；别的知识点的作答记录也保留
+    expect(after.mastery.filter((m) => m.kcId !== "c09")).toEqual(
+      before.mastery.filter((m) => m.kcId !== "c09"),
+    );
+    expect(after.attempts).toHaveLength(1);
+    expect(after.attempts[0]).toMatchObject({ kcId: "c10", correct: false });
+  });
+
+  it("是纯函数：不修改原状态", () => {
+    const s = answerAllKc();
+    const snapshot = JSON.stringify(s);
+    clearKcEvidence(s, DS, "c09");
+    expect(JSON.stringify(s)).toBe(snapshot);
+  });
+
+  it("清空后同一道题重新计入证据（这正是冻结问题的出口）", () => {
+    let s = answerAllKc();
+    const filled = progressOf(s, DS).mastery.find((m) => m.kcId === "c09")!;
+    expect(filled.evidenceN).toBe(3);
+
+    // 不清空时，同一题重复作答只记录不计证据
+    const repeated = recordAttempt(s, DS, kcQuestions[0], true, NOW);
+    expect(progressOf(repeated, DS).mastery.find((m) => m.kcId === "c09")!.evidenceN).toBe(3);
+
+    // 清空后同题重新计证据，掌握度重新可被这次作答推动
+    const cleared = clearKcEvidence(s, DS, "c09");
+    const again = recordAttempt(cleared, DS, kcQuestions[0], true, NOW);
+    const m = progressOf(again, DS).mastery.find((x) => x.kcId === "c09")!;
+    expect(m.evidenceN).toBe(1);
+    expect(progressOf(again, DS).attempts).toHaveLength(1);
+    expect(progressOf(again, DS).attempts[0].counted).toBeUndefined();
+  });
+
+  it("同一知识点的重复记录（counted=false）也一并删除", () => {
+    let s = answerAllKc();
+    s = recordAttempt(s, DS, kcQuestions[0], true, NOW);
+    expect(progressOf(s, DS).attempts.filter((a) => a.kcId === "c09")).toHaveLength(4);
+
+    const cleared = clearKcEvidence(s, DS, "c09");
+    expect(progressOf(cleared, DS).attempts).toHaveLength(0);
+  });
+
+  it("自定义方向按传入的图清空，不回落内置学科", () => {
+    const fakeGraph: KnowledgeGraph = {
+      version: "kg-custom-clear",
+      concepts: [
+        { id: "k1", name: "栈", summary: "", chapter: "自定义" },
+        { id: "k2", name: "队列", summary: "", chapter: "自定义" },
+      ],
+      edges: [{ before: "k1", after: "k2" }],
+    };
+    let s: LearnerState = {
+      ...createLearner(),
+      subjects: {
+        ...createLearner().subjects,
+        "custom-clear": createSubjectProgress("custom-clear", fakeGraph),
+      },
+    };
+    s = recordAttempt(
+      s,
+      "custom-clear",
+      { id: "di-k1", kcId: "k1", difficulty: 2, stem: "s", options: ["a", "b"], answerIndex: 0, explanation: "e" },
+      true,
+      NOW,
+      { graph: fakeGraph },
+    );
+
+    const cleared = clearKcEvidence(s, "custom-clear", "k1", fakeGraph);
+    const after = progressOf(cleared, "custom-clear", fakeGraph);
+
+    expect(after.mastery.map((m) => m.kcId)).toEqual(["k1", "k2"]);
+    expect(after.mastery[0]).toEqual(initialMastery("k1", computeDepths(fakeGraph).get("k1") ?? 0));
+    expect(after.attempts).toHaveLength(0);
+  });
+
+  it("清空没有证据的知识点不改变任何字段", () => {
+    const s = createLearner();
+    const cleared = clearKcEvidence(s, DS, "c09");
+    expect(progressOf(cleared, DS).mastery).toEqual(progressOf(s, DS).mastery);
+    expect(progressOf(cleared, DS).attempts).toEqual([]);
+    expect(progressOf(cleared, DS).pathEdits).toEqual([]);
+  });
+
+  it("pathEdits 与 memories 不受清空影响", () => {
+    const q = kcQuestions[0];
+    let s: LearnerState = createLearner();
+    s = recordAttempt(s, DS, q, false, NOW);
+    s = updateMemories(s, DS, (memories) =>
+      upsertErrorMemory(memories, {
+        questionId: q.id,
+        kcId: q.kcId,
+        prompt: q.stem,
+        correction: "正确答案",
+        now: NOW,
+      }).memories,
+    );
+    s = recordPathEdit(s, DS, { kind: "reorder", detail: "调序" }, NOW);
+
+    const cleared = clearKcEvidence(s, DS, "c09");
+    const after = progressOf(cleared, DS);
+
+    expect(after.memories).toEqual(progressOf(s, DS).memories);
+    expect(after.pathEdits).toEqual(progressOf(s, DS).pathEdits);
+    expect(after.attempts).toHaveLength(0);
   });
 });
 

@@ -16,8 +16,10 @@ import { z } from "zod";
 
 import { search, type ApiErrorCode } from "@/lib/apiContracts";
 import { getCurrentUser } from "@/lib/auth";
+import { MAX_SEARCH_BODY_BYTES } from "@/lib/bodyLimit";
 import { getDb } from "@/lib/db";
 import { sameOriginFromRequest } from "@/lib/origin";
+import { readLimitedText } from "@/lib/routeAuth";
 import { SecretCryptoError } from "@/lib/secretCrypto";
 import {
   assertNeverProvider,
@@ -116,9 +118,20 @@ export async function POST(request: Request) {
     return failure(403, "forbidden", "请求来源不可信");
   }
 
+  // 先限量读完再解析：chunked 请求没有 Content-Length，裸 request.json()
+  // 会把任意大的包先收进内存。
+  const raw = await readLimitedText(request, MAX_SEARCH_BODY_BYTES);
+  if (!raw.ok) {
+    // 保持本路由的 { error, code } 错误体，让 searchClient 仍能读到错误码。
+    if (raw.response.status === 413) {
+      return failure(413, "payload_too_large", `请求体超过 ${MAX_SEARCH_BODY_BYTES} 字节上限`);
+    }
+    return raw.response;
+  }
+
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw.text);
   } catch {
     return failure(400, "bad_request", "请求体不是合法 JSON");
   }

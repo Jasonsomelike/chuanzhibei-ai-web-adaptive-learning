@@ -230,6 +230,35 @@ export function normalizeSelection(
   return { sourceIds, resolutions };
 }
 
+/**
+ * 内置资料包的默认口径：选中包内全部来源。
+ *
+ * 没有内置来源（自定义方向、空包）时返回空选择——不能把「没有教材」
+ * 伪装成「已经选了教材」。这是「模型通用知识」与「没有资料」的分界：
+ * 前者是用户显式保存的空选择，后者根本没有可选来源。
+ */
+export function defaultSelectionFor(pack: MaterialPack): MaterialSelection {
+  if (pack.sources.length === 0) return emptySelection();
+  return { sourceIds: pack.sources.map((source) => source.id), resolutions: {} };
+}
+
+/**
+ * 某个目标的来源选择：有存档就用存档，没有才落默认口径。
+ *
+ * 显式保存的空选择（模型通用知识）必须原样返回，不能被默认值覆盖，
+ * 否则用户每次打开设置页都会被切回教材口径。
+ *
+ * 这里不做 normalizeSelection：调用方传进来的 pack 可能是「内置包 + 笔记」
+ * 的合并结果，而默认值只该看内置包；把规范化留给合并后的调用方，
+ * 才不会把用户显式选中的「我的笔记」当成未知来源丢掉。
+ */
+export function selectionForTarget(
+  stored: MaterialSelection | undefined,
+  pack: MaterialPack,
+): MaterialSelection {
+  return stored ?? defaultSelectionFor(pack);
+}
+
 // ── 片段筛选与排序 ────────────────────────────────────────────────
 
 /**

@@ -14,8 +14,10 @@ import { NextResponse } from "next/server";
 
 import { tts, type ApiErrorCode } from "@/lib/apiContracts";
 import { getCurrentUser } from "@/lib/auth";
+import { MAX_TTS_BODY_BYTES } from "@/lib/bodyLimit";
 import { getDb } from "@/lib/db";
 import { sameOriginFromRequest } from "@/lib/origin";
+import { readLimitedText } from "@/lib/routeAuth";
 import { SecretCryptoError } from "@/lib/secretCrypto";
 import { assertUpstreamAllowed, SsrfGuardError } from "@/lib/ssrfGuard";
 import {
@@ -89,9 +91,20 @@ export async function POST(request: Request) {
     return failure(415, "bad_request", "只接受 application/json");
   }
 
+  // 正文上限 2000 字，所以体积上限可以很小；先限量读包再解析，
+  // 避免裸 request.json() 把任意大的包收进内存。
+  const raw = await readLimitedText(request, MAX_TTS_BODY_BYTES);
+  if (!raw.ok) {
+    // 保持本路由的 { error, code } 错误体，让 tts 客户端仍能读到错误码。
+    if (raw.response.status === 413) {
+      return failure(413, "payload_too_large", `请求体超过 ${MAX_TTS_BODY_BYTES} 字节上限`);
+    }
+    return raw.response;
+  }
+
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw.text);
   } catch {
     return failure(400, "bad_request", "请求体不是合法 JSON");
   }

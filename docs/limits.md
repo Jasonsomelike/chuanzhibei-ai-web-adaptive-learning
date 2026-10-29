@@ -4,17 +4,17 @@
 
 ## 现状与缺口
 
-先列能证明的能力，再列仍缺的 30 条与各自的原因、修法；「不可宣称」的部分也写在这里。
+先列能证明的能力，再列 30 条边界与缺口（已修复的条目在文内标注）与各自的原因、修法；「不可宣称」的部分也写在这里。
 
 ## 已验证能力
 
 - 9 学科图谱与题库规模一致：`npm run kg:validate` → 0 error（360 点 / 540 边 / 1080 题）。
-- 掌握度、排序、装包、指纹、检索、混合检索、题目校验、知识口径、数据库双实现、方向题目接口语义、记忆、校准、切块、引用核对、SSE 解析、搜索、TTS、密钥加密、SSRF、同源校验、KB / 记忆卡同步语义：`npm run test` → **1594 passed / 66 files**（本轮实测）。
+- 掌握度、排序、装包、指纹、检索、混合检索、题目校验、知识口径、数据库双实现、方向题目接口语义、记忆、校准、切块、引用核对、SSE 解析、搜索、TTS、密钥加密、SSRF、同源校验、KB / 记忆卡同步语义、手动路径存档：`npm run test` → **1721 passed / 74 files**（本轮实测）。
 - 主流程、认证与市场、MCP 协议：`auth-smoke` **34/34**、`mcp-smoke` **16/16** 本轮实跑；`smoke.ts` 53/53 为上一轮结果，本轮未重跑。新增能力仍未进 `smoke.ts`。
 - 生产构建：`npm run build` exit 0（24 个路由）；`npm run typecheck` exit 0。
 - 5 套配色 210 对对比度：0 失败（上一轮实测；本轮未重跑）。
-- 密钥扫描：`npm run check:secrets` 扫 236 个文件，未发现疑似密钥，exit 0（上一轮 4 处命中是 `src/lib/config-route.test.ts` 的测试假值，已改为非凭据形状的占位符）。
-- ESLint：0 error / 23 warning（本轮实测）。
+- 密钥扫描：`npm run check:secrets` 扫 252 个文件，未发现疑似密钥，exit 0（上一轮 4 处命中是 `src/lib/config-route.test.ts` 的测试假值，已改为非凭据形状的占位符）。
+- ESLint：0 error / 23 条 warning（22 条 `react-hooks/set-state-in-effect` + 1 条 `react-hooks/exhaustive-deps`，本轮实测）。
 
 ## 一轮独立审读发现并已修复的问题
 
@@ -55,12 +55,12 @@
 | **自定义方向生成被截断后静默退化成规则拼装** | `useDirectionDraft` 只给 2000 token，推理模型把预算吃光 → `ChatError(truncated)` → catch 里直接走 `generateFallback`：用户要「图论」，拿到的是「从数据结构里挑了 18 个树/图知识点」，来源标注还是「从现有学科挑选」 | 首次给 4096，遇截断再加倍到 8192 重试一次（截断可恢复，直接降级才是浪费）；方向页的失败提示也从「N 个知识点生成失败：名字」改成带上去重后的真实原因（实测里 46 次调用全 200、落了 52 题，失败其实是没到 4 题门槛）。覆盖：ego 真实模型实测（同一句描述，修复后 `模型生成`、14 个知识点） |
 | **生成链路只有单测，没有跨模块集成检查** | `ensureItems`、L1–L5、落库回显、依据标注各自有单测，但没人把「真实 ensureItems + 模型响应 + 服务端回显」串起来跑 | 新增可控 Mock 供应商 `scripts/mock-provider.ts` 与集成脚本 `scripts/mock-gen-check.ts`：正常 / 数组倒序 / 双解不一致降级 / 截断 / 坏 JSON / 同批重复题干六种场景，共 19 项检查；本轮又加了 `/stream` 与 `/think400` 两档供手测。覆盖：脚本 19 项全 PASS（上一轮实跑，exit 0；本轮未重跑） |
 
-## 真实缺口
+## 真实缺口与已修复项
 
 1. **教师班级视图未实现。** 现在只有「一个学生一份进度」，没有班级聚合、没有「谁卡在哪」的视图。这是产品叙事里最大的一块空白。
 2. **4 个新学科未经学科专家复核。** 离散数学、机器学习基础、概率论与数理统计、学术英语写作的题目由模型生成后经脚本校验（题数、无环、难度分布、解析长度），但没有任课教师逐题核对。9 个学科共 1080 题的难度标注都需要教师确认。
 3. **没有真实学生数据。** 所有掌握度数字来自自测与构造的快照，不是教学现场采集。
-4. **手动改写的顺序不持久化。** 只存在页面状态，刷新回到算法排序；每次改动会记一条 `pathEdits` 审计记录（`src/lib/learner.ts:194` 的 `recordPathEdit`），但不会恢复顺序。
+4. **手动改写已持久化（本轮修复）。** 顺序与被移除集合按目标存进 `localStorage`（键 `alp.path.manual.v1`，`src/lib/manualPath.ts:16`）；路径页挂载时读回（`app/path/page.tsx:181`），每次改动经 `applyManualEdit` 写回（`:303`）。存档是不可信输入：JSON 坏、版本不符或字段形状不对一律返回 `null`，界面回落算法顺序。`recordPathEdit` 仍单独记录 `pathEdits` 审计（`src/lib/learner.ts:233`）。
 5. **未做 Lighthouse / Core Web Vitals 实测。** 没有 LCP / INP / CLS 数字。
 6. **浏览器直连供应商仍受 CORS / 混合内容约束，但只在 local 模式。** server 模式由 `/api/llm/chat`、`/api/search`、`/api/tts` 代发，不受浏览器 CORS 限制；local 模式仍可能出现跨域失败，设置页会就地提示。服务端代发要求部署方持有 `ALP_SECRET_KEY`，否则只能保存失败（不会明文落库）。
 7. **自定义方向的题目依赖模型，但不是完全不可诊断。** 无 key 时不会自动生成新题；仍可**手动录题**后诊断（`/directions` 的「手动录题」，E2E 覆盖），或只规划路径。生成题的成本数字（¥0.0009–0.0066/题）是调研值，本机没有可用 key，未复测。
@@ -78,7 +78,7 @@
     - 首页「正文对比度最低 15.5:1」→「15.50:1」（实测 forest/light）。
 
     修正后 `grep -rn "CI 会红\|llm\.ts\|Ollama 预设\|拖动" app/` 无命中。
-14. **`.env.example` 列出的 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 仍不被应用代码读取。** `DEEPSEEK_API_KEY` 只被 `scripts/probe-external.ts` 用来做真机探测（且要求 base_url 是官方域）；应用侧供应商配置走 `/api/config`（server）或浏览器 `localStorage`（local）。本轮新增并被读取的变量是 `ALP_SECRET_KEY`、`ALP_SECRET_KEY_ID`、`ALP_EMBED_*`、`ALP_ALLOW_HTTP_PROVIDER_HOSTS`、`ALP_ALLOW_MEMORY_SECRETS`、`HEALTH_TOKEN`（`HEALTH_TOKEN` 尚未写进 `.env.example`，见第 29 条）。
+14. **`.env.example` 列出的 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 不被应用代码读取（模板里已就地标注）。** `DEEPSEEK_API_KEY` 只被 `scripts/probe-external.ts` 用来做真机探测（且要求 base_url 是官方域）；应用侧供应商配置走 `/settings` → `/api/config`（server）或浏览器 `localStorage`（local）。应用实际读取的变量是 `DATABASE_URL`、`ALP_SECRET_KEY`、`ALP_SECRET_KEY_ID`、`ALP_EMBED_*`、`ALP_ALLOW_HTTP_PROVIDER_HOSTS`、`ALP_ALLOW_MEMORY_SECRETS`、`HEALTH_TOKEN`；`DATABASE_URL` 与 `HEALTH_TOKEN` 已写进 `.env.example`。
 15. **方向页的「生成全部题目」已带资料上下文（不再是缺口）。** `ensureAllItems` 现在接收 `material` 与 `uploadedPack`，两个入口都走 `materialForConcept`；L6 开关会透传到每个 `ensureItems`。此前「只有诊断页懒生成会传」的描述已删除。
 16. **「依据：」与「依据核对」都是客户端声明，服务端无法复算。** `app/api/directions/items/route.ts` 不加载资料包（笔记只在 localStorage，上传资料虽同步到 `kb_chunks`，但 items 路由不读），所以只按白名单前缀放行并原样落库；公开方向的题目对匿名访问者可读，等于「作者声明的出处与核对结论」。它们不参与判分与证据计数（`status` 仍由客户端显式 `practice` 保留），但做教师共享题库前必须搬到服务端。
 17. **教材 / 讲义存储不分账号。** 存的是浏览器级键，登录时比对 `alp.materials.owner` 来清空上一位用户的存档；同一浏览器多账号快速切换仍可能在一次渲染内看到旧值（已挂载面板靠事件重读）。
@@ -90,10 +90,10 @@
 23. **记忆卡单卡删除没有接线。** `memoryClient.deleteMemory`（`src/lib/memoryClient.ts:91`）没有调用方；界面移除一张卡后只靠 `pushMemories` 快照同步，而 `PUT /api/memories` 永不删行，下一次 `pullMemories` 会把这张卡复活。只有「清空学科」走了显式 `clearMemories`。
 24. **账号级存储实例不回收，换号清理不等待完成。** `syncedStorages` 按 userId 缓存复合存储，登出/换号不清（只有测试用的 `__resetKbStorageCacheForTests`）；`applyAccountTransition` 用 `void clearKbDatabase()`，另一个标签页仍持连接时，新账号可能短暂读到上一位用户的文档。正确做法是 `await` 删除或在删除完成前禁用 KB 读取。
 25. **没有自建限流，两个路由没有请求体上限。** `/api/search` 与 `/api/tts` 直接 `request.json()`，没有 `readLimitedText`；搜索成功响应也没有字节上限。登录用户可以无限调用代发与 8 MiB PUT；线上必须在反向代理层限流 / 限体积。
-26. **检索层没有 OOD 拒答。** 本轮实测 `outOfDomainEmpty = 0.000`：10 条域外问题全部返回了文档，`MIN_SCORE = 0.5` 挡不住 OOD 查询里的高频 bigram。这是缺陷信号，不是通过；改进方向是在注入层加相似度门槛或让模型显式说「未找到依据」，本轮未做。
-27. **内置知识点仍只走纯 BM25，混合检索只在生产里接上传资料。** 导师页的 `kbDocuments` 检索用 `search(index, question, 3)`（`app/tutor/page.tsx:347`），只有上传片段走 `createRetriever` + RRF。50 条评测针对的是 `kbDocuments`，且已饱和（answerable 全 1.000），所以它既不能证明上传资料的混合检索，也不能证明「向量/RRF 提升」。
+26. **域外门控已加（本轮修复）。** `search()` 在按 k 截断之前对完整候选跑 `passesRelevanceGate`（`src/lib/rag.ts:133-163`，调用点 `:218`）：top1 对查询非单字词的覆盖率、非单字命中数、top1 相对中位数三项任一不达标就整体返回 `[]`。本轮 `npm run eval:rag` 的 `outOfDomainEmpty` 为 `1.000`（10/10），falseContext 为 0；代价是 answer-absent 的 relatedHit 从上一轮 `1.000` 降到 `0.600`（门控也会清掉部分「相关但答不上」的命中），这是当前取舍。混合检索仍未测（第 27 条）。
+27. **内置知识点仍只走纯 BM25，混合检索只在生产里接上传资料。** 导师页的知识点检索先 `buildIndex(target.graph.concepts)`（`app/tutor/page.tsx:338`），查询用 `search(index, question, 3)`（`:399`），只有上传片段走 `createRetriever` + RRF（`:488-494`）。50 条评测针对的是 `kbDocuments`，且已饱和（answerable 的 recall 全 1.000），所以它既不能证明上传资料的混合检索，也不能证明「向量/RRF 提升」。
 28. **契约里的 `search_exhausted` / `tts_unavailable` 没有路由产出，错误体有两种形状。** `/api/config`、`/api/llm/*`、`/api/kb`、`/api/memories` 回 `{error:{code,message}}`；`/api/search`、`/api/tts` 回 `{error,code}`。客户端必须按路由选解析器（`serverConfig.errorOf` 是现成实现）；新增客户端不应假设统一。
-29. **主密钥只能有一把。** `resolveSecretKey` 只读 `ALP_SECRET_KEY` / `ALP_SECRET_KEY_ID`，轮换后旧行统一报 `KEY_KID_UNKNOWN`，必须让所有用户重存一次；没有「新旧密钥并存、逐行迁移」的自动路径。`HEALTH_TOKEN` 的详细健康检查已实现，但还没写进 `.env.example`。
+29. **主密钥只能有一把。** `resolveSecretKey` 只读 `ALP_SECRET_KEY` / `ALP_SECRET_KEY_ID`，轮换后旧行统一报 `KEY_KID_UNKNOWN`，必须让所有用户重存一次；没有「新旧密钥并存、逐行迁移」的自动路径。`HEALTH_TOKEN` 的详细健康检查已实现，并已写进 `.env.example`。
 30. **`/api/kb` PUT 没有 `maxDuration`。** 向量补预算 25 秒（`KB_EMBED_BUDGET_MS`），路由未声明函数时限；在默认时限较短的平台上，大文档可能被平台超时截断，而不是返回 4xx。
 
 ## 本轮新增能力的边界（2026-10-29）
@@ -117,7 +117,7 @@
 **思考、联网与语音**
 
 - **不做 debate / router / ReAct / 同模型第二 solver / 跨供应商核对。** 只做「生成者 + 只读核对者」，且核对者必须逐字引用原文；没有原文时不核对。
-- 思考强度只作用于导师回答；出题、批解、方向生成始终非思考。server 模式的档位来自账号配置，请求体没有这个字段。OpenAI 官方 Chat Completions 不暴露原始推理正文，面板可能为空；端点拒绝思考参数时自动降级一次并把标准 / 深入置灰。
+- 思考强度只作用于导师回答；出题、批解、方向生成始终非思考——`/api/llm/chat` 的请求体收 `purpose`，`items` / `verify` / `direction` 一律按关档发给上游（`app/api/llm/chat/route.ts:125-131`、`:227`）。server 模式的档位来自账号配置；旧客户端不传 `purpose` 时沿用账号档位，传了则按用途覆盖。OpenAI 官方 Chat Completions 不暴露原始推理正文，面板可能为空；端点拒绝思考参数时自动降级一次并把标准 / 深入置灰。
 - **联网支持 DeepSeek / Tavily / 维基百科。** server 模式经 `/api/search` 代发，local 模式 Tavily / 维基百科浏览器直连；DeepSeek 搜索没有浏览器直连路径。服务端不静默换供应商，`search_exhausted` 未实现；网络来源始终标「未核对」，不进入教材命名空间，也不作为 L6 / 引用核对的依据。本轮真机探测三端点均「未验证」（缺凭据），见 [§15](rag.md)。
 - **TTS 在 server 模式下不再受浏览器 CORS 限制**：`/api/tts` 支持 `speech` 与 mimo `chat-audio` 两种协议；local 模式仍直连，失败自动回退浏览器语音。只朗读正文、单段最多 2000 字，不自动播放、不做逐字高亮 / 字幕同步；语音密钥与聊天密钥分开保存。
 - **换账号会清本机存档。** `planAccountTransition` 对 A→B / A→匿名清空 learner、本机知识库、搜索 / 语音密钥与教材讲义；匿名→B 保留并登记归属；登出无条件清空并删除调用模式键（`src/lib/useAuth.ts:73-116`、`:239`）。服务端账号里的配置不会因切换被删除。

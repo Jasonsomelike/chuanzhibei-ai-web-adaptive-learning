@@ -11,6 +11,29 @@ import { useAuth } from "@/lib/useAuth";
  * 只有这一小块需要读登录态。
  */
 
+/**
+ * 导航里可点元素的共用样式。
+ *
+ * 移动端触控目标至少 44×44（WCAG 2.5.5 / 2.5.8 的拇指目标）：
+ * `min-h-11` + `inline-flex items-center` 把高度撑到 2.75rem，并在 `sm`
+ * 断点收回 `min-h-0`，桌面仍是原来的紧凑密度（链接 32px、登出 24px）。
+ *
+ * 垂直内边距写成任意值而不是 `py-1.5` / `py-1`：桌面像素不变，
+ * 同时让「导航常量里不出现 py-1*」这条约束可以被 nav-links.test.ts 直接断言。
+ * `.touch-target` 是 app/globals.css 里 `pointer: coarse` 的兜底，
+ * 覆盖横屏手机、平板等宽度超过 `sm` 的触屏设备。
+ */
+export const NAV_LINK_CLASS =
+  "inline-flex min-h-11 items-center rounded-md px-2.5 py-[0.375rem] touch-target transition-colors sm:min-h-0";
+
+/** 登出按钮：文字更小、桌面更紧凑，但移动端同样至少 44px。 */
+export const NAV_LOGOUT_CLASS =
+  "inline-flex min-h-11 items-center rounded-md px-2 py-[0.25rem] text-xs text-[var(--ink-faint)] touch-target hover:text-[var(--ink)] sm:min-h-0";
+
+/** 未登录时的登录入口。 */
+export const NAV_LOGIN_CLASS =
+  "ml-1 inline-flex min-h-11 items-center rounded-md bg-[var(--accent)] px-2.5 py-[0.25rem] text-xs font-medium text-[var(--on-accent)] touch-target sm:min-h-0";
+
 const LINKS = [
   { href: "/diagnose", label: "诊断" },
   { href: "/path", label: "路径" },
@@ -34,7 +57,7 @@ export function NavLinks() {
             key={l.href}
             href={l.href}
             aria-current={active ? "page" : undefined}
-            className={`rounded-md px-2.5 py-1.5 transition-colors ${
+            className={`${NAV_LINK_CLASS} ${
               active
                 ? "bg-[var(--accent-soft)] text-[var(--accent)]"
                 : "text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
@@ -58,7 +81,7 @@ export function NavLinks() {
           <button
             type="button"
             onClick={() => void logout()}
-            className="rounded-md px-2 py-1 text-xs text-[var(--ink-faint)] hover:text-[var(--ink)]"
+            className={NAV_LOGOUT_CLASS}
           >
             登出
           </button>
@@ -66,7 +89,7 @@ export function NavLinks() {
       ) : (
         <Link
           href="/login"
-          className="ml-1 rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--on-accent)]"
+          className={NAV_LOGIN_CLASS}
         >
           登录
         </Link>

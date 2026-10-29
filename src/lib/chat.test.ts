@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { callChat, callChatStream, ChatError, probeThinking } from "@/lib/chat";
+import {
+  callChat,
+  callChatStream,
+  ChatError,
+  probeThinking,
+  runStructuredCall,
+} from "@/lib/chat";
 import type { ProviderConfig } from "@/lib/provider";
 
 /*
@@ -598,6 +604,22 @@ describe("server 模式请求形状", () => {
     expect((err as ChatError).status).toBe(404);
     expect((err as ChatError).responseBody).toContain("CONFIG_MISSING");
   });
+
+  it("server 模式把 jsonMode 与 purpose 写进请求体，缺省不写", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "好" }, finish_reason: "stop" }] }),
+    );
+
+    await callChat(serverProvider(), { user: "问", jsonMode: true, purpose: "items" });
+    const withFlags = bodyOf(calls[0]);
+    expect(withFlags.jsonMode).toBe(true);
+    expect(withFlags.purpose).toBe("items");
+
+    await callChat(serverProvider(), { user: "问" });
+    const bare = bodyOf(calls[1]);
+    expect(bare.jsonMode).toBeUndefined();
+    expect(bare.purpose).toBeUndefined();
+  });
 });
 
 describe("probeThinking 的 400 归因", () => {
@@ -622,5 +644,132 @@ describe("probeThinking 的 400 归因", () => {
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe("unknown");
+  });
+});
+
+// ── runStructuredCall：一次 repair 重试 ──────────────────────────
+
+describe("runStructuredCall", () => {
+  /** 取最后一次请求的 user 内容，用来断言重试提示词。 */
+  function lastUser(call: FetchCall): string {
+    const messages = bodyOf(call).messages as { role: string; content: string }[];
+    return [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
+  }
+
+  it("首次结构不合格时只重试一次，callChat 调用计数为 2", async () => {
+    const calls = stubFetch((_url, init) => {
+      const user = lastUser({ url: "", init });
+      const content = user.includes("上一次的输出") ? '{"items":[]}' : "不是 JSON";
+      return jsonResponse({ choices: [{ message: { content }, finish_reason: "stop" }] });
+    });
+
+    const outcome = await runStructuredCall(
+      provider(),
+      { user: "请输出 JSON" },
+      (text) =>
+        text.startsWith("{")
+          ? { ok: true, value: text }
+          : { ok: false, reason: "返回内容不是 JSON" },
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.value).toBe('{"items":[]}');
+    expect(outcome.reason).toBeNull();
+    expect(outcome.firstText).toBe("不是 JSON");
+    // 第二次提示词带上失败原因，模型才知道要改什么
+    expect(lastUser(calls[1])).toContain("返回内容不是 JSON");
+    expect(lastUser(calls[1])).toContain("请输出 JSON");
+  });
+
+  it("第一次就合格时不重试（调用计数为 1）", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: '{"ok":1}' }, finish_reason: "stop" }] }),
+    );
+
+    const outcome = await runStructuredCall(provider(), { user: "请输出 JSON" }, (text) => ({
+      ok: true,
+      value: text,
+    }));
+
+    expect(calls).toHaveLength(1);
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.value).toBe('{"ok":1}');
+  });
+
+  it("两次都不合格时返回最后一次原因，不再发第三次", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "仍然是坏的" }, finish_reason: "stop" }] }),
+    );
+
+    const outcome = await runStructuredCall(provider(), { user: "请输出 JSON" }, () => ({
+      ok: false,
+      reason: "结构不合格",
+    }));
+
+    expect(calls).toHaveLength(2);
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.value).toBeNull();
+    expect(outcome.reason).toBe("结构不合格");
+    expect(outcome.text).toBe("仍然是坏的");
+  });
+
+  it("截断且没给更大预算时不重试，truncated 直接抛给调用方", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({
+        choices: [{ message: { content: "半截" }, finish_reason: "length" }],
+      }),
+    );
+
+    const err = await runStructuredCall(provider(), { user: "请输出 JSON", maxTokens: 100 }, () => ({
+      ok: false,
+      reason: "结构不合格",
+    })).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatError);
+    expect((err as ChatError).kind).toBe("truncated");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("截断且给了更大预算时重试一次，第二次成功即采信", async () => {
+    const calls = stubFetch((_url, init) => {
+      const body = bodyOf({ url: "", init });
+      if (body.max_tokens === 400) {
+        return jsonResponse({
+          choices: [{ message: { content: "半截" }, finish_reason: "length" }],
+        });
+      }
+      return jsonResponse({
+        choices: [{ message: { content: '{"ok":1}' }, finish_reason: "stop" }],
+      });
+    });
+
+    const outcome = await runStructuredCall(
+      provider(),
+      { user: "请输出 JSON", maxTokens: 400 },
+      (text) => ({ ok: true, value: text }),
+      { maxTokens: 800 },
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(bodyOf(calls[1]).max_tokens).toBe(800);
+    expect(outcome.value).toBe('{"ok":1}');
+    // 第一次被截断：firstText 为空串，trace 不该谎报字数
+    expect(outcome.firstText).toBe("");
+  });
+
+  it("网络错误不重试", async () => {
+    const calls = stubFetch(() => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    const err = await runStructuredCall(provider(), { user: "请输出 JSON" }, () => ({
+      ok: false,
+      reason: "结构不合格",
+    })).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatError);
+    expect((err as ChatError).kind).toBe("network");
+    expect(calls).toHaveLength(1);
   });
 });

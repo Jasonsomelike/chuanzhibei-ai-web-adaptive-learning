@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
@@ -25,6 +25,7 @@ import { masteryMean, masterySd } from "@/lib/mastery";
 import { computeDepths } from "@/lib/graph";
 import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf } from "@/lib/chapters";
 import { summarizeCounterfactual } from "@/lib/planDiff";
+import { readManualPath, writeManualPath } from "@/lib/manualPath";
 
 /**
  * 路径页的四个能力，对应评分表里的「交互模式创新」：
@@ -79,6 +80,11 @@ function writeChapterSelection(targetId: string, names: readonly string[]): void
   }
 }
 
+/** 路径步骤的 DOM id；?kc=<id> 跳转（导师页引用 Pill）靠它定位。 */
+function pathStepId(kcId: string): string {
+  return `path-step-${kcId}`;
+}
+
 export default function PathPage() {
   const { target, targetId, setTargetId, ready, loadingTarget, targetError } = useSubject();
   const {
@@ -101,6 +107,12 @@ export default function PathPage() {
    * 「移除」于是变成空操作。
    */
   const [manualEdit, setManualEdit] = useState<ManualEdit | null>(null);
+
+  /**
+   * 从 ?kc=<id> 读到的定位目标。只影响视觉（滚动 + 高亮），不参与路径计算：
+   * 导师页的引用 Pill 会带这个参数跳过来；参数缺失或 id 不在当前路径里时什么都不做。
+   */
+  const [highlightKc, setHighlightKc] = useState<string | null>(null);
 
   /*
    * 章节选择跟着目标走：state 里带上所属 targetId，切目标后的第一帧
@@ -158,10 +170,25 @@ export default function PathPage() {
   const chapterTargets =
     scope && scope.targets.length > 0 && !wholeSubject ? scope.targets : undefined;
 
-  // 切换目标时清掉手动改写，避免把上一科的顺序带过来
+  /*
+   * 手动改写按目标持久化：挂载与切目标时读回该目标的存档，没有存档则回到算法序。
+   *
+   * 章节范围变化**不**清掉手动顺序：存档按目标存，新范围内装不下的点由
+   * applyManualOrder 自动丢弃、新装进来的点追加末尾，顺序仍然可解释。
+   * 「恢复算法排序」会同时清掉存档（见 resetManual），否则刷新后旧顺序会自己回来。
+   */
   useEffect(() => {
-    setManualEdit(null);
-  }, [targetId, chapters]);
+    setManualEdit(readManualPath(targetId));
+  }, [targetId]);
+
+  /*
+   * 定位参数只在挂载时读一次：用 window.location.search 而不是 useSearchParams，
+   * 与 useSubject 同口径，避免 Next 把页面推进 Suspense 边界。
+   */
+  useEffect(() => {
+    const kc = new URLSearchParams(window.location.search).get("kc");
+    setHighlightKc(kc !== null && kc.trim() !== "" ? kc : null);
+  }, []);
 
   /*
    * 对照预算只跟目标走：换章节时保留它，
@@ -218,6 +245,18 @@ export default function PathPage() {
     [displayed, plan],
   );
 
+  /** 每个 ?kc= 只滚动一次：改预算会让 displayed 换引用，但不该把视口反复拽回定位点。 */
+  const scrolledKc = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (highlightKc === null || scrolledKc.current === highlightKc) return;
+    const el = document.getElementById(pathStepId(highlightKc));
+    // 定位点不在当前路径里（被手动移除 / 不在预算内）：静默跳过，路径照常显示
+    if (el === null) return;
+    scrolledKc.current = highlightKc;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightKc, displayed]);
+
   /*
    * 对照预算的汇总：推迟与阻塞分开计数。
    * blockedNotInPath 以「当前显示的路径」为准，所以手动移除的点也会重新出现在清单里。
@@ -255,7 +294,16 @@ export default function PathPage() {
     [manualEdit, graph, progress, displayed],
   );
 
-  const resetManual = useCallback(() => setManualEdit(null), []);
+  /*
+   * 手动改写的唯一写入口：内存状态与按目标存档一起更新，
+   * 避免「界面改了、刷新又变回去」。存档读不出来时按 null 处理，写失败不影响本会话。
+   */
+  const applyManualEdit = (edit: ManualEdit | null) => {
+    setManualEdit(edit);
+    writeManualPath(targetId, edit);
+  };
+
+  const resetManual = () => applyManualEdit(null);
 
   const moveStep = (from: number, to: number) => {
     if (!learner) return;
@@ -264,7 +312,7 @@ export default function PathPage() {
     const next = displayed.map((s) => s.kcId);
     const [movedKc] = next.splice(from, 1);
     next.splice(to, 0, movedKc);
-    setManualEdit({ order: next, removed: manualEdit?.removed ?? [] });
+    applyManualEdit({ order: next, removed: manualEdit?.removed ?? [] });
 
     const updated = recordPathEdit(
       learner,
@@ -286,7 +334,7 @@ export default function PathPage() {
 
     const next = displayed.filter((_, i) => i !== index).map((s) => s.kcId);
     // 显式记进 removed：否则重放会把 plan 里「不在顺序中」的它又追加回末尾
-    setManualEdit({
+    applyManualEdit({
       order: next,
       removed: [...new Set([...(manualEdit?.removed ?? []), removed.kcId])],
     });
@@ -528,11 +576,12 @@ export default function PathPage() {
                   </p>
                   <p className="mt-1 text-xs text-[var(--ink-faint)]">
                     路径为空不是预算不够，而是候选范围内没有掌握度低于阈值的新点；
-                    预算调大也不会把已掌握的点重新排进来。可以去{" "}
+                    预算调大也不会把已掌握的点重新排进来。可以到{" "}
                     <Link href={`/diagnose${target.kind === "direction" ? `?direction=${target.id}` : ""}`} className="underline">
                       诊断页
                     </Link>{" "}
-                    复测，或切换学习目标。
+                    按知识点清空证据（清空后该知识点的掌握度回到先验、题会重新出现），
+                    或切换学习目标。
                   </p>
                 </>
               )}
@@ -549,8 +598,12 @@ export default function PathPage() {
                 const blockedByInCounterfactual = counterfactualSummary.blockedByOf(step.kcId);
 
                 return (
-                  <li key={`${step.kcId}-${i}`}>
-                    <Card className={deferredInCounterfactual ? "opacity-50" : ""}>
+                  <li key={`${step.kcId}-${i}`} id={pathStepId(step.kcId)}>
+                    <Card
+                      className={`${deferredInCounterfactual ? "opacity-50" : ""} ${
+                        highlightKc === step.kcId ? "ring-2 ring-[var(--accent)]" : ""
+                      }`}
+                    >
                       <div className="flex items-start gap-3">
                         <span className="tabular grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[var(--accent-soft)] text-sm font-medium text-[var(--accent)]">
                           {i + 1}
@@ -562,6 +615,8 @@ export default function PathPage() {
                             <Pill>{step.estMinutes} 分钟</Pill>
                             <Pill>深度 {depths.get(step.kcId) ?? 0}</Pill>
                             {moved.has(step.kcId) ? <Pill tone="warn">已手动调整</Pill> : null}
+                            {/* 只影响视觉：?kc= 跳转过来的定位标记，不参与路径计算 */}
+                            {highlightKc === step.kcId ? <Pill tone="accent">已定位</Pill> : null}
                             {deferredInCounterfactual ? (
                               <Pill tone="bad">对照预算下会被推迟</Pill>
                             ) : null}

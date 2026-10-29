@@ -185,6 +185,45 @@ export function recordAttempt(
 }
 
 /**
+ * 清空某个知识点的作答证据（纯函数）。
+ *
+ * 为什么需要显式清空：内置题每个知识点只有 3 道，答满 3 题就达到证据门槛
+ * （mastery.ts 的 EVIDENCE_TARGET），而同一题重复作答 `counted=false` 不改变 α/β，
+ * 于是答完后再答掌握度也永远停在首次测评的结果。要让「学会之后再测一次」
+ * 真正影响路径，只能清空该知识点的证据重测——这必须是显式按钮 + 二次确认的操作，
+ * 不能在答题流程里自动触发。
+ *
+ * 语义：
+ *   - 该 KC 的 mastery 回到与新建进度一致的先验（按图谱深度，evidenceN 归零）
+ *   - attempts 里该 KC 的记录全部删除，attemptedQuestionIds 随之重新为空
+ *   - 其它知识点、其它学科、pathEdits 与 memories 原样保留
+ *
+ * graph 与 recordAttempt 同义：自定义方向必须传，否则会回落内置学科建进度。
+ */
+export function clearKcEvidence(
+  state: LearnerState,
+  subjectId: string,
+  kcId: string,
+  graph?: KnowledgeGraph,
+): LearnerState {
+  const progress = progressOf(state, subjectId, graph);
+  const g = graph ?? getSubject(subjectId).graph;
+  const prior = initialMastery(kcId, computeDepths(g).get(kcId) ?? 0);
+
+  return {
+    ...state,
+    subjects: {
+      ...state.subjects,
+      [subjectId]: {
+        ...progress,
+        mastery: progress.mastery.map((m) => (m.kcId === kcId ? prior : m)),
+        attempts: progress.attempts.filter((a) => a.kcId !== kcId),
+      },
+    },
+  };
+}
+
+/**
  * 记录一次手动改路径。
  *
  * 必须传 graph：自定义方向没有 Subject 记录，不传会按内置学科建出

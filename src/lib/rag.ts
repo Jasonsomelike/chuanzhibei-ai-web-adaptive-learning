@@ -63,6 +63,28 @@ const SINGLE_CHAR_WEIGHT = 0.35;
 /** 低于这个分数视为不相关。宁可不给依据，也不给无关依据。 */
 const MIN_SCORE = 0.5;
 
+/**
+ * 域外门控。
+ *
+ * MIN_SCORE 只保证「词面上有命中」，挡不住「红烧肉怎么做才好吃？」这类问题：
+ * 疑问句式里的「怎么 / 什么 / 如何」在中文语料里到处都能凑出分数，
+ * 于是域外问题也会拿到 3 条带引用的知识点。退出前再看三件事：
+ *   1. top1 相对候选分数中位数——分布是否真的有峰，而不是一堆同分噪声；
+ *   2. top1 对查询非单字词的覆盖率——是否真的在讲同一件事；
+ *   3. 命中的不同非单字词个数——避免单个「怎么」把整条查询带进来。
+ *
+ * 查询里没有非单字词（「栈」「树」）时跳过覆盖率与中位数判断：
+ * 单字查询本来就宽，拿中位数去卡只会误杀合法短查询。
+ * 查询只有一个非单字词时同样不卡中位数——命中的文档都同样切题；
+ * 命中数按「至少一半、最多 2 个」要求，避免「平衡树」这种两个 bigram
+ * 里有一个是跨词边界的查询被误杀。
+ */
+const GATE_MIN_TOP_MEDIAN_RATIO = 1.2;
+const GATE_MIN_COVERAGE = 0.2;
+const GATE_MIN_MULTI_HITS = 2;
+/** 候选少于 3 条时中位数没有区分力（可能等于 top1 本身），跳过该条件。 */
+const GATE_MIN_POOL_FOR_MEDIAN = 3;
+
 /** BM25 参数。k1 控制词频饱和，b 控制长度归一化强度。 */
 const K1 = 1.5;
 const B = 0.75;
@@ -103,8 +125,47 @@ export interface SearchOptions {
 }
 
 /**
+ * 域外门控：判断这次排序结果值不值得作为依据返回。
+ *
+ * ranked 是已按分数降序、且已过 MIN_SCORE 的完整候选（还没按 k 截断），
+ * 门控要看整条分布，不能只看最后返回的那几条。
+ */
+function passesRelevanceGate(
+  index: Bm25Index,
+  qTokens: readonly string[],
+  ranked: readonly { readonly i: number; readonly score: number }[],
+): boolean {
+  if (ranked.length === 0) return false;
+
+  const multiTokens = [...new Set(qTokens)].filter((token) => token.length > 1);
+  if (multiTokens.length === 0) return true;
+
+  const topTokens = new Set(index.docTokens[ranked[0].i]);
+  const hits = multiTokens.filter((token) => topTokens.has(token)).length;
+
+  if (hits / multiTokens.length < GATE_MIN_COVERAGE) return false;
+  /*
+   * 「至少 2 个非单字命中」是对长查询的锚点要求。查询本身只有两个
+   * 非单字词时（「平衡树」→ 平衡 / 衡树），要求 2 个可能超过真实词形覆盖，
+   * 按「至少一半」放宽，避免把正常短查询整体清空。
+   */
+  const requiredHits = Math.min(GATE_MIN_MULTI_HITS, Math.ceil(multiTokens.length / 2));
+  if (hits < requiredHits) return false;
+
+  // 只有一个非单字词时，命中该词的文档同样切题，中位数没有区分意义。
+  if (multiTokens.length >= 2 && ranked.length >= GATE_MIN_POOL_FOR_MEDIAN) {
+    const sorted = ranked.map((item) => item.score).sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (ranked[0].score < median * GATE_MIN_TOP_MEDIAN_RATIO) return false;
+  }
+
+  return true;
+}
+
+/**
  * 检索。返回按分数降序的前 k 条。
  * 分数为 0 的文档不返回——宁可不给依据，也不给无关依据。
+ * 过了 MIN_SCORE 但没过域外门控时整体返回 []，不返回「最不跑题」的那几条。
  */
 export function search(
   index: Bm25Index,
@@ -151,10 +212,12 @@ export function search(
   const ranked = scores
     .map((score, i) => ({ i, score }))
     .filter((x) => x.score >= MIN_SCORE)
-    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.i - b.i))
-    .slice(0, k);
+    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.i - b.i));
 
-  return ranked.map(({ i, score }) => ({
+  // 门控在截断之前看完整候选分布；没过门控就整体清空，不挑「最像」的几条。
+  if (!passesRelevanceGate(index, qTokens, ranked)) return [];
+
+  return ranked.slice(0, k).map(({ i, score }) => ({
     kcId: index.docs[i].kcId,
     title: index.docs[i].title,
     snippet: index.docs[i].text.slice(0, 160),

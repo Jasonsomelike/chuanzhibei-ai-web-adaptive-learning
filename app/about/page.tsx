@@ -116,7 +116,7 @@ export default function AboutPage() {
               href="/settings"
               points={[
                 `${THEMES.length} 套配色 × 明暗两种模式，共 ${THEMES.length * 2} 个组合`,
-                "全部通过 WCAG AAA 正文对比度（≥7:1），对比度由脚本实算而非估计",
+                "正文与次要文字通过 WCAG AAA（≥7:1），非文本元素按 AA；对比度由脚本实算而非估计",
                 "深色下中文正文自动加字重，避免笔画发虚",
               ]}
             />
@@ -126,7 +126,7 @@ export default function AboutPage() {
               points={[
                 "实现 MCP 三种原语：tools 5 个 / resources 18 个 / prompts 2 个",
                 "任何支持 MCP 的客户端都能把本课程的知识图谱当工具调用",
-                "GET 该地址可直接看到服务能力清单",
+                "只接受 POST（JSON-RPC 2.0）；GET 明确返回 405，不把「能打开」当成协议入口",
               ]}
             />
           </div>
@@ -279,7 +279,7 @@ export default function AboutPage() {
                 ["认证", "PBKDF2-HMAC-SHA256 + 服务端会话"],
                 ["存储", "Postgres（Neon）；本地无库时退化为内存"],
                 ["工具协议", "MCP（JSON-RPC 2.0）"],
-                ["测试", "Vitest 751 条 + Playwright E2E + MCP 协议测试"],
+                ["测试", "Vitest 1721 条 + Playwright E2E + MCP 协议测试"],
               ].map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-[var(--ink-soft)]">{k}</dt>

@@ -249,6 +249,22 @@ body {
 }
 
 /*
+ * 触屏兜底：`sm` 断点之外（横屏手机、平板）同样是手指操作，
+ * 可点目标仍需 ≥44px。只作用于显式标了 .touch-target 的元素，
+ * `pointer: fine` 的桌面保持原有紧凑密度。
+ * 这条规则不在 @layer 里，优先级高于 Tailwind 工具类，
+ * 所以会盖过组件上的 sm:min-h-0。
+ */
+@media (pointer: coarse) {
+  .touch-target {
+    display: inline-flex;
+    min-height: 2.75rem;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/*
  * 折叠面板的 grid-template-rows 过渡在 globals.css 的 reduced-motion 规则下
  * 会自动退化为 0.01ms；GSAP 动画则在代码里显式查询同一媒体特性后跳过。
  * 两条路径都保证「减少动态效果」用户看不到位移动画。

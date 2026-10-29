@@ -60,7 +60,11 @@ export function ThinkingPanel({
           思考过程（模型生成，可能不完整 / 不忠实）
         </span>
         <span className="shrink-0 text-xs text-[var(--ink-faint)]">
-          {streaming ? "思考中… · " : ""}
+          {/*
+            正文已经开始输出后就不再是「思考中」：流式还没结束，
+            但模型此刻在写答案，不是在思考。只看 streaming 会把两个阶段说反。
+          */}
+          {streaming && !textStarted ? "思考中… · " : ""}
           {open ? "收起" : "展开"}
         </span>
       </button>

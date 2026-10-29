@@ -330,6 +330,17 @@ describe("POST /api/search", () => {
     );
     expect(crossSite.status).toBe(403);
   });
+
+  it("300KB 请求体在解析前返回 413，且不调用供应商", async () => {
+    const res = await searchPost(
+      jsonRequest("/api/search", { provider: "wikipedia", query: "x".repeat(300 * 1024) }),
+    );
+
+    expect(res.status).toBe(413);
+    const data = (await res.json()) as { code: string };
+    expect(data.code).toBe("payload_too_large");
+    expect(h.searchWikipedia).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/tts", () => {
@@ -476,5 +487,16 @@ describe("POST /api/tts", () => {
     expect(res.status).toBe(500);
     const data = (await res.json()) as { code: string };
     expect(data.code).toBe("secret_key_missing");
+  });
+
+  it("300KB 请求体在解析前返回 413，且不调用合成", async () => {
+    storeMimo();
+    const res = await ttsPost(jsonRequest("/api/tts", { text: "x".repeat(300 * 1024) }));
+
+    expect(res.status).toBe(413);
+    const data = (await res.json()) as { code: string };
+    expect(data.code).toBe("payload_too_large");
+    expect(h.synthesizeMimo).not.toHaveBeenCalled();
+    expect(h.synthesizeSpeech).not.toHaveBeenCalled();
   });
 });

@@ -67,6 +67,13 @@ const secret = z.string().min(1).max(4096);
 
 const PROVIDER_KINDS = ["openai-compatible", "anthropic"] as const satisfies readonly ProviderKind[];
 const THINKING_STRENGTHS = ["off", "standard", "deep"] as const satisfies readonly ThinkingStrength[];
+/**
+ * 服务端代发的调用用途。服务端据此决定思考档：
+ * tutor 与缺省沿用账号配置，items/verify/direction 强制关闭思考——
+ * 出题、批解、核对都是「一次拿到完整 JSON」的调用，思考 token 会把预算吃光。
+ */
+export const CHAT_PURPOSES = ["tutor", "items", "verify", "direction"] as const;
+export type ChatPurpose = (typeof CHAT_PURPOSES)[number];
 const THINKING_STATUSES = [
   "unknown",
   "verified",
@@ -175,6 +182,16 @@ export const llmChat = z.strictObject({
   maxTokens: z.number().int().min(1).max(32_000).optional(),
   /** 缺省按流式（SSE）返回；出题、核对等一次性调用显式传 false。 */
   stream: z.boolean().default(true),
+  /**
+   * 调用用途。缺省时服务端沿用账号保存的思考档（旧客户端的既有行为）；
+   * 显式给出 items/verify/direction 时服务端关闭思考，避免 JSON 输出被推理吃光。
+   */
+  purpose: z.enum(CHAT_PURPOSES).optional(),
+  /**
+   * 要求上游返回 JSON 对象（OpenAI 兼容协议写 response_format）。
+   * 缺省 false，与本轮之前的请求体完全一致。
+   */
+  jsonMode: z.boolean().default(false),
 });
 
 export type ChatMessage = z.infer<typeof chatMessage>;

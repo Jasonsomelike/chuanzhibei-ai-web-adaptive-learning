@@ -14,15 +14,37 @@
  */
 
 import { NextResponse } from "next/server";
-import { SUBJECTS, getSubject, DEFAULT_SUBJECT_ID } from "@/data/subjects";
-import { planPath, ALGO_VERSION } from "@/lib/plan";
+import {
+  SUBJECTS,
+  getSubject,
+  DEFAULT_SUBJECT_ID,
+  type Subject,
+} from "@/data/subjects";
+import { planPath } from "@/lib/plan";
 import { masteryMean, masterySd, type MasteryState } from "@/lib/mastery";
 import { search, buildIndex } from "@/lib/rag";
 import { prerequisiteClosure } from "@/lib/graph";
+import { apiErrorCodes } from "@/lib/apiContracts";
+import { isSameOriginRequest } from "@/lib/origin";
+import { jsonError, readLimitedText } from "@/lib/routeAuth";
 
 export const runtime = "nodejs";
 
 const PROTOCOL_VERSION = "2025-06-18";
+
+/** 支持的协议版本（新 → 旧）。initialize 在列表内回显客户端值，否则回落最新。 */
+const SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
+  "2025-06-18",
+  "2025-03-26",
+  "2024-11-05",
+];
+
+/**
+ * POST 体积上限。MCP 请求里最大的字段是客户端传来的掌握度数组，
+ * 40 个点约 4KB；256KB 留了两个数量级余量，同时挡住把整份文档塞进请求。
+ */
+const MAX_MCP_BODY_BYTES = 256 * 1024;
+
 const SERVER_INFO = { name: "adaptive-learning-path", version: "0.2.0" };
 
 interface JsonRpcRequest {
@@ -147,8 +169,7 @@ const PROMPTS = [
 ];
 
 /** 把客户端传来的掌握度清洗成合法状态；缺失的点用先验补齐。 */
-function normalizeMastery(input: unknown, subjectId: string): MasteryState[] {
-  const subject = getSubject(subjectId);
+function normalizeMastery(input: unknown, subject: Subject): MasteryState[] {
   const validIds = new Set(subject.graph.concepts.map((c) => c.id));
   const map = new Map<string, MasteryState>();
 
@@ -185,8 +206,26 @@ function rpcError(id: string | number | null | undefined, code: number, message:
   return NextResponse.json({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 }
 
-function subjectOf(args: Record<string, unknown>): string {
-  return typeof args.subject === "string" ? args.subject : DEFAULT_SUBJECT_ID;
+/** 参数错误。tools/call 与 prompts/get 都把它映射成 JSON-RPC -32602。 */
+class InvalidParamsError extends Error {}
+
+/**
+ * 解析并校验 subject 参数。
+ *
+ * getSubject 对未知 id 会静默回落到 SUBJECTS[0]（src/data/subjects/index.ts:118-121），
+ * 这里把回落翻译成 -32602：否则模型幻觉一个 id 就能拿到标错学科的路径，
+ * 响应里回显的还是那个不存在的 id。
+ */
+function resolveSubject(args: Record<string, unknown>): {
+  readonly id: string;
+  readonly subject: Subject;
+} {
+  const requested = typeof args.subject === "string" ? args.subject : DEFAULT_SUBJECT_ID;
+  const subject = getSubject(requested);
+  if (subject.id !== requested) {
+    throw new InvalidParamsError(`未知学科：${requested}`);
+  }
+  return { id: subject.id, subject };
 }
 
 /** 调用工具。返回 MCP 的 content 数组格式。 */
@@ -211,11 +250,10 @@ function callTool(name: string, args: Record<string, unknown>) {
     };
   }
 
-  const subjectId = subjectOf(args);
-  const subject = getSubject(subjectId);
+  const { id: subjectId, subject } = resolveSubject(args);
 
   if (name === "get_learner_state") {
-    const mastery = normalizeMastery(args.mastery, subjectId);
+    const mastery = normalizeMastery(args.mastery, subject);
     return {
       content: [
         {
@@ -243,7 +281,7 @@ function callTool(name: string, args: Record<string, unknown>) {
 
     const result = planPath({
       graph: subject.graph,
-      mastery: normalizeMastery(args.mastery, subjectId),
+      mastery: normalizeMastery(args.mastery, subject),
       budgetMinutes: budget,
       targets,
     });
@@ -311,19 +349,68 @@ function callTool(name: string, args: Record<string, unknown>) {
   throw new Error(`未知工具：${name}`);
 }
 
+/**
+ * 只拒「明确跨站」的浏览器请求。
+ *
+ * 外部 MCP 客户端（CLI、scripts/mcp-smoke.ts）不带 Origin，必须放行，
+ * 所以不能直接用 assertMutationOrigin（它把缺 Origin 也当拒绝）。
+ * 浏览器跨站时一定会带 Origin（沙箱 iframe 是字面量 "null"），
+ * 或至少带 Sec-Fetch-Site: cross-site，这两种情况拒绝。
+ */
+function crossSiteRejection(request: Request): NextResponse | null {
+  const origin = (request.headers.get("origin") ?? "").trim();
+  const secFetchSite = (request.headers.get("sec-fetch-site") ?? "").trim().toLowerCase();
+
+  if (origin === "") {
+    return secFetchSite === "cross-site" ? crossSiteForbidden() : null;
+  }
+
+  const sameOrigin = isSameOriginRequest({
+    method: request.method,
+    origin,
+    host: request.headers.get("host"),
+    forwardedHost: request.headers.get("x-forwarded-host"),
+    secFetchSite,
+    url: request.url,
+  });
+  return sameOrigin ? null : crossSiteForbidden();
+}
+
+function crossSiteForbidden(): NextResponse {
+  return jsonError(403, apiErrorCodes.forbidden, "跨站请求被拒绝");
+}
+
 export async function POST(request: Request) {
-  let body: JsonRpcRequest;
+  const rejected = crossSiteRejection(request);
+  if (rejected) return rejected;
+
+  const limited = await readLimitedText(request, MAX_MCP_BODY_BYTES);
+  if (!limited.ok) return limited.response;
+
+  let parsed: unknown;
   try {
-    body = (await request.json()) as JsonRpcRequest;
+    parsed = JSON.parse(limited.text);
   } catch {
     return rpcError(null, -32700, "Parse error: 请求体不是合法 JSON");
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return rpcError(null, -32600, "Invalid Request: 请求体必须是 JSON-RPC 对象");
+  }
 
-  const { id, method, params = {} } = body;
+  const body = parsed as JsonRpcRequest;
+  const { id, method } = body;
+  const params =
+    typeof body.params === "object" && body.params !== null ? body.params : {};
 
   if (method === "initialize") {
+    // 按 MCP 版本协商：客户端请求的版本在支持列表内就回显，否则回落到最新版。
+    const requested =
+      typeof params.protocolVersion === "string" ? params.protocolVersion : "";
+    const protocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+      ? requested
+      : PROTOCOL_VERSION;
     return ok(id, {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion,
       capabilities: { tools: {}, resources: {}, prompts: {} },
       serverInfo: SERVER_INFO,
     });
@@ -368,7 +455,18 @@ export async function POST(request: Request) {
   if (method === "prompts/get") {
     const name = typeof params.name === "string" ? params.name : "";
     const args = (params.arguments ?? {}) as Record<string, string>;
-    const subject = getSubject(args.subject);
+
+    if (name !== "explain_path_step" && name !== "review_weak_point") {
+      return rpcError(id, -32602, `未知 prompt：${name}`);
+    }
+
+    // 与 tools/call 同一套学科校验：未知 subject 不能被静默换成默认学科。
+    let subject: Subject;
+    try {
+      subject = resolveSubject(args).subject;
+    } catch (err) {
+      return rpcError(id, -32602, err instanceof Error ? err.message : String(err));
+    }
     const kc = subject.graph.concepts.find((c) => c.id === args.kcId);
 
     if (name === "explain_path_step") {
@@ -410,24 +508,19 @@ export async function POST(request: Request) {
   return rpcError(id, -32601, `Method not found: ${method}`);
 }
 
-/** GET 返回服务能力摘要，方便评审用浏览器直接看。 */
+/**
+ * MCP over HTTP 只接受 POST。
+ *
+ * 早先这里返回 200 的能力摘要，但那让「端点可用」与「GET 是协议入口」混在一起：
+ * MCP 的 GET 语义是 SSE 流，本实现不提供。明确 405 + Allow 才是准确的能力声明。
+ */
 export async function GET() {
-  return NextResponse.json({
-    protocolVersion: PROTOCOL_VERSION,
-    serverInfo: SERVER_INFO,
-    algoVersion: ALGO_VERSION,
-    subjects: SUBJECTS.map((s) => ({
-      id: s.id,
-      name: s.name,
-      concepts: s.graph.concepts.length,
-      edges: s.graph.edges.length,
-      questions: s.questions.length,
-    })),
-    primitives: {
-      tools: TOOLS.map((t) => t.name),
-      resources: RESOURCES.map((r) => r.uri),
-      prompts: PROMPTS.map((p) => p.name),
+  return NextResponse.json(
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32000, message: "Method Not Allowed: /api/mcp 只接受 POST" },
     },
-    transport: "HTTP JSON-RPC 2.0 (POST)",
-  });
+    { status: 405, headers: { Allow: "POST", "cache-control": "no-store" } },
+  );
 }

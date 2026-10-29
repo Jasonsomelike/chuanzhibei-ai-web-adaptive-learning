@@ -7,12 +7,14 @@ import type { UploadHit } from "@/lib/knowledge";
 import type { WebHit } from "@/lib/websearch";
 import type { ProviderConfig } from "@/lib/provider";
 import type { Claim, ClaimVerdict } from "@/lib/verify";
+import { buildAnswerPlan } from "@/lib/grounding";
 import {
   buildTutorUserPrompt,
   buildVerificationContext,
   citationVerificationBadge,
   composeDeterministic,
   effectiveThinking,
+  ensureAnswerDeclaration,
   extractCitedKcIds,
   hasUsableEvidence,
   materialForAnswer,
@@ -89,6 +91,13 @@ function providerWith(overrides: Partial<ProviderConfig>): ProviderConfig {
 }
 
 describe("extractCitedKcIds", () => {
+  const DOCS_WITH_TREE: readonly RetrievedDoc[] = [
+    ...DOCS,
+    { kcId: "c01", title: "数据结构基本概念", snippet: "逻辑结构与存储结构", score: 1 },
+    { kcId: "c19", title: "线索二叉树", snippet: "用空指针域存前驱后继", score: 1 },
+    { kcId: "c20", title: "树与森林的转换", snippet: "孩子兄弟表示法", score: 1 },
+  ];
+
   it("只保留回复里出现且本次检索到过的 id，顺序按首次出现", () => {
     const cited = extractCitedKcIds(
       "队列先进先出 [C10]，栈后进先出 [c09]，编造的 [zz99] 不算。",
@@ -99,6 +108,54 @@ describe("extractCitedKcIds", () => {
 
   it("没有引用时返回空数组", () => {
     expect(extractCitedKcIds("栈是后进先出。", DOCS)).toEqual([]);
+  });
+
+  it("含「不引用」句的 [c01] 不进 citations", () => {
+    const cited = extractCitedKcIds(
+      "栈后进先出 [c09]。\n[c01][c20][c19] 与天气无关，不引用。",
+      DOCS_WITH_TREE,
+    );
+    expect(cited.map((item) => item.kcId)).toEqual(["c09"]);
+  });
+
+  it("「没有依据」句里的 id 不算引用", () => {
+    expect(extractCitedKcIds("资料里没有依据 [c10]。", DOCS)).toEqual([]);
+  });
+
+  it("同一段里无关子句只排除自己，后面的引用仍然保留", () => {
+    const cited = extractCitedKcIds("这个说法与天气无关，栈是后进先出 [c09]。", DOCS);
+    expect(cited.map((item) => item.kcId)).toEqual(["c09"]);
+  });
+});
+
+describe("ensureAnswerDeclaration（声明必须在开头）", () => {
+  const plan = buildAnswerPlan({ materialHits: 0, webHits: 0, generalAllowed: true });
+
+  it("开头已有声明时原样返回", () => {
+    const reply = `${plan.declaration}\n\n栈是后进先出的线性表。`;
+    expect(ensureAnswerDeclaration(reply, plan)).toBe(reply);
+  });
+
+  it("声明落在中段时移到开头，且只出现一次", () => {
+    const reply = `栈是后进先出的线性表。\n\n${plan.declaration}\n\n栈顶是允许插入和删除的一端。`;
+    const fixed = ensureAnswerDeclaration(reply, plan);
+    expect(fixed.startsWith(plan.declaration)).toBe(true);
+    expect(fixed.split("不是来自你的教材")).toHaveLength(2);
+    expect(fixed).toContain("栈是后进先出的线性表");
+    expect(fixed).toContain("栈顶是允许插入和删除的一端");
+  });
+
+  it("声明夹在正文句子中间时同样只在开头保留一次", () => {
+    const reply = `先复习一下栈的定义：栈只允许在栈顶插入和删除。注意${plan.declaration}后面继续讲栈。`;
+    const fixed = ensureAnswerDeclaration(reply, plan);
+    expect(fixed.startsWith(plan.declaration)).toBe(true);
+    expect(fixed.split("不是来自你的教材")).toHaveLength(2);
+    expect(fixed).toContain("先复习一下栈的定义");
+    expect(fixed).toContain("后面继续讲栈");
+  });
+
+  it("完全空回复只给声明", () => {
+    expect(ensureAnswerDeclaration("   ", plan)).toBe(plan.declaration);
   });
 });
 

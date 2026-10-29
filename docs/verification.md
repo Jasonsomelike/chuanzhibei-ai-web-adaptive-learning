@@ -17,13 +17,13 @@
 | 命令 | 验证什么 | 本轮实测（2026-10-29） |
 | --- | --- | --- |
 | `npm run typecheck` | TypeScript strict | exit 0（无输出） |
-| `npm run test` | 单元测试（66 个文件：62 个 `src/lib` + 4 个 `src/components`） | **1594 passed / 66 files**，exit 0 |
+| `npm run test` | 单元测试（74 个文件：67 个 `src/lib` + 7 个 `src/components`） | **1721 passed / 74 files**，exit 0 |
 | `npm run kg:validate` | 9 学科逐科：无环、无悬空边、每 KC 恰好 3 题、难度均值在 1.8–2.9 | 0 error（9 学科 / 360 点 / 540 边 / 1080 题） |
-| `npm run check:secrets` | 仓库无真实密钥 | **exit 0**：扫 236 个文件，未发现疑似密钥（`config-route.test.ts` 的测试假值已改为非凭据形状的占位符，见 [§11](limits.md) 第 19 条） |
+| `npm run check:secrets` | 仓库无真实密钥 | **exit 0**：扫 252 个文件，未发现疑似密钥（`config-route.test.ts` 的测试假值已改为非凭据形状的占位符，见 [§11](limits.md) 第 19 条） |
 | `npm run path:hash` | 打印 golden case 双指纹 | 与 `src/lib/plan.test.ts:26-27` 字面量一致（`inputHash f9f99992…` / `pathHash ad7ccec5…`） |
-| `npm run lint` | ESLint 9 扁平配置（`eslint.config.mjs`） | 0 error / 23 warning（均为 `react-hooks/set-state-in-effect`） |
+| `npm run lint` | ESLint 9 扁平配置（`eslint.config.mjs`） | 0 error / 23 条 warning（22 条 `react-hooks/set-state-in-effect` + 1 条 `react-hooks/exhaustive-deps`） |
 | `npm run build` | Next 16 生产构建 | **exit 0**，24 个路由（9 页面 + 14 API + `_not-found`） |
-| `npm run eval:rag` | 50 条检索评测 | **exit 0**；完整输出见 [§15](rag.md)，混合检索打印「未测」 |
+| `npm run eval:rag` | 50 条检索评测 | **exit 0**；recall@3 `1.000`、OOD empty `1.000`，完整输出见 [§15](rag.md)，混合检索打印「未测」 |
 | `BASE_URL=http://127.0.0.1:4321 npx tsx scripts/auth-smoke.ts` | 注册/登录/进度隔离/配置 401/ KB / 记忆卡 LWW / 市场 | **34/34 通过**，exit 0 |
 | `BASE_URL=http://127.0.0.1:4321 npx tsx scripts/mcp-smoke.ts` | MCP 三种原语与错误码 | **16/16 通过**，exit 0 |
 | `npm run probe:external` | DeepSeek 搜索 / MiMo TTS / Embedding 真机探测 | 通过 0 / 失败 0 / **未验证 3**（缺凭据），exit 0；原始输出见 [§15.6](rag.md) |
@@ -44,8 +44,8 @@ EXIT=0
 
 ```text
 $ npm run test
- Test Files  66 passed (66)
-      Tests  1594 passed (1594)
+ Test Files  74 passed (74)
+      Tests  1721 passed (1721)
 EXIT=0
 ```
 
@@ -58,7 +58,7 @@ EXIT=0
 
 ```text
 $ npm run check:secrets
-密钥扫描：检查 236 个文件
+密钥扫描：检查 252 个文件
 ────────────────────────────────────────────────────
 未发现疑似密钥。
 EXIT=0
@@ -103,9 +103,9 @@ $ npm run eval:rag
   recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
   MRR@10                   1.000（30/30）
   goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   1.000（10/10）
-  out-of-domain emptyRate        0.000（0/10）   falseContextRate 1.000（10/10）
-  unanswerableEmptyRate    0.000（0/20）   （answer-absent ∪ out-of-domain）
+  answer-absent relatedHitRate   0.600（6/10）
+  out-of-domain emptyRate        1.000（10/10）
+  unanswerableEmptyRate    0.700（14/20）   （answer-absent ∪ out-of-domain）
 混合检索：未测（未提供 --vectors，且未配置 ALP_EMBED_BASE_URL / ALP_EMBED_API_KEY / ALP_EMBED_MODEL）
 EXIT=0
 ```

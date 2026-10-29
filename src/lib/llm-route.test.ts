@@ -6,6 +6,8 @@
  * 全局 fetch 被替换成抛错实现，DNS 也就不会被触碰。
  */
 
+import { Readable } from "node:stream";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SecretEnv } from "@/lib/secretCrypto";
@@ -21,6 +23,45 @@ const fakeDb = {
   all: async (): Promise<unknown[]> => [],
   one: async (): Promise<Record<string, unknown> | null> => rowRef.current,
 };
+
+/**
+ * 上游传输替身。只替换 guardedRequest，保留真实的 assertUpstreamAllowed：
+ * 「内网地址 502」的既有用例仍走真实的 SSRF 判定，不发任何连接。
+ */
+const upstreamRef = vi.hoisted(() => ({
+  status: 200,
+  body: "",
+  requests: [] as { streamed: boolean; body: Record<string, unknown> }[],
+}));
+
+vi.mock("@/lib/ssrfGuard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ssrfGuard")>();
+  return {
+    ...actual,
+    guardedRequest: async (
+      _target: unknown,
+      options: { body?: string; stream?: boolean },
+    ) => {
+      upstreamRef.requests.push({
+        streamed: options.stream === true,
+        body: JSON.parse(String(options.body ?? "{}")) as Record<string, unknown>,
+      });
+      if (options.stream === true) {
+        return {
+          status: upstreamRef.status,
+          headers: {},
+          stream: Readable.from([Buffer.from(upstreamRef.body)]),
+          abort: () => undefined,
+        };
+      }
+      return {
+        status: upstreamRef.status,
+        headers: {},
+        body: Buffer.from(upstreamRef.body),
+      };
+    },
+  };
+});
 
 vi.mock("@/lib/auth", () => ({
   getCurrentUser: async () => currentUser.value,
@@ -154,6 +195,15 @@ function llmRow(input: LlmRowInput = {}): Record<string, unknown> {
   };
 }
 
+/** 公网 IP 字面量：assertUpstreamAllowed 直接判定，不做 DNS。 */
+function publicIpChatRow(optionsJson: Record<string, unknown> = {}): Record<string, unknown> {
+  return llmRow({
+    baseUrl: "https://8.8.8.8/v1",
+    optionsJson,
+    payload: { apiKey: "sk-chat-secret-123456" },
+  });
+}
+
 describe("POST /api/llm/chat：准入", () => {
   it("未登录 401", async () => {
     currentUser.value = null;
@@ -258,6 +308,111 @@ describe("POST /api/llm/chat：配置错误映射", () => {
     const response = await chatPost(request("/api/llm/chat", { messages: MESSAGES }));
     expect(response.status).toBe(502);
     expect(await errorCode(response)).toBe("provider_error");
+  });
+});
+
+describe("POST /api/llm/chat：上游控制面", () => {
+  beforeEach(() => {
+    upstreamRef.status = 200;
+    upstreamRef.body = JSON.stringify({
+      choices: [{ message: { content: "好" }, finish_reason: "stop" }],
+    });
+    upstreamRef.requests.length = 0;
+  });
+
+  it("上游 400 原样返回 400（不是 502），且错误体中的密钥已脱敏", async () => {
+    rowRef.current = publicIpChatRow();
+    upstreamRef.status = 400;
+    upstreamRef.body = JSON.stringify({
+      error: { message: "invalid api key sk-chat-secret-123456" },
+    });
+
+    const response = await chatPost(
+      request("/api/llm/chat", { messages: MESSAGES, stream: false }),
+    );
+
+    expect(response.status).toBe(400);
+    const data = (await response.json()) as { error: { code: string; message: string } };
+    expect(data.error.code).toBe("provider_error");
+    expect(data.error.message).toContain("HTTP 400");
+    expect(data.error.message).toContain("[redacted]");
+    expect(data.error.message).not.toContain("sk-chat-secret-123456");
+  });
+
+  it("流式分支的上游 429 同样原样透传", async () => {
+    rowRef.current = publicIpChatRow();
+    upstreamRef.status = 429;
+    upstreamRef.body = JSON.stringify({ error: { message: "rate limited" } });
+
+    const response = await chatPost(request("/api/llm/chat", { messages: MESSAGES }));
+
+    expect(response.status).toBe(429);
+    const data = (await response.json()) as { error: { message: string } };
+    expect(data.error.message).toContain("rate limited");
+  });
+
+  it("上游 5xx 仍映射为 502", async () => {
+    rowRef.current = publicIpChatRow();
+    upstreamRef.status = 503;
+    upstreamRef.body = "upstream unavailable";
+
+    const response = await chatPost(
+      request("/api/llm/chat", { messages: MESSAGES, stream: false }),
+    );
+
+    expect(response.status).toBe(502);
+  });
+
+  it("purpose=items 时上游 body 不含 reasoning_effort（账号档位是 deep）", async () => {
+    rowRef.current = publicIpChatRow({ thinking: "deep" });
+
+    const response = await chatPost(
+      request("/api/llm/chat", { messages: MESSAGES, stream: false, purpose: "items" }),
+    );
+
+    expect(response.status).toBe(200);
+    const sent = upstreamRef.requests[0]?.body ?? {};
+    expect(sent["reasoning_effort"]).toBeUndefined();
+    expect(sent["thinking"]).toBeUndefined();
+    // off 档回到默认采样参数，预算不被思考抬高
+    expect(sent["temperature"]).toBe(0.3);
+    expect(sent["max_tokens"]).toBe(600);
+  });
+
+  it("purpose=verify / direction 同样关闭思考", async () => {
+    rowRef.current = publicIpChatRow({ thinking: "deep" });
+
+    for (const purpose of ["verify", "direction"] as const) {
+      upstreamRef.requests.length = 0;
+      const response = await chatPost(
+        request("/api/llm/chat", { messages: MESSAGES, stream: false, purpose }),
+      );
+      expect(response.status, purpose).toBe(200);
+      expect(upstreamRef.requests[0]?.body["reasoning_effort"], purpose).toBeUndefined();
+    }
+  });
+
+  it("jsonMode:true 时上游 body 含 response_format:json_object", async () => {
+    rowRef.current = publicIpChatRow();
+
+    const response = await chatPost(
+      request("/api/llm/chat", { messages: MESSAGES, stream: false, jsonMode: true }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(upstreamRef.requests[0]?.body["response_format"]).toEqual({ type: "json_object" });
+  });
+
+  it("缺省 purpose 时沿用账号思考档，与本轮基线一致", async () => {
+    rowRef.current = publicIpChatRow({ thinking: "deep" });
+
+    await chatPost(request("/api/llm/chat", { messages: MESSAGES, stream: false }));
+
+    const sent = upstreamRef.requests[0]?.body ?? {};
+    expect(sent["reasoning_effort"]).toBe("high");
+    expect(sent["temperature"]).toBeUndefined();
+    // jsonMode 缺省 false：不写 response_format
+    expect(sent["response_format"]).toBeUndefined();
   });
 });
 

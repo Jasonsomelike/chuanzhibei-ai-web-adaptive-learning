@@ -11,6 +11,7 @@ import {
   chunksForConcept,
   citationLabel,
   coerceMaterialsForSave,
+  defaultSelectionFor,
   describeSelection,
   detectConflicts,
   emptyMaterialsState,
@@ -23,6 +24,7 @@ import {
   notesAsPack,
   parseMaterialsState,
   selectableSources,
+  selectionForTarget,
   serializeMaterialsState,
   unresolvedConflicts,
   validatePack,
@@ -180,6 +182,48 @@ describe("内置资料包", () => {
     const slowConflict = net.find((c) => c.topic === "slow start 的中文译名");
     expect(slowConflict?.claims.map((c) => c.statement).sort()).toEqual(
       ["slow start 叫慢启动", "slow start 叫慢开始"].sort(),
+    );
+  });
+});
+
+/**
+ * 默认来源口径。
+ *
+ * 内置学科首次进入应当直接落在教材口径；自定义方向没有内置资料，
+ * 不能被默认值伪装成「已选教材」；用户显式保存的「模型通用知识」（空选择）
+ * 必须原样保留，否则每次打开都会被默认值覆盖。
+ */
+describe("默认来源口径", () => {
+  it("空包没有可选来源，默认选择为空", () => {
+    expect(defaultSelectionFor(emptyPack("custom", "未内置资料"))).toEqual(emptySelection());
+  });
+
+  it("内置包默认选中全部来源", () => {
+    for (const pack of MATERIAL_PACKS) {
+      expect(pack.sources.length).toBeGreaterThan(0);
+      expect(defaultSelectionFor(pack)).toEqual({
+        sourceIds: pack.sources.map((source) => source.id),
+        resolutions: {},
+      });
+    }
+    expect(defaultSelectionFor(getMaterialPack("data-structures")).sourceIds).toEqual([
+      "ds-textbook",
+      "ds-lecture",
+    ]);
+  });
+
+  it("已保存的空选择原样返回，不被默认值覆盖", () => {
+    const pack = getMaterialPack("data-structures");
+    expect(selectionForTarget(emptySelection(), pack)).toEqual(emptySelection());
+  });
+
+  it("没有存档时才使用默认口径；自定义方向仍为空", () => {
+    const pack = getMaterialPack("network");
+    expect(selectionForTarget(undefined, pack).sourceIds).toEqual(
+      pack.sources.map((source) => source.id),
+    );
+    expect(selectionForTarget(undefined, emptyPack("custom", "未内置资料"))).toEqual(
+      emptySelection(),
     );
   });
 });

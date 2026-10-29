@@ -8,7 +8,7 @@
 
 [在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [已知限制](docs/limits.md)
 
-![tests](https://img.shields.io/badge/tests-1594%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-1721%20passed-brightgreen)
 ![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
 ![subjects](https://img.shields.io/badge/subjects-9-blue)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -16,6 +16,12 @@
 </div>
 
 ![首页](screenshots/home-hero.png)
+
+## 评审入口
+
+- **演示地址**：<https://chuanzhibei-adaptive-learning.vercel.app>
+- **评审账号**：待提交负责人填写（本仓库不预置账号与口令；评审期以报名系统提交的账号为准）
+- **5 分钟验证**：登录 → `/settings` 保存模型配置（server 模式需部署方先配好 `ALP_SECRET_KEY`）→ `/diagnose` 做 8 题 → `/path` 看双指纹与预算对照 → `/tutor` 问一个教材内问题看引用核对
 
 ## 这是什么
 
@@ -104,7 +110,7 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 
 **存储链路**：浏览器解析 PDF / Markdown → 切块 → 未登录写 IndexedDB（单事务）；登录后本地先写，再 `PUT /api/kb` 做文档级 CAS 写入 `kb_docs` / `kb_chunks`，向量以 JSON 文本存列、按游标分页取回（不引 pgvector）。10 张表：`users`、`sessions`、`progress`、`directions`、`direction_picks`、`direction_items`、`user_secrets`、`kb_docs`、`kb_chunks`、`memories`。
 
-**实测与边界**（`npm run eval:rag`，2026-10-29 本机）：recall@3 `1.000`、MRR@10 `1.000`、全文金句 `1.000`。但这套评测**已饱和**，只能证明基础检索没坏，不能证明标题加权或向量 / RRF 的提升；域外查询 emptyRate 为 `0.000`（10 条全部返回了文档，是缺陷信号不是通过）；混合检索只接上传资料且尚未评测。
+**实测与边界**（`npm run eval:rag`，2026-10-29 本机）：recall@3 `1.000`、MRR@10 `1.000`、全文金句 `1.000`。但这套评测**已饱和**，只能证明基础检索没坏，不能证明评测用的标题加权或向量 / RRF 的提升；域外门控生效后 emptyRate 为 `1.000`（10 条全部清空，falseContext 为 0），但 answer-absent relatedHit 从 `1.000` 降到 `0.600`（门控也会清掉部分「相关但答不上」的命中）；混合检索只接上传资料且尚未评测。
 
 完整链路、参数出处、降级矩阵、数据表与评测明细见 [检索与存储](docs/rag.md)。
 
@@ -115,11 +121,11 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 | 命令 | 验证什么 | 最近实测（2026-10-29） |
 | --- | --- | --- |
 | `npm run verify` | typecheck + 单测 + 图谱 + 密钥扫描 | **exit 0** |
-| `npm run test` | 66 个测试文件 | **1594 passed** |
+| `npm run test` | 74 个测试文件 | **1721 passed** |
 | `npm run kg:validate` | 9 学科图谱与题库 | **0 error**（360 点 / 540 边 / 1080 题） |
 | `npm run build` | Next 16 生产构建 | **exit 0**（24 个路由） |
-| `npm run eval:rag` | 50 条检索评测 | recall@3 `1.000`，OOD empty `0.000` |
-| `npm run check:secrets` | 仓库无真实密钥 | 扫 236 个文件，**0 命中** |
+| `npm run eval:rag` | 50 条检索评测 | recall@3 `1.000`，OOD empty `1.000` |
+| `npm run check:secrets` | 仓库无真实密钥 | 扫 252 个文件，**0 命中** |
 | `auth-smoke` / `mcp-smoke` | 注册登录隔离 / MCP 协议 | **34/34** / **16/16**（内存库） |
 
 E2E 必须在命令前加 `DATABASE_URL=`，否则 `next dev` 会读到真实连接串并把测试账号写进线上库。原始终端输出、Mock 供应商的 19 项集成检查、可访问性对比度实测见 [验证记录](docs/verification.md)。
@@ -130,7 +136,7 @@ E2E 必须在命令前加 `DATABASE_URL=`，否则 `next dev` 会读到真实连
 src/lib/plan.ts          路径排序、装包、双指纹、先修校验（纯函数）
 src/lib/mastery.ts       Beta 后验、sd、P(已掌握)、预测正确率
 src/lib/graph.ts         DAG 校验、深度、拓扑序、先修闭包
-src/lib/rag.ts           BM25 bigram + 标题加权（纯函数）
+src/lib/rag.ts           BM25 bigram + 域外门控（标题加权仅评测用；纯函数）
 src/lib/hybrid.ts        RRF 融合与相邻去重（纯函数）
 src/lib/kbServer.ts      知识库行映射、文档级 CAS、向量分页
 src/lib/secretCrypto.ts  AES-256-GCM、AAD、kid、掩码（服务端）
@@ -143,13 +149,13 @@ scripts/                 validate-kg / eval-rag / check-secrets / 三个 E2E
 ## 已知限制
 
 - **没有教师班级视图**，也不使用任何真实学生数据；4 个新增学科未经任课教师逐题复核。
-- **检索评测饱和且不拒答域外问题**：recall@3 已到 1.000，证明力有限；OOD 全部返回文档。
+- **检索评测饱和**：recall@3 与全文金句已到 1.000，证明力有限；域外门控已加（OOD empty 1.000），但代价是 answer-absent relatedHit 降到 0.600。
 - **内置知识点仍走纯 BM25**，混合检索只接上传资料，且这部分没有评测集。
 - **没有 CI**，所有门禁靠本地 `npm run verify` 与 E2E 脚本手动跑。
 - **知识库同步不承诺线性化**：删除无 tombstone、CAS 不是事务、远端读会覆盖本地未上传的修改。
 - **没有自建限流**，`/api/search` 与 `/api/tts` 没有请求体上限，公网部署需在代理层补。
 
-30 条缺口与每条的原因、修法见 [已知限制](docs/limits.md)；评分点逐项对照与「不可宣称」的措辞见 [评分对照](docs/scoring.md)。
+30 条边界与缺口（其中已修复的条目在文内标注）与每条的原因、修法见 [已知限制](docs/limits.md)；评分点逐项对照与「不可宣称」的措辞见 [评分对照](docs/scoring.md)。
 
 ## 文档
 
@@ -172,9 +178,9 @@ scripts/                 validate-kg / eval-rag / check-secrets / 三个 E2E
 | --- | --- | --- | --- | --- | --- |
 | 胆子肥嘟嘟队 | 38543 | 北京电子科技学院 | B 组 | 李双、于凯、王一超 | 李浩亮 |
 
-- **数据最小化**：注册只收邮箱、密码、显示名；仓库与测试数据里没有真实手机号或邮箱。
+- **数据最小化**：注册只收邮箱、密码、显示名；当前工作树的源码与测试数据里没有真实手机号或邮箱（可用仓库内 `grep` 与测试数据复核）。该声明只覆盖代码与测试数据，不涉及 git 历史与仓库外的评审材料。
 - **密码**：PBKDF2-HMAC-SHA256 600,000 次，每用户随机盐，常量时间比较。
-- **密钥**：仓库内无真实密钥（`check:secrets` 可验证）；用户密钥按模式存放，server 模式加密落库、只回掩码，local 模式仅存浏览器。
+- **密钥**：当前工作树内无真实密钥（`npm run check:secrets` 扫描 252 个文件，0 命中）；用户密钥按模式存放，server 模式加密落库、只回掩码，local 模式仅存浏览器。
 - **上传资料**：只保存抽取后的文本与切块，不保存原文件；按 `user_id` 隔离，不随方向公开或复制。
 
 许可：[MIT](LICENSE)（题库为教学演示用途，正式使用前须由任课教师逐题核对）。

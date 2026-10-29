@@ -41,10 +41,51 @@ export type BadgeTone = "neutral" | "good" | "warn" | "bad";
 // ── 回答里的引用 ──────────────────────────────────────────────────
 
 /**
+ * 否定 / 无关语境的标记。
+ *
+ * 「[c01][c20] 与天气无关，不引用」里的 id 是模型在说明「这些资料不能用」，
+ * 不是引用。按子句排除这些语境，引用区才不会把「不引用」列成引用。
+ */
+const NON_CITATION_MARKERS = [
+  "不引用",
+  "未引用",
+  "不能引用",
+  "不可引用",
+  "不再引用",
+  "不予引用",
+  "无关",
+  "不相关",
+  "无法据此回答",
+  "无法回答",
+  "不能据此回答",
+  "没有依据",
+  "无依据",
+  "缺乏依据",
+  "不作为依据",
+  "不作依据",
+  "不能作为依据",
+] as const;
+
+/**
+ * 按句读切成子句。
+ *
+ * 逗号也算边界：模型常写「[c01] 与天气无关，不引用」，
+ * 前半句里的 id 属于「无关」，后半句属于「不引用」，不能整段一起算。
+ */
+function clausesOf(text: string): string[] {
+  return text.match(/[^。！？!?；;，,、\n]+/g) ?? [];
+}
+
+function isNonCitationClause(clause: string): boolean {
+  return NON_CITATION_MARKERS.some((marker) => clause.includes(marker));
+}
+
+/**
  * 从模型回复里抽出真正被引用的知识点。
  *
  * 只保留「回复里出现过 [kcId]、且该 kcId 确实在本次检索结果里」的项：
  * 前者防止把没引用说成引用，后者防止模型编造一个不在资料里的 id。
+ * 出现在否定 / 无关子句里的 id 不算引用——那是在说明「不能用这些资料」。
  */
 export function extractCitedKcIds(
   reply: string,
@@ -54,13 +95,16 @@ export function extractCitedKcIds(
   const seen = new Set<string>();
   const out: CitationRef[] = [];
 
-  for (const match of reply.matchAll(/\[([a-z][a-z0-9_]{0,15})\]/gi)) {
-    const id = (match[1] ?? "").toLowerCase();
-    if (seen.has(id)) continue;
-    const doc = byId.get(id);
-    if (doc === undefined) continue;
-    seen.add(id);
-    out.push({ kcId: doc.kcId, title: doc.title });
+  for (const clause of clausesOf(reply)) {
+    if (isNonCitationClause(clause)) continue;
+    for (const match of clause.matchAll(/\[([a-z][a-z0-9_]{0,15})\]/gi)) {
+      const id = (match[1] ?? "").toLowerCase();
+      if (seen.has(id)) continue;
+      const doc = byId.get(id);
+      if (doc === undefined) continue;
+      seen.add(id);
+      out.push({ kcId: doc.kcId, title: doc.title });
+    }
   }
 
   return out;
@@ -121,21 +165,59 @@ export function describeConflict(pack: MaterialPack, conflict: MaterialConflict)
 
 // ── 提示词拼装 ────────────────────────────────────────────────────
 
+/** 通用知识声明的识别词；plan.declaration 里一定包含它。 */
+const DECLARATION_MARKER = "不是来自你的教材";
+
+/** 声明必须落在正文开头这么多字之内，否则视为没写。 */
+const DECLARATION_HEAD_WINDOW = 20;
+
+/** 按句读切句，保留句末标点；空串会被滤掉。 */
+function sentencesOf(text: string): string[] {
+  return (text.match(/[^。！？!?\n]*[。！？!?\n]?/g) ?? []).filter((sentence) => sentence !== "");
+}
+
+function countOccurrences(text: string, needle: string): number {
+  let count = 0;
+  let index = text.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = text.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
+/** 删掉包含声明的整句：模型通常把声明单独成句，删掉它不会动到正文内容。 */
+function stripDeclarationSentences(text: string): string {
+  return sentencesOf(text)
+    .filter((sentence) => !sentence.includes(DECLARATION_MARKER))
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * 把回答策略里的声明句真正落到回答正文。
  *
  * 模型不一定照提示词写声明，界面不能因此假装它写过了：
  *   - grounded：不改写（教材命中时不需要通用知识声明）；
- *   - general-only：缺声明就补在最前面，内容仍保留；
+ *   - general-only：声明必须在开头（前 20 字内）；中段出现时，
+ *     删掉原声明句后补在最前面，保证只出现一次、且不夹在正文中间；
  *   - refuse-hint：不允许通用知识，只保留声明，不展示模型编的答案。
  */
 export function ensureAnswerDeclaration(reply: string, plan: AnswerPlan): string {
   if (plan.mode === "grounded") return reply;
   if (plan.mode === "refuse-hint") return plan.declaration;
 
-  if (reply.includes("不是来自你的教材")) return reply;
   const trimmed = reply.trim();
-  return trimmed === "" ? plan.declaration : `${plan.declaration}\n\n${reply}`;
+  const head = Array.from(trimmed).slice(0, DECLARATION_HEAD_WINDOW).join("");
+  // 只有开头 20 字内的声明才算数；中段声明即使措辞完整也要重排。
+  if (head.includes(DECLARATION_MARKER) && countOccurrences(trimmed, DECLARATION_MARKER) === 1) {
+    return trimmed;
+  }
+
+  // 中段声明连同所在句一起删掉，再补一次标准声明：不重复、不夹在正文中间。
+  const body = stripDeclarationSentences(trimmed);
+  return body === "" ? plan.declaration : `${plan.declaration}\n\n${body}`;
 }
 
 /**

@@ -67,6 +67,7 @@ import {
 import { extractClaims, type Claim, type ClaimVerdict } from "@/lib/verify";
 import { verifyTutorClaims } from "@/lib/verifyClient";
 import { ThinkingPanel } from "@/components/thinking-panel";
+import { MiniMarkdown } from "@/components/mini-markdown";
 import { AnswerVerification } from "@/components/answer-verification";
 import { WebEvidence } from "@/components/web-evidence";
 import { ReadAloud } from "@/components/read-aloud";
@@ -1036,9 +1037,16 @@ export default function TutorPage() {
               ) : null}
 
               {message.text !== "" ? (
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {message.text}
-                  {message.streaming ? <span className="animate-pulse">▍</span> : null}
+                /*
+                 * 最小 Markdown：**粗体**、`行内代码`、[kcId] pill、换行。
+                 * 不引入 Markdown 依赖，也不用 dangerouslySetInnerHTML——
+                 * 无模型兜底拼装里的 ** 与 [c04] 不会再原样显示给用户。
+                 */
+                <p className="text-sm leading-relaxed">
+                  <MiniMarkdown
+                    text={message.text}
+                    trailing={message.streaming ? <span className="animate-pulse">▍</span> : null}
+                  />
                 </p>
               ) : message.streaming ? (
                 <div className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
@@ -1062,9 +1070,18 @@ export default function TutorPage() {
                         );
                         return (
                           <span key={citation.kcId} className="inline-flex items-center gap-1">
-                            <Pill tone="accent">
+                            {/*
+                              引用 Pill 可点：跳到路径页并高亮这个知识点。
+                              路径页只在 ?kc= 命中当前路径时滚动 + 描边，
+                              不在路径里就静默降级为一次普通跳转。
+                            */}
+                            <Link
+                              href={`/path?kc=${encodeURIComponent(citation.kcId)}`}
+                              title={`在路径中定位「${citation.title}」`}
+                              className="inline-flex items-center rounded-full bg-[var(--accent-soft)] px-2.5 py-0.5 text-xs font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+                            >
                               {citation.title} [{citation.kcId}]
-                            </Pill>
+                            </Link>
                             {badge !== null ? (
                               <Pill tone={badge.tone}>{badge.label}</Pill>
                             ) : null}

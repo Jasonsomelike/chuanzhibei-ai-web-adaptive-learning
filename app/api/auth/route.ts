@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { register, login, logout, getCurrentUser, setSessionCookie } from "@/lib/auth";
+import { MAX_AUTH_BODY_BYTES } from "@/lib/bodyLimit";
+import { assertMutationOrigin, readLimitedText } from "@/lib/routeAuth";
 
 export const runtime = "nodejs";
 
@@ -23,14 +25,31 @@ export async function GET() {
   }
 }
 
-/** POST：action = register | login | logout */
+/**
+ * POST：action = register | login | logout
+ *
+ * 顺序是有意的：先同源、再限量读包、最后才解析。
+ * 登录接口本身不需要鉴权，但它是最容易被跨站表单代发（登录 CSRF）与
+ * 大包打满内存的入口，因此这两道守卫必须早于任何业务逻辑。
+ * 不带 Origin 的服务端调用也会被拒——浏览器之外的调用方请显式带 Origin。
+ */
 export async function POST(request: Request) {
-  let body: AuthBody;
+  const rejected = assertMutationOrigin(request);
+  if (rejected) return rejected;
+
+  const raw = await readLimitedText(request, MAX_AUTH_BODY_BYTES);
+  if (!raw.ok) return raw.response;
+
+  let parsed: unknown;
   try {
-    body = (await request.json()) as AuthBody;
+    parsed = JSON.parse(raw.text);
   } catch {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return NextResponse.json({ error: "请求体必须是 JSON 对象" }, { status: 400 });
+  }
+  const body = parsed as AuthBody;
 
   const action = typeof body.action === "string" ? body.action : "";
 

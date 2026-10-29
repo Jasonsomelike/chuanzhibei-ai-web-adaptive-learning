@@ -165,6 +165,30 @@ describe("buildUpstreamChatBody", () => {
     expect(body["thinking"]).toEqual({ type: "enabled", budget_tokens: 16_384 });
     expect(body["temperature"]).toBeUndefined();
   });
+
+  it("jsonMode 透传为 OpenAI 兼容协议的 response_format，缺省不写", () => {
+    const withJson = buildUpstreamChatBody("openai-compatible", "deepseek-chat", {
+      messages: MESSAGES,
+      stream: false,
+      jsonMode: true,
+    });
+    expect(withJson["response_format"]).toEqual({ type: "json_object" });
+
+    const without = buildUpstreamChatBody("openai-compatible", "deepseek-chat", {
+      messages: MESSAGES,
+      stream: false,
+    });
+    expect(without["response_format"]).toBeUndefined();
+  });
+
+  it("Anthropic 没有 response_format：jsonMode 不影响请求体", () => {
+    const body = buildUpstreamChatBody("anthropic", "claude", {
+      messages: MESSAGES,
+      stream: false,
+      jsonMode: true,
+    });
+    expect(body["response_format"]).toBeUndefined();
+  });
 });
 
 // ── filterExtraHeaders ────────────────────────────────────────────

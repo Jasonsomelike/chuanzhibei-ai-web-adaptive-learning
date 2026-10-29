@@ -4,12 +4,6 @@ const config: NextConfig = {
   // 显式指定 Turbopack root，否则它会向上找到用户主目录的 lockfile
   turbopack: { root: import.meta.dirname },
 
-  // 画布路由的 bundle 较大（elkjs 单独就 ~465KB gzip），
-  // 所以路由级代码分割是硬要求，见 research/06-synthesis.md §2.3
-  experimental: {
-    optimizePackageImports: ["@xyflow/react"],
-  },
-
   async headers() {
     return [
       {

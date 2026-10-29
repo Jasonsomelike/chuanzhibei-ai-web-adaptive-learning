@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { MAX_DIRECTIONS_GENERATE_BODY_BYTES } from "@/lib/bodyLimit";
 import {
   composeFromExisting,
   validateDraft,
@@ -7,6 +8,7 @@ import {
   DIRECTION_SYSTEM_PROMPT,
   type DirectionDraft,
 } from "@/lib/direction";
+import { assertMutationOrigin, readLimitedText } from "@/lib/routeAuth";
 
 export const runtime = "nodejs";
 
@@ -29,12 +31,23 @@ interface Body {
  * 返回的 draft 已经过校验，前端可直接预览并提交到 /api/directions。
  */
 export async function POST(request: Request) {
-  let body: Body;
+  // 该接口不要求登录，但会消耗解析与校验资源，且写请求没有理由接受跨站代发。
+  const rejected = assertMutationOrigin(request);
+  if (rejected) return rejected;
+
+  const raw = await readLimitedText(request, MAX_DIRECTIONS_GENERATE_BODY_BYTES);
+  if (!raw.ok) return raw.response;
+
+  let parsed: unknown;
   try {
-    body = (await request.json()) as Body;
+    parsed = JSON.parse(raw.text);
   } catch {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return NextResponse.json({ error: "请求体必须是 JSON 对象" }, { status: 400 });
+  }
+  const body = parsed as Body;
 
   const description = typeof body.description === "string" ? body.description.trim() : "";
   if (description === "") {
