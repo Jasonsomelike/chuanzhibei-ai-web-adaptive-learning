@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Card, Pill } from "@/components/ui";
+import { Panel, Pill } from "@/components/ui";
 import { chaptersOf } from "@/lib/chapters";
 import { useSubject } from "@/lib/subject";
 import { loadMaterials, saveMaterials, useMaterialPack } from "@/lib/materialStore";
@@ -338,7 +338,7 @@ export function MaterialSourcePanel() {
   return (
     <div className="space-y-4">
       {/* ── 当前目标（只读） ── */}
-      <Card>
+      <Panel>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-[var(--ink-soft)]">当前学习目标</span>
           {target ? (
@@ -381,10 +381,10 @@ export function MaterialSourcePanel() {
             {readError}
           </p>
         ) : null}
-      </Card>
+      </Panel>
 
       {/* ── 口径基源 ── */}
-      <Card>
+      <Panel>
         <p className="text-sm font-medium">口径基源</p>
         <p className="mt-1 text-xs text-[var(--ink-faint)]">
           只影响生成时的引用与出处，不改变已经记录的学习进度。
@@ -444,12 +444,12 @@ export function MaterialSourcePanel() {
             保存会把该目标的口径选择清空；已保存的讲义仍会保留，可随时切回教材口径继续使用。
           </p>
         ) : null}
-      </Card>
+      </Panel>
 
       {basis === "materials" ? (
         <>
           {/* ── 来源与优先级 ── */}
-          <Card>
+          <Panel>
             <p className="text-sm font-medium">内置资料包来源</p>
             <p className="mt-1 text-xs text-[var(--ink-faint)]">
               勾选参与引用的来源，用箭头调整优先级（越靠前越优先）。
@@ -575,10 +575,10 @@ export function MaterialSourcePanel() {
                 </details>
               ) : null}
             </div>
-          </Card>
+          </Panel>
 
           {/* ── 口径分歧 ── */}
-          <Card>
+          <Panel>
             <p className="text-sm font-medium">口径分歧</p>
             <p className="mt-1 text-xs text-[var(--ink-faint)]">
               同一知识点在不同来源说法不一致时，由你决定按哪一家的口径。
@@ -691,12 +691,12 @@ export function MaterialSourcePanel() {
                 })}
               </ul>
             )}
-          </Card>
+          </Panel>
         </>
       ) : null}
 
       {/* ── 保存口径 ── */}
-      <Card>
+      <Panel>
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -724,10 +724,10 @@ export function MaterialSourcePanel() {
           </p>
         ) : null}
         <NoticeView notice={selectionNotice} />
-      </Card>
+      </Panel>
 
       {/* ── 我的讲义 ── */}
-      <Card>
+      <Panel>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-medium">我的讲义</p>
@@ -1011,7 +1011,7 @@ export function MaterialSourcePanel() {
             <NoticeView notice={noteNotice} />
           </div>
         </div>
-      </Card>
+      </Panel>
     </div>
   );
 }

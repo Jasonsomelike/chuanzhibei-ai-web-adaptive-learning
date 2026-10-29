@@ -14,7 +14,15 @@
 
 import { useEffect, useState } from "react";
 
-import { Card, Pill } from "@/components/ui";
+import {
+  DangerButton,
+  FormGrid,
+  FormRow,
+  Pill,
+  SettingsGroup,
+  inputClass,
+  monoInputClass,
+} from "@/components/ui";
 import { SecretConfigForm, type SecretField } from "@/components/secret-config-form";
 import type { CallMode } from "@/lib/serverConfig";
 import {
@@ -56,6 +64,7 @@ const TTS_FIELDS: readonly SecretField[] = [
   {
     name: "engine",
     label: "引擎",
+    width: "half",
     type: "select",
     options: [
       { value: "openai-compatible", label: "在线语音（服务端代发）" },
@@ -65,6 +74,7 @@ const TTS_FIELDS: readonly SecretField[] = [
   {
     name: "protocol",
     label: "协议",
+    width: "half",
     type: "select",
     options: [
       { value: "speech", label: "OpenAI 兼容：/audio/speech" },
@@ -94,12 +104,14 @@ const TTS_FIELDS: readonly SecretField[] = [
   {
     name: "model",
     label: "模型名",
+    width: "half",
     hint: "mimo 例如 mimo-v1；OpenAI 兼容例如 tts-1",
     placeholder: "tts-1",
   },
   {
     name: "voice",
     label: "音色",
+    width: "half",
     hint: "mimo 用茉莉；OpenAI 兼容例如 alloy / nova",
     placeholder: "alloy",
   },
@@ -201,43 +213,57 @@ export function TtsSettings({
   }
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-sm font-medium">朗读引擎</p>
-          <Pill tone={remote ? "accent" : "neutral"}>
-            {remote ? (serverMode ? "在线语音 · 服务端代发" : "在线语音 · 浏览器直连") : "浏览器语音"}
-          </Pill>
-        </div>
-
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+    <div className="space-y-6">
+      <SettingsGroup
+        title={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            朗读引擎
+            <Pill tone={remote ? "accent" : "neutral"}>
+              {remote
+                ? serverMode
+                  ? "在线语音 · 服务端代发"
+                  : "在线语音 · 浏览器直连"
+                : "浏览器语音"}
+            </Pill>
+          </span>
+        }
+        hint="浏览器语音免费；在线语音在本机模式直连、服务端模式由本项目代发。"
+      >
+        <div className="grid gap-2 sm:grid-cols-2">
           {ENGINES.map((engine) => (
             <button
               key={engine.id}
               type="button"
               onClick={() => update({ engine: engine.id })}
               aria-pressed={config.engine === engine.id}
-              className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+              className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
                 config.engine === engine.id
                   ? "border-[var(--accent)] bg-[var(--accent-soft)]"
                   : "border-[var(--line-strong)] hover:bg-[var(--line)]"
               }`}
             >
               <span className="block font-medium">{engine.label}</span>
-              <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">{engine.note}</span>
+              <span className="mt-1 block max-w-[42ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                {engine.note}
+              </span>
             </button>
           ))}
         </div>
+      </SettingsGroup>
 
-        <div className="mt-4 space-y-3">
+      <SettingsGroup
+        title="语音参数"
+        hint="改动即时保存到本浏览器（alp.tts.v1），不需要再点保存。"
+      >
+        <div className="max-w-2xl space-y-4">
           {remote ? null : (
-            <Field label="系统音色" hint="列表由操作系统提供；为空时使用默认音色">
+            <FormRow label="系统音色" hint="列表由操作系统提供；为空时使用默认音色">
               <select
                 value={config.browserVoice ?? ""}
                 onChange={(e) =>
                   update({ browserVoice: e.target.value === "" ? undefined : e.target.value })
                 }
-                className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+                className={inputClass}
               >
                 <option value="">系统默认</option>
                 {voices.map((voice) => (
@@ -246,14 +272,14 @@ export function TtsSettings({
                   </option>
                 ))}
               </select>
-            </Field>
+            </FormRow>
           )}
 
           {localRemote ? (
             <>
               <div>
                 <p className="text-sm font-medium">在线协议</p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <div className="mt-2 flex flex-wrap gap-1.5">
                   <button
                     type="button"
                     onClick={applySpeechPreset}
@@ -280,14 +306,14 @@ export function TtsSettings({
                   </button>
                 </div>
                 {mimo ? (
-                  <p className="mt-1 text-xs text-[var(--ink-faint)]">
+                  <p className="mt-1 max-w-[64ch] text-xs leading-relaxed text-[var(--ink-faint)]">
                     mimo 的 /audio/speech 返回 404，必须走聊天接口的音频模态。
                     地址与模型名必填：地址填到 /v1 为止，模型名以供应商文档为准；音频固定 mp3。
                   </p>
                 ) : null}
               </div>
 
-              <Field
+              <FormRow
                 label="API 地址（Base URL）"
                 hint={
                   mimo
@@ -298,19 +324,19 @@ export function TtsSettings({
                 <input
                   value={config.baseUrl ?? ""}
                   onChange={(e) => update({ baseUrl: e.target.value })}
-                  className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
+                  className={monoInputClass}
                   placeholder={mimo ? "https://api.xiaomimimo.com/v1" : "https://api.openai.com/v1"}
                   spellCheck={false}
                 />
-              </Field>
+              </FormRow>
 
-              <Field label="API Key" hint="只保存在本浏览器，朗读时随请求发往你填的语音服务">
+              <FormRow label="API Key" hint="只保存在本浏览器，朗读时随请求发往你填的语音服务">
                 <div className="flex gap-2">
                   <input
                     value={config.apiKey ?? ""}
                     onChange={(e) => update({ apiKey: e.target.value })}
                     type={showKey ? "text" : "password"}
-                    className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
+                    className={`min-w-0 flex-1 ${monoInputClass}`}
                     placeholder="sk-…"
                     spellCheck={false}
                     autoComplete="off"
@@ -323,42 +349,42 @@ export function TtsSettings({
                     {showKey ? "隐藏" : "显示"}
                   </button>
                 </div>
-              </Field>
+              </FormRow>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="模型名"
-                  hint={mimo ? "必填，例如 mimo-v1" : "例如 tts-1"}
-                >
+              <FormGrid>
+                <FormRow label="模型名" hint={mimo ? "必填，例如 mimo-v1" : "例如 tts-1"}>
                   <input
                     value={config.model ?? ""}
                     onChange={(e) => update({ model: e.target.value })}
-                    className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
+                    className={monoInputClass}
                     placeholder={mimo ? "mimo-v1" : "tts-1"}
                     spellCheck={false}
                   />
-                </Field>
-                <Field label="音色" hint={mimo ? "默认茉莉" : "例如 alloy / nova"}>
+                </FormRow>
+                <FormRow label="音色" hint={mimo ? "默认茉莉" : "例如 alloy / nova"}>
                   <input
                     value={config.voice ?? ""}
                     onChange={(e) => update({ voice: e.target.value })}
-                    className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
+                    className={monoInputClass}
                     placeholder={mimo ? "茉莉" : "alloy"}
                     spellCheck={false}
                   />
-                </Field>
-              </div>
+                </FormRow>
+              </FormGrid>
             </>
           ) : null}
 
           {serverMode && remote ? (
-            <p className="rounded-lg border border-[var(--line-strong)] p-2 text-xs text-[var(--ink-soft)]">
+            <p className="max-w-[64ch] rounded-lg border-l-2 border-[var(--line-strong)] bg-[var(--line)] px-3 py-2 text-xs leading-relaxed text-[var(--ink-soft)]">
               服务端模式下，端点、密钥、模型与音色都来自账号里的语音配置；浏览器不保存这些字段。
               在下面的表单保存一次后，朗读会走 POST /api/tts。
             </p>
           ) : null}
 
-          <Field label={`语速 ${config.rate.toFixed(2)}×`} hint={`${RATE_MIN}–${RATE_MAX}，默认 1.0`}>
+          <FormRow
+            label={`语速 ${config.rate.toFixed(2)}×`}
+            hint={`${RATE_MIN}–${RATE_MAX}，默认 1.0`}
+          >
             <input
               type="range"
               min={RATE_MIN}
@@ -368,10 +394,12 @@ export function TtsSettings({
               onChange={(e) => update({ rate: Number(e.target.value) })}
               className="w-full accent-[var(--accent)]"
             />
-          </Field>
+          </FormRow>
         </div>
+      </SettingsGroup>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+      <SettingsGroup title="试听与清理" hint="试听只念固定示例句；聊天页不会自动播放。">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={preview}
@@ -380,19 +408,14 @@ export function TtsSettings({
           >
             {playing ? "停止" : "试听"}
           </button>
-          <button
-            type="button"
-            onClick={clearAll}
-            className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--bad)]"
-          >
-            清除语音配置
-          </button>
           {!canPreview && serverMode && !loggedIn && remote ? (
-            <span className="text-xs text-[var(--warn)]">登录后才能使用服务端语音；未登录可先用浏览器语音。</span>
+            <span className="text-xs text-[var(--warn)]">
+              登录后才能使用服务端语音；未登录可先用浏览器语音。
+            </span>
           ) : !canPreview ? (
             <span className="text-xs text-[var(--ink-faint)]">还缺：{issues.join("、")}</span>
           ) : (
-            <span className="text-xs text-[var(--ink-faint)]">
+            <span className="max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
               朗读时只念回答正文，引用标记与代码块会被跳过；单段最多 {SPEECH_MAX_CHARS} 字。
             </span>
           )}
@@ -400,7 +423,8 @@ export function TtsSettings({
 
         {notice ? (
           <p
-            className={`mt-2 rounded-lg border p-2 text-xs ${
+            role="status"
+            className={`mt-2 max-w-[68ch] rounded-lg border px-3 py-2 text-xs leading-relaxed ${
               notice.tone === "warn"
                 ? "border-[var(--warn)] bg-[var(--warn-soft)] text-[var(--warn)]"
                 : notice.tone === "bad"
@@ -412,7 +436,14 @@ export function TtsSettings({
           </p>
         ) : null}
 
-        <ul className="mt-3 space-y-1 text-xs text-[var(--ink-faint)]">
+        <div className="mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-[var(--line)] pt-3">
+          <p className="max-w-[56ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+            清除会删掉本浏览器的 alp.tts.v1 并停止播放；账号里的语音配置请在下方表单删除。
+          </p>
+          <DangerButton onClick={clearAll}>清除本机语音配置</DangerButton>
+        </div>
+
+        <ul className="mt-3 max-w-[68ch] space-y-1 text-xs leading-relaxed text-[var(--ink-faint)]">
           {serverMode ? (
             <>
               <li>· 服务端模式：语音密钥加密存在账号里，浏览器只看到掩码；朗读由本项目转发。</li>
@@ -427,35 +458,22 @@ export function TtsSettings({
           <li>· 语音配置与聊天 / 搜索密钥分开保存，不会互相复用。</li>
           <li>· 聊天页不会自动播放，每条回答需要手动点「朗读」。</li>
         </ul>
-      </Card>
+      </SettingsGroup>
 
       {serverMode ? (
-        <SecretConfigForm
-          kind="tts"
-          title="语音配置（账号）"
-          description="服务端代发时需要端点与密钥；保存后浏览器不再保存这些字段。"
-          fields={TTS_FIELDS}
-          statusHint="mimo 协议保存为 chat-audio；OpenAI 兼容保存为 speech。删除这份配置后，服务端朗读会明确报未配置。"
-        />
+        <SettingsGroup
+          title="账号里的语音配置"
+          hint="服务端代发使用账号里的端点与密钥；浏览器不保存这些字段。"
+        >
+          <SecretConfigForm
+            kind="tts"
+            title="语音配置（账号）"
+            description="服务端代发时需要端点与密钥；保存后浏览器不再保存这些字段。"
+            fields={TTS_FIELDS}
+            statusHint="mimo 协议保存为 chat-audio；OpenAI 兼容保存为 speech。删除这份配置后，服务端朗读会明确报未配置。"
+          />
+        </SettingsGroup>
       ) : null}
     </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="block text-sm font-medium">{label}</span>
-      {hint ? <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">{hint}</span> : null}
-      <span className="mt-1.5 block">{children}</span>
-    </label>
   );
 }

@@ -238,3 +238,18 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
 }
+
+/* 设置页窄屏分区标签：横向滚动，但不显示滚动条占位 */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * 折叠面板的 grid-template-rows 过渡在 globals.css 的 reduced-motion 规则下
+ * 会自动退化为 0.01ms；GSAP 动画则在代码里显式查询同一媒体特性后跳过。
+ * 两条路径都保证「减少动态效果」用户看不到位移动画。
+ */

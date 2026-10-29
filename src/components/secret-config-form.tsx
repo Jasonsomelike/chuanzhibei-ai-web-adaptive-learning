@@ -9,11 +9,23 @@
  *
  * 错误码必须翻成人话（KEY_ENC_UNAVAILABLE / PERSISTENCE_UNAVAILABLE /
  * CONFLICT_STALE …）：这些不是用户填错了，光看英文码不知道该改什么。
+ *
+ * 布局是「单列为主、语义成对的字段才两列」：SecretField.width === "half"
+ * 只影响排版，不影响字段名、提交体与校验。
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
 
-import { Card, Pill } from "@/components/ui";
+import {
+  DangerButton,
+  FormGrid,
+  FormRow,
+  Panel,
+  Pill,
+  inputClass,
+  monoInputClass,
+} from "@/components/ui";
 import {
   deleteConfig,
   fetchConfigs,
@@ -36,6 +48,8 @@ export interface SecretField {
   readonly type?: "text" | "password" | "url" | "number" | "select";
   readonly options?: readonly { readonly value: string; readonly label: string }[];
   readonly required?: boolean;
+  /** "half" 只影响排版：与相邻的 half 字段并排，其余字段独占一行。 */
+  readonly width?: "half";
 }
 
 export interface SecretConfigFormProps {
@@ -53,6 +67,64 @@ export interface SecretConfigFormProps {
 type Notice =
   | { readonly tone: "good"; readonly text: string }
   | { readonly tone: "bad"; readonly text: string; readonly code?: ConfigErrorCode };
+
+/*
+ * useGSAP 官方推荐用 @gsap/react 的 useGSAP() 做 cleanup，但本项目只允许新增
+ * gsap 一个依赖，所以按官方文档的同一套机制手写：
+ * gsap.context() 收集动画 + 布局 effect 卸载时 revert()。
+ * 参考 https://gsap.com/docs/v3/GSAP/gsap.context()/
+ */
+const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+/**
+ * contextSafe 的手写版：事件回调里创建的动画登记进组件的 context，
+ * 卸载（含路由切换）时统一 revert，避免残留 tween。
+ * 同时在这里统一处理 prefers-reduced-motion：开启后不产生任何动画。
+ */
+export function useMotionSafe(): (run: () => void) => void {
+  const contextRef = useRef<gsap.Context | null>(null);
+
+  useIsoLayoutEffect(() => {
+    const context = gsap.context(() => {});
+    contextRef.current = context;
+    return () => {
+      context.revert();
+      contextRef.current = null;
+    };
+  }, []);
+
+  return useCallback((run: () => void) => {
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const context = contextRef.current;
+    if (context !== null) context.add(run);
+    else run();
+  }, []);
+}
+
+/**
+ * 保存成功的短确认态：轻微缩放脉冲，不改变颜色和对比度。
+ * 必须在 useMotionSafe 的回调里调用，才能被 context 回收。
+ */
+export function confirmPulse(element: Element | null): void {
+  if (element === null) return;
+  gsap.killTweensOf(element);
+  gsap.fromTo(
+    element,
+    { scale: 1 },
+    {
+      scale: 0.96,
+      transformOrigin: "50% 50%",
+      duration: 0.08,
+      ease: "power2.out",
+      yoyo: true,
+      repeat: 1,
+      onComplete: () => {
+        gsap.set(element, { clearProps: "transform" });
+      },
+    },
+  );
+}
 
 function emptyEntry(): ServerConfigEntry {
   return {
@@ -228,6 +300,25 @@ function missingFields(
     .map((field) => field.label);
 }
 
+/** 连续两个 half 字段配成一行；其余字段单独一行（单列为主）。 */
+function fieldRows(fields: readonly SecretField[]): readonly (readonly SecretField[])[] {
+  const rows: SecretField[][] = [];
+  for (const field of fields) {
+    const last = rows[rows.length - 1];
+    if (
+      field.width === "half" &&
+      last !== undefined &&
+      last.length === 1 &&
+      last[0].width === "half"
+    ) {
+      last.push(field);
+    } else {
+      rows.push([field]);
+    }
+  }
+  return rows;
+}
+
 export function SecretConfigForm({
   kind,
   title,
@@ -242,6 +333,11 @@ export function SecretConfigForm({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
+
+  const saveRef = useRef<HTMLButtonElement | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runMotion = useMotionSafe();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -266,9 +362,17 @@ export function SecretConfigForm({
     };
   }, [kind, fields]);
 
+  useEffect(
+    () => () => {
+      if (savedTimer.current !== null) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
+
   function update(name: string, value: string) {
     setValues((prev) => ({ ...prev, [name]: value }));
     setNotice(null);
+    setJustSaved(false);
   }
 
   const missing = missingFields(fields, values, entry.configured);
@@ -289,6 +393,10 @@ export function SecretConfigForm({
     setEntry(result.entry);
     setValues((prev) => clearSecrets(fields, prev, result.entry));
     setNotice({ tone: "good", text: `已加密保存（掩码 ${result.entry.hint || "—"}）` });
+    setJustSaved(true);
+    if (savedTimer.current !== null) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setJustSaved(false), 1800);
+    runMotion(() => confirmPulse(saveRef.current));
     onChanged?.();
   }
 
@@ -306,6 +414,7 @@ export function SecretConfigForm({
     const empty = emptyEntry();
     setEntry(empty);
     setValues(prefill(fields, empty));
+    setJustSaved(false);
     setNotice({
       tone: "good",
       text: result.deleted ? "已删除账号里的这份配置" : "账号里本来就没有这份配置",
@@ -313,105 +422,121 @@ export function SecretConfigForm({
     onChanged?.();
   }
 
+  const rows = fieldRows(fields);
+
+  function renderField(field: SecretField) {
+    return (
+      <FormRow key={field.name} label={field.label} hint={field.hint}>
+        {field.type === "select" ? (
+          <select
+            value={values[field.name] ?? ""}
+            onChange={(event) => update(field.name, event.target.value)}
+            className={inputClass}
+          >
+            {(field.options ?? []).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            value={values[field.name] ?? ""}
+            onChange={(event) => update(field.name, event.target.value)}
+            type={field.type === "password" ? "password" : field.type === "number" ? "number" : "text"}
+            step={field.type === "number" ? 0.05 : undefined}
+            className={
+              field.type === "url" || field.type === "password" ? monoInputClass : inputClass
+            }
+            placeholder={
+              field.type === "password" && entry.configured
+                ? "已保存；留空表示不修改"
+                : field.placeholder
+            }
+            spellCheck={false}
+            autoComplete="off"
+          />
+        )}
+      </FormRow>
+    );
+  }
+
   return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-sm font-medium">{title}</p>
+    <Panel className="max-w-3xl bg-[var(--surface)]">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <p className="text-sm font-semibold">{title}</p>
         <Pill tone={entry.configured ? "good" : "neutral"}>
           {entry.configured ? "已保存" : "未保存"}
         </Pill>
         {entry.configured ? (
-          <span className="text-xs text-[var(--ink-faint)]">
-            密钥掩码 {entry.hint || "—"}
+          <span className="font-mono text-xs text-[var(--ink-faint)]">
+            掩码 {entry.hint || "—"}
             {entry.updatedAt !== "" ? ` · ${entry.updatedAt.replace("T", " ").slice(0, 16)}` : ""}
           </span>
         ) : null}
       </div>
 
-      {description ? (
-        <p className="mt-1 text-xs text-[var(--ink-faint)]">{description}</p>
+      {description !== undefined ? (
+        <p className="mt-1 max-w-[60ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+          {description}
+        </p>
       ) : null}
-      {statusHint ? (
-        <p className="mt-1 text-xs text-[var(--ink-faint)]">{statusHint}</p>
+      {statusHint !== undefined ? (
+        <p className="mt-1 max-w-[60ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+          {statusHint}
+        </p>
       ) : null}
 
       {loading ? (
         <p className="mt-3 text-xs text-[var(--ink-faint)]">正在读取账号配置…</p>
       ) : (
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {fields.map((field) => (
-            <label key={field.name} className={field.type === "password" ? "block sm:col-span-1" : "block"}>
-              <span className="block text-sm font-medium">{field.label}</span>
-              {field.hint ? (
-                <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">{field.hint}</span>
-              ) : null}
-              <span className="mt-1.5 block">
-                {field.type === "select" ? (
-                  <select
-                    value={values[field.name] ?? ""}
-                    onChange={(event) => update(field.name, event.target.value)}
-                    className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
-                  >
-                    {(field.options ?? []).map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={values[field.name] ?? ""}
-                    onChange={(event) => update(field.name, event.target.value)}
-                    type={field.type === "password" ? "password" : field.type === "number" ? "number" : "text"}
-                    step={field.type === "number" ? 0.05 : undefined}
-                    className={`w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm ${
-                      field.type === "url" || field.type === "password" ? "font-mono" : ""
-                    }`}
-                    placeholder={
-                      field.type === "password" && entry.configured
-                        ? "已保存；留空表示不修改"
-                        : field.placeholder
-                    }
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                )}
-              </span>
-            </label>
-          ))}
+        <div className="mt-4 max-w-2xl space-y-4">
+          {rows.map((row) =>
+            row.length === 2 ? (
+              <FormGrid key={row[0].name}>{row.map(renderField)}</FormGrid>
+            ) : (
+              <div key={row[0].name}>{renderField(row[0])}</div>
+            ),
+          )}
         </div>
       )}
 
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4">
+      <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--line)] pt-4">
         <button
+          ref={saveRef}
           type="button"
           onClick={() => void save()}
           disabled={!canSave}
           className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {busy ? "处理中…" : submitLabel}
+          {busy ? "处理中…" : justSaved ? "已保存" : submitLabel}
         </button>
-        {entry.configured ? (
-          <button
-            type="button"
-            onClick={() => void remove()}
-            disabled={busy}
-            className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--bad)] disabled:opacity-40"
-          >
-            删除账号配置
-          </button>
-        ) : null}
-        {missing.length > 0 ? (
-          <span className="text-xs text-[var(--ink-faint)]">还缺：{missing.join("、")}</span>
-        ) : null}
+        <span role="status" className="max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+          {missing.length > 0
+            ? `还缺：${missing.join("、")}`
+            : entry.configured
+              ? "密钥留空表示沿用已保存的密文"
+              : "保存后浏览器只显示掩码"}
+        </span>
       </div>
+
+      {entry.configured ? (
+        <div className="mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-[var(--line)] pt-3">
+          <p className="max-w-[56ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+            删除后，依赖这份配置的功能会明确报「未配置」，不会静默回退到其他端点。
+          </p>
+          <DangerButton onClick={() => void remove()} disabled={busy}>
+            删除账号配置
+          </DangerButton>
+        </div>
+      ) : null}
 
       {notice !== null ? (
         <div
           className={`mt-3 rounded-lg border p-3 text-sm ${
             notice.tone === "good"
-              ? "border-[var(--good)] bg-[var(--good-soft)] text-[var(--good)]"
-              : "border-[var(--bad)] bg-[var(--bad-soft)] text-[var(--bad)]"
+              ? "border-[var(--good)] bg-[var(--good-soft)]"
+              : "border-[var(--bad)] bg-[var(--bad-soft)]"
           }`}
           role="status"
         >
@@ -421,6 +546,6 @@ export function SecretConfigForm({
           ) : null}
         </div>
       ) : null}
-    </Card>
+    </Panel>
   );
 }

@@ -24,7 +24,8 @@ import {
 } from "@/lib/learner";
 import type { KnowledgeGraph } from "@/lib/graph";
 import type { MemoryItem } from "@/lib/memory";
-import { useAuth, type AuthUser } from "@/lib/useAuth";
+import { useAuth } from "@/lib/useAuth";
+import { authStore } from "@/lib/authStore";
 import { clearMemories, pullMemories, pushMemories } from "@/lib/memoryClient";
 import {
   memoriesEqual,
@@ -101,6 +102,12 @@ async function postProgress(
   progress: SubjectProgress,
   keepalive = false,
 ): Promise<void> {
+  /*
+   * 登出后立即停止推送：定时器可能在 React 重渲染之前触发，
+   * 仅靠组件里的 userId 闭包不够。以共享 store 的当前账号为准，
+   * 匿名态不再向 /api/progress 发请求（那里只会回 401）。
+   */
+  if (authStore.getSnapshot().user === null) return;
   try {
     await fetch("/api/progress", {
       method: "POST",
@@ -154,25 +161,13 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     subjectIdRef.current = subjectId;
   }, [subjectId]);
 
-  const userRef = useRef<AuthUser | null>(user);
-  /*
-   * 定时器是宏任务，总是在本轮被动 effect 之后才可能触发；
-   * 用 effect 同步最新账号，flush 时据此判断待推送数据属于谁。
-   */
-  useEffect(() => {
-    userRef.current = user;
-  }, [user]);
-
   const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingProgress = useRef<Map<string, ProgressPayload>>(new Map());
   const memoryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMemories = useRef<Map<string, MemoriesPayload>>(new Map());
 
-  /*
-   * 账号变了就丢弃上一位用户的待推送数据：定时器在新会话里触发时，
-   * 绝不能把 A 的进度 / 卡片写进 B 的账号。
-   */
-  useEffect(() => {
+  /** 丢掉所有待推送数据与定时器；账号变化与登出共用同一份清理逻辑。 */
+  const clearPending = useCallback(() => {
     pendingProgress.current.clear();
     pendingMemories.current.clear();
     memorySeeds.current.clear();
@@ -184,7 +179,28 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
       clearTimeout(memoryTimer.current);
       memoryTimer.current = null;
     }
-  }, [userId]);
+  }, []);
+
+  /*
+   * 账号变了就丢弃上一位用户的待推送数据：定时器在新会话里触发时，
+   * 绝不能把 A 的进度 / 卡片写进 B 的账号。
+   */
+  useEffect(() => {
+    clearPending();
+  }, [userId, clearPending]);
+
+  /*
+   * 直接订阅共享 store，而不是只靠 useAuth 的渲染结果：
+   * 登出时必须**立即**停掉待推送（页面重渲染之前定时器就可能触发）。
+   * 同时把「已同步」立刻改回 false，界面不能继续显示已同步。
+   */
+  useEffect(() => {
+    return authStore.subscribe(() => {
+      if (authStore.getSnapshot().user !== null) return;
+      clearPending();
+      setSynced(false);
+    });
+  }, [clearPending]);
 
   // 首次加载 / 账号变化：登录用户先拉服务端进度，未登录直接读本地
   useEffect(() => {
@@ -320,7 +336,8 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
   }, [authLoading, subjectId, userId]);
 
   const flushProgress = useCallback((ownerId: string) => {
-    if (userRef.current?.id !== ownerId) {
+    // 以共享 store 的当前账号为准：登出后即使闭包里还留着 userId，也必须停
+    if (authStore.getSnapshot().user?.id !== ownerId) {
       pendingProgress.current.clear();
       return;
     }
@@ -334,7 +351,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
   }, []);
 
   const flushMemories = useCallback((ownerId: string) => {
-    if (userRef.current?.id !== ownerId) {
+    if (authStore.getSnapshot().user?.id !== ownerId) {
       pendingMemories.current.clear();
       return;
     }
@@ -354,9 +371,10 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
       setLearnerState(next);
       saveLearner(next);
 
-      if (userId === null) return;
+      // 登出后组件还没重渲染时，旧闭包里的 userId 仍是旧值；以 store 为准
+      const ownerId = authStore.getSnapshot().user?.id ?? null;
+      if (ownerId === null) return;
 
-      const ownerId = userId;
       const progress = progressOf(next, subjectId, graph);
 
       pendingProgress.current.set(subjectId, {
@@ -383,7 +401,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
         flushMemories(ownerId);
       }, PUSH_DEBOUNCE_MS);
     },
-    [flushMemories, flushProgress, graph, subjectId, userId],
+    [flushMemories, flushProgress, graph, subjectId],
   );
 
   /*
@@ -404,7 +422,8 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
       },
     };
 
-    if (userId !== null) {
+    const ownerId = authStore.getSnapshot().user?.id ?? null;
+    if (ownerId !== null) {
       /*
        * 记忆卡在独立表里，清空进度不会删它们；不显式删除的话，
        * 下次拉取 /api/memories 会把刚清掉的卡原样装回来。
@@ -416,7 +435,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     }
 
     setLearner(next);
-  }, [graph, setLearner, subjectId, userId]);
+  }, [graph, setLearner, subjectId]);
 
   // 卸载前把待推送的写掉，避免最后一次变更丢失；账号已变时按归属丢弃。
   useEffect(() => {
@@ -425,7 +444,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     const memoriesQueue = pendingMemories.current;
 
     return () => {
-      const ownerId = userRef.current?.id ?? null;
+      const ownerId = authStore.getSnapshot().user?.id ?? null;
       if (ownerId === null) return;
 
       for (const entry of progressQueue.values()) {

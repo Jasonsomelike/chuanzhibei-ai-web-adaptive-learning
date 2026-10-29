@@ -1,7 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
+import {
+  Nav,
+  Pill,
+  SettingsSection,
+  SettingsGroup,
+  FormRow,
+  Collapse,
+  DangerButton,
+  inputClass,
+  monoInputClass,
+} from "@/components/ui";
 import {
   PRESETS,
   loadProvider,
@@ -35,10 +46,15 @@ import { MaterialSourcePanel } from "@/components/material-source-panel";
 import { ThinkingSettings, type ProbeState } from "@/components/thinking-settings";
 import { TtsSettings } from "@/components/tts-settings";
 import { SearchSettings } from "@/components/search-settings";
-import { SecretConfigForm, type SecretField } from "@/components/secret-config-form";
+import {
+  SecretConfigForm,
+  confirmPulse,
+  useMotionSafe,
+  type SecretField,
+} from "@/components/secret-config-form";
 
 /**
- * 设置页：调用模式 + 模型供应商 + 思考强度/依据核对 + 语音朗读 + 联网搜索 + 知识口径 + 外观。
+ * 设置页：左侧分区导航 + 右侧内容。
  *
  * 两种调用模式必须同时讲清楚，界面上不能只写其中一种：
  * - 服务端模式（默认）：密钥用 AES-GCM 加密存进账号，对话 / 搜索 / 语音由本项目代发；
@@ -49,6 +65,8 @@ import { SecretConfigForm, type SecretField } from "@/components/secret-config-f
  * - 服务端模式需要登录；未登录时界面按本机模式工作，不假装保存成功
  * - 思考档会抬高 max_tokens，费用显著增加；关档不增加预算
  * - HTTPS 页面不能请求 HTTP 地址（混合内容），这是浏览器硬限制
+ *
+ * 动效只做进入 / 切换 / 保存确认，不做滚动视差与循环动画。
  */
 
 type TestState =
@@ -62,17 +80,119 @@ const THINKING_LABEL: Record<ThinkingStrength, string> = {
   deep: "深入",
 };
 
+const SECTIONS = [
+  { id: "mode", label: "调用模式" },
+  { id: "provider", label: "模型供应商" },
+  { id: "thinking", label: "思考与核对" },
+  { id: "tts", label: "语音朗读" },
+  { id: "search", label: "联网搜索" },
+  { id: "materials", label: "知识口径" },
+  { id: "appearance", label: "外观" },
+  { id: "privacy", label: "密钥与隐私" },
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]["id"];
+
+/*
+ * SSR 保护：服务端没有 window，useLayoutEffect 会告警；客户端用 layout effect
+ * 保证分区切换的第一帧就落到动画起点，不会先闪一下完整内容。
+ * 与 @gsap/react 的 useGSAP 内部做法一致（官方文档 React 指南）。
+ */
+const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+const panelAttrs = (id: SectionId, active: SectionId) => ({
+  role: "tabpanel" as const,
+  id: `settings-panel-${id}`,
+  "aria-labelledby": `settings-tab-${id}`,
+  hidden: active !== id,
+});
+
+const MATERIAL_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: string }> = [
+  {
+    term: "只存本浏览器。",
+    detail:
+      "来源选择、口径裁定与讲义正文都保存在 localStorage，不上传本项目服务器，也不写入任何日志。",
+  },
+  {
+    term: "出题与讲解会把摘录发给模型供应商。",
+    detail:
+      "命中的教材 / 讲义 / 上传段落会随请求发到你配置的供应商：本机模式由浏览器直连，服务端模式由本项目转发到你保存在账号里的端点。这是让模型按你的口径作答的前提，不配置模型时不外发。",
+  },
+  {
+    term: "公开方向会带上解析与出处。",
+    detail:
+      "基于摘录生成的题目解析与「依据：」标注会随方向保存；方向设为公开后任何访问者都能看到，讲义正文原文不入库。",
+  },
+  {
+    term: "登出与换号都会清空。",
+    detail: "退出登录、或在本浏览器换另一个账号登录，都会删除上一位用户的资料存档。",
+  },
+  {
+    term: "支持 Markdown / TXT / PDF。",
+    detail:
+      "PDF 在浏览器里用 pdfjs-dist 抽取文本，需要文件自带文本层；扫描件不做 OCR，PPT / DOCX 不解析。",
+  },
+  {
+    term: "上传资料只存在本浏览器。",
+    detail:
+      "抽取后的文本按方向存进 IndexedDB，不保存原始文件、不上传本项目服务器；换浏览器或换设备需要重新上传，方向市场里的副本默认是空库。",
+  },
+];
+
+const PRIVACY_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: string }> = [
+  {
+    term: "两种模式，密钥位置不同。",
+    detail:
+      "服务端模式：密钥用 AES-GCM 加密存进账号数据库，浏览器只看到掩码，对话 / 搜索 / 语音由本项目代发；本机模式：密钥只存这个浏览器的 localStorage，请求由浏览器直连供应商，本项目不经手。",
+  },
+  {
+    term: "服务端模式需要登录。",
+    detail:
+      "未登录界面按本机模式工作；登录后可在「调用模式」里切换并保存到账号。服务端缺少主密钥（ALP_SECRET_KEY）时会拒绝保存并明确报错，不会明文落库。",
+  },
+  {
+    term: "清除位置。",
+    detail:
+      "本机模式：模型供应商的「清除本机配置」删除 alp.provider.v1；搜索分区的「清除本机搜索配置」删除 alp.search.v1 与 alp.websearch.v1:*；语音分区的「清除本机语音配置」删除 alp.tts.v1 并停止播放。服务端模式：各账号表单里的「删除账号配置」删除服务端那一行。",
+  },
+  {
+    term: "上传资料不随请求整份外发。",
+    detail:
+      "只有检索命中的段落会随出题或问答请求发给你配置的模型；原文本身留在本浏览器的 IndexedDB。",
+  },
+  {
+    term: "费用由填 key 的人承担。",
+    detail: "调用计入你的账户额度；思考档会抬高 max_tokens，开思考前先看成本说明。",
+  },
+  {
+    term: "HTTPS 站点不能请求 HTTP 地址。",
+    detail:
+      "这是本机模式下的浏览器混合内容策略，无法在页面内绕过；服务端模式由本项目代发，端点只需通过服务端的 SSRF 校验（公网 https）。",
+  },
+  {
+    term: "公共电脑上用完请点「清除」。",
+    detail:
+      "localStorage 在同一浏览器内共享；搜索与语音密钥需在对应分区单独清除，账号里的配置请在登录状态下用各表单的删除按钮。",
+  },
+  {
+    term: "路径功能不依赖任何密钥。",
+    detail: "即使不配置，诊断与路径仍完整可用——这是本项目的核心设计。",
+  },
+];
+
 /**
  * 账号里的 llm 行字段。
  *
  * 字段列表必须是模块常量：SecretConfigForm 用它的引用作为「只加载一次」的依据，
  * 在组件里每次渲染新建数组会导致反复请求 /api/config。
+ * width: "half" 只影响排版（成对字段两列），不影响提交体。
  */
 const LLM_FIELDS: readonly SecretField[] = [
-  { name: "label", label: "显示名", hint: "只用于界面标识", placeholder: "我的 DeepSeek" },
+  { name: "label", label: "显示名", width: "half", hint: "只用于界面标识", placeholder: "我的 DeepSeek" },
   {
     name: "kind",
     label: "协议",
+    width: "half",
     type: "select",
     options: [
       { value: "openai-compatible", label: "OpenAI 兼容：/chat/completions" },
@@ -105,6 +225,7 @@ const LLM_FIELDS: readonly SecretField[] = [
   {
     name: "thinking",
     label: "思考强度",
+    width: "half",
     type: "select",
     options: [
       { value: "off", label: "关" },
@@ -115,6 +236,7 @@ const LLM_FIELDS: readonly SecretField[] = [
   {
     name: "verification",
     label: "依据核对",
+    width: "half",
     type: "select",
     options: [
       { value: "true", label: "开" },
@@ -131,11 +253,13 @@ const LLM_FIELDS: readonly SecretField[] = [
   {
     name: "embeddingModel",
     label: "向量模型名（可选）",
+    width: "half",
     placeholder: "BAAI/bge-m3",
   },
   {
     name: "embeddingApiKey",
     label: "向量模型 Key（可选）",
+    width: "half",
     type: "password",
     hint: "留空复用上面的聊天密钥；只有向量服务是另一个账号时才需要填",
     placeholder: "sk-…",
@@ -145,6 +269,13 @@ const LLM_FIELDS: readonly SecretField[] = [
 export default function SettingsPage() {
   const { theme, mode, setTheme, setMode } = useTheme();
   const { user, loading: authLoading } = useAuth();
+
+  // 分区导航：同一时刻只展示一个面板；所有面板保持挂载，避免切走再回来丢草稿
+  const [active, setActive] = useState<SectionId>("mode");
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const saveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const runMotion = useMotionSafe();
 
   // 调用模式与账号配置；未登录时按本机模式工作（服务端模式按钮禁用）
   const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
@@ -253,6 +384,27 @@ export default function SettingsPage() {
     return () => controller.abort();
   }, [authLoading, user, effectiveMode, hydrateTick]);
 
+  /*
+   * 分区切换：内容淡入 + 上移 8px，180ms。
+   * 用 gsap.matchMedia 而不是手写布尔值：用户中途打开「减少动态效果」时，
+   * 动画会被立即 revert，界面回到无动画状态。context 由 matchMedia 内部管理，
+   * 返回的 revert 同时负责依赖变化和组件卸载。
+   * 官方文档：https://gsap.com/docs/v3/GSAP/gsap.matchMedia()/
+   */
+  useIsoLayoutEffect(() => {
+    const element = panelRef.current;
+    if (element === null) return;
+    const media = gsap.matchMedia();
+    media.add("(prefers-reduced-motion: no-preference)", () => {
+      gsap.fromTo(
+        element,
+        { opacity: 0, y: 8 },
+        { opacity: 1, y: 0, duration: 0.18, ease: "power2.out", overwrite: true },
+      );
+    });
+    return () => media.revert();
+  }, [active]);
+
   function chooseMode(next: CallMode) {
     if (next === "server" && user === null) return;
     setCallMode(next);
@@ -342,6 +494,8 @@ export default function SettingsPage() {
     saveProvider(currentConfig());
     setExisting(currentConfig());
     setSaved(true);
+    // 按钮短暂确认态；reduced-motion 下 useMotionSafe 会直接跳过
+    runMotion(() => confirmPulse(saveButtonRef.current));
     setTimeout(() => setSaved(false), 2500);
   }
 
@@ -355,555 +509,600 @@ export default function SettingsPage() {
 
   const preset = PRESETS.find((p) => p.id === presetId);
 
+  function onTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    let next = index;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      next = (index + 1) % SECTIONS.length;
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      next = (index - 1 + SECTIONS.length) % SECTIONS.length;
+    } else if (event.key === "Home") {
+      next = 0;
+    } else if (event.key === "End") {
+      next = SECTIONS.length - 1;
+    }
+    const target = SECTIONS[next];
+    if (target === undefined) return;
+    setActive(target.id);
+    tabRefs.current[next]?.focus();
+  }
+
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6">
+      <main id="main" className="mx-auto max-w-6xl px-5 py-8 sm:py-10">
+        <div className="mb-6 max-w-[62ch]">
           <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
-          <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            选择调用模式，再配置模型供应商、思考强度、依据核对、语音朗读、联网搜索与界面外观。
+          <p className="mt-1 text-sm leading-relaxed text-[var(--ink-soft)]">
+            按左侧分区逐项配置。调用模式决定请求由谁发出；其余分区各自保存，互不覆盖。
           </p>
         </div>
 
-        {/* ── 当前状态 ── */}
-        <Card className="mb-5">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-[var(--ink-soft)]">当前状态</span>
-            {effectiveMode === "server" ? (
-              serverState?.serverConfigured ? (
-                <>
-                  <Pill tone="good">已配置（账号）</Pill>
-                  <span className="text-xs text-[var(--ink-faint)]">
-                    {serverState.label} · {serverState.model} ·{" "}
-                    {serverState.api === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} ·
-                    密钥加密存服务端 · 思考 {THINKING_LABEL[serverState.options.thinking]} · 依据核对{" "}
-                    {serverState.options.verification ? "开" : "关"}
-                  </span>
-                </>
-              ) : hydrating ? (
-                <span className="text-xs text-[var(--ink-faint)]">正在读取账号配置…</span>
-              ) : (
-                <>
-                  <Pill tone="warn">未配置（账号）</Pill>
-                  <span className="text-xs text-[var(--ink-faint)]">
-                    在下面的表单保存一次模型配置；在此之前导师页使用知识库检索模式
-                  </span>
-                </>
-              )
-            ) : existing ? (
-              <>
-                <Pill tone="good">已配置（本机）</Pill>
-                <span className="text-xs text-[var(--ink-faint)]">
-                  {existing.label} · {existing.model} ·{" "}
-                  {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
-                  {maskKey(existing.apiKey)} · 思考 {THINKING_LABEL[existing.thinking ?? "off"]} · 依据核对{" "}
-                  {existing.verification !== false ? "开" : "关"}
-                </span>
-              </>
-            ) : (
-              <>
-                <Pill tone="warn">未配置（本机）</Pill>
-                <span className="text-xs text-[var(--ink-faint)]">
-                  导师页将使用知识库检索模式，路径功能不受影响
-                </span>
-              </>
-            )}
-          </div>
-          {effectiveMode === "server" && serverError !== null ? (
-            <p className="mt-2 text-xs text-[var(--warn)]">{serverError}</p>
-          ) : null}
-        </Card>
-
-        {/* ── 调用模式 ── */}
-        <section className="mb-8">
-          <SectionTitle hint="两种模式随时切换；服务端模式需要登录，密钥加密存在账号里。">
-            调用模式
-          </SectionTitle>
-          <Card>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => chooseMode("server")}
-                disabled={user === null}
-                aria-pressed={effectiveMode === "server"}
-                className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                  effectiveMode === "server"
-                    ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                    : "border-[var(--line-strong)] hover:bg-[var(--line)]"
-                }`}
-              >
-                <span className="block font-medium">服务端（默认）</span>
-                <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
-                  密钥 AES-GCM 加密存进账号，换设备也能用；对话 / 搜索 / 语音由本项目代发
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => chooseMode("local")}
-                aria-pressed={effectiveMode === "local"}
-                className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
-                  effectiveMode === "local"
-                    ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                    : "border-[var(--line-strong)] hover:bg-[var(--line)]"
-                }`}
-              >
-                <span className="block font-medium">本机</span>
-                <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
-                  密钥只存这个浏览器，请求由浏览器直连供应商；无需登录
-                </span>
-              </button>
-            </div>
-
-            {user === null ? (
-              <p className="mt-3 text-xs text-[var(--ink-soft)]">
-                {authLoading
-                  ? "正在确认登录状态…"
-                  : "未登录：服务端模式需要先登录，登录后可保存到账号；当前按本机模式工作。"}
-                {authLoading ? null : (
-                  <>
-                    {" "}
-                    <a href="/login" className="underline">
-                      去登录
-                    </a>
-                  </>
-                )}
-              </p>
-            ) : (
-              <p className="mt-3 text-xs text-[var(--ink-faint)]">
-                已登录 {user.email}。切换只影响这台设备的调用链，账号里的配置不会因切换被删除。
-              </p>
-            )}
-          </Card>
-        </section>
-
-        {/* ── 供应商 ── */}
-        <section className="mb-8">
-          <SectionTitle
-            hint={
-              effectiveMode === "server"
-                ? "服务端模式：配置加密存在账号里，浏览器不保存密钥。"
-                : "选一个预设，或填任何兼容端点。"
-            }
-          >
-            模型供应商
-          </SectionTitle>
-
+        {/* ── 当前状态：只读摘要，不参与编辑 ── */}
+        <div className="mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm">
+          <span className="text-[var(--ink-soft)]">当前状态</span>
           {effectiveMode === "server" ? (
-            <SecretConfigForm
-              kind="llm"
-              title="账号里的模型配置"
-              description="保存后对话与出题由本项目代发（POST /api/llm/chat）；密钥只在服务端解密，浏览器只看到掩码。"
-              fields={LLM_FIELDS}
-              statusHint="删除这份配置后，服务端代发会明确报「还没有保存模型配置」，不会静默换成知识库回答。"
-              onChanged={refreshServerState}
-            />
+            serverState?.serverConfigured ? (
+              <>
+                <Pill tone="good">已配置（账号）</Pill>
+                <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                  {serverState.label} · {serverState.model} ·{" "}
+                  {serverState.api === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} ·
+                  密钥加密存服务端 · 思考 {THINKING_LABEL[serverState.options.thinking]} · 依据核对{" "}
+                  {serverState.options.verification ? "开" : "关"}
+                </span>
+              </>
+            ) : hydrating ? (
+              <span className="text-xs text-[var(--ink-faint)]">正在读取账号配置…</span>
+            ) : (
+              <>
+                <Pill tone="warn">未配置（账号）</Pill>
+                <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                  在「模型供应商」保存一次模型配置；在此之前导师页使用知识库检索模式
+                </span>
+              </>
+            )
+          ) : existing ? (
+            <>
+              <Pill tone="good">已配置（本机）</Pill>
+              <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                {existing.label} · {existing.model} ·{" "}
+                {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
+                <span className="font-mono">{maskKey(existing.apiKey)}</span> · 思考{" "}
+                {THINKING_LABEL[existing.thinking ?? "off"]} · 依据核对{" "}
+                {existing.verification !== false ? "开" : "关"}
+              </span>
+            </>
           ) : (
             <>
-          <Card className="mb-4">
-            <p className="mb-2 text-sm font-medium">预设</p>
-            <div className="flex flex-wrap gap-1.5">
-              {PRESETS.filter((p) => !p.id.startsWith("custom")).map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => applyPreset(p.id)}
-                  aria-pressed={presetId === p.id}
-                  className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                    presetId === p.id
-                      ? "bg-[var(--accent)] text-[var(--on-accent)]"
-                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-
-            <p className="mb-2 mt-4 text-sm font-medium">自定义端点</p>
-            <div className="flex flex-wrap gap-1.5">
-              {PRESETS.filter((p) => p.id.startsWith("custom")).map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => applyPreset(p.id)}
-                  aria-pressed={presetId === p.id}
-                  className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                    presetId === p.id
-                      ? "bg-[var(--accent)] text-[var(--on-accent)]"
-                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-
-            {preset ? (
-              <p className="mt-3 text-xs text-[var(--ink-faint)]">{preset.note}</p>
-            ) : null}
-          </Card>
-
-          <Card>
-            <div className="space-y-4">
-              <Field label="显示名" hint="只用于界面标识">
-                <input
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
-                  placeholder="例如：我的 DeepSeek"
-                />
-              </Field>
-
-              <Field
-                label="API 地址（Base URL）"
-                hint={
-                  kind === "anthropic"
-                    ? "填到 /v1 为止，会自动拼接 /messages"
-                    : "填到 /v1 为止，会自动拼接 /chat/completions"
-                }
-              >
-                <input
-                  value={baseUrl}
-                  onChange={(e) => {
-                    setBaseUrl(e.target.value);
-                    setTest({ status: "idle" });
-                    resetThinkingStatus();
-                  }}
-                  className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                  placeholder={
-                    kind === "anthropic"
-                      ? "https://api.anthropic.com/v1"
-                      : "https://api.deepseek.com/v1"
-                  }
-                  spellCheck={false}
-                />
-              </Field>
-
-              {/* 地址问题就地提示，不等用户点测试 */}
-              {urlCheck && urlCheck.kind !== "ok" ? (
-                <div className="rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] p-3 text-sm">
-                  <p className="font-medium text-[var(--warn)]">
-                    {urlCheck.kind === "mixed-content"
-                      ? "HTTPS 页面不能请求 HTTP 地址"
-                      : "地址有问题"}
-                  </p>
-                  <p className="mt-1 text-[var(--ink-soft)]">{urlCheck.detail}</p>
-                  {urlCheck.kind === "mixed-content" ? (
-                    <ul className="mt-2 space-y-1 text-xs text-[var(--ink-soft)]">
-                      <li>· 这是浏览器的安全策略，无法在页面内绕过</li>
-                      <li>· 给该服务配 HTTPS 域名（推荐，前面挂一层反向代理 + 证书）</li>
-                      <li>· 或在本机跑本项目（http://localhost:3000）再连这个内网地址</li>
-                    </ul>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {localAddr && urlCheck?.kind === "ok" ? (
-                <p className="text-xs text-[var(--ink-faint)]">
-                  检测到本地或内网地址。只有在同网络环境下的浏览器才能访问；
-                  若本项目部署在公网，请改用可公网访问的地址。
-                </p>
-              ) : null}
-
-              <Field
-                label="API Key"
-                hint="本机模式：只保存在本浏览器，不上传到任何服务器；服务端模式的密钥在账号里加密保存"
-              >
-                <div className="flex gap-2">
-                  <input
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    type={showKey ? "text" : "password"}
-                    className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                    placeholder={kind === "anthropic" ? "sk-ant-…" : "sk-…"}
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((v) => !v)}
-                    className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-sm text-[var(--ink-soft)]"
-                  >
-                    {showKey ? "隐藏" : "显示"}
-                  </button>
-                </div>
-              </Field>
-
-              <Field label="模型名" hint="必须是供应商实际支持的模型 id">
-                <input
-                  value={model}
-                  onChange={(e) => {
-                    setModel(e.target.value);
-                    resetThinkingStatus();
-                  }}
-                  className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                  placeholder={kind === "anthropic" ? "claude-sonnet-4-5-20250929" : "deepseek-chat"}
-                  spellCheck={false}
-                />
-              </Field>
-
-              <details className="text-sm">
-                <summary className="cursor-pointer text-[var(--ink-soft)]">
-                  高级：协议类型与额外请求头
-                </summary>
-                <div className="mt-3 space-y-3 pl-1">
-                  <Field
-                    label="协议"
-                    hint={
-                      kind === "anthropic"
-                        ? "Anthropic Messages：POST /messages，密钥走 x-api-key"
-                        : "OpenAI 兼容：POST /chat/completions，密钥走 Authorization"
-                    }
-                  >
-                    <select
-                      value={kind}
-                      onChange={(e) => {
-                        setKind(e.target.value as ProviderKind);
-                        setTest({ status: "idle" });
-                        resetThinkingStatus();
-                      }}
-                      className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
-                    >
-                      <option value="openai-compatible">OpenAI 兼容</option>
-                      <option value="anthropic">Anthropic Messages</option>
-                    </select>
-                  </Field>
-                  <Field label="额外请求头" hint='JSON 格式，例如 {"X-Org":"xxx"}'>
-                    <input
-                      value={extraHeaders}
-                      onChange={(e) => setExtraHeaders(e.target.value)}
-                      className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
-                      placeholder='{"X-Custom":"value"}'
-                      spellCheck={false}
-                    />
-                  </Field>
-                </div>
-              </details>
-
-              {/* ── 连通性测试 ── */}
-              <div className="border-t border-[var(--line)] pt-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={runTest}
-                    disabled={!canTest || test.status === "testing"}
-                    className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {test.status === "testing" ? "测试中…" : "测试连通性"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={save}
-                    disabled={!canTest}
-                    className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {saved ? "已保存" : "保存配置"}
-                  </button>
-                  {existing ? (
-                    <button
-                      type="button"
-                      onClick={remove}
-                      className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--bad)]"
-                    >
-                      清除
-                    </button>
-                  ) : null}
-                </div>
-                {!canTest ? (
-                  <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                    填齐地址、密钥、模型名后才能测试；思考强度与依据核对也随「保存配置」写入。
-                  </p>
-                ) : null}
-
-                {test.status === "done" ? (
-                  <TestReport result={test.result} />
-                ) : null}
-              </div>
-            </div>
-          </Card>
+              <Pill tone="warn">未配置（本机）</Pill>
+              <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                导师页将使用知识库检索模式，路径功能不受影响
+              </span>
             </>
           )}
-        </section>
+        </div>
+        {effectiveMode === "server" && serverError !== null ? (
+          <p className="mb-8 max-w-[70ch] text-xs leading-relaxed text-[var(--warn)]">{serverError}</p>
+        ) : null}
 
-        {/* ── 思考强度与依据核对 ── */}
-        <section className="mb-8">
-          <SectionTitle hint="思考强度只影响导师回答；出题、批解与方向生成始终走非思考，避免 JSON 被思考 token 吃光。">
-            思考强度与依据核对
-          </SectionTitle>
-          {effectiveMode === "server" ? (
-            <p className="mb-3 text-xs text-[var(--ink-faint)]">
-              服务端模式下思考档随账号配置保存；「探测端点是否接受思考参数」需要浏览器直连，
-              请切到本机模式后再探测。探测结论不影响服务端代发。
-            </p>
-          ) : null}
-          <ThinkingSettings
-            thinking={thinking}
-            thinkingStatus={thinkingStatus}
-            verification={verification}
-            providerReady={effectiveMode === "local" && canTest}
-            probe={probe}
-            onThinkingChange={setThinking}
-            onVerificationChange={setVerification}
-            onProbe={runProbe}
-          />
-        </section>
+        <div className="lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10">
+          {/* 窄屏：顶部横向 scroll 的分区标签；lg 以上改为左侧竖向导航 */}
+          <nav aria-label="设置分区" className="lg:sticky lg:top-8 lg:self-start">
+            <div
+              role="tablist"
+              aria-orientation="vertical"
+              className="no-scrollbar -mx-1 flex gap-1 overflow-x-auto px-1 pb-2 lg:mx-0 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:px-0 lg:pb-0"
+            >
+              {SECTIONS.map((section, index) => {
+                const selected = active === section.id;
+                return (
+                  <button
+                    key={section.id}
+                    ref={(element) => {
+                      tabRefs.current[index] = element;
+                    }}
+                    type="button"
+                    role="tab"
+                    id={`settings-tab-${section.id}`}
+                    aria-selected={selected}
+                    aria-controls={`settings-panel-${section.id}`}
+                    tabIndex={selected ? 0 : -1}
+                    onClick={() => setActive(section.id)}
+                    onKeyDown={(event) => onTabKeyDown(event, index)}
+                    className={`shrink-0 rounded-lg px-3 py-2 text-left text-sm transition-colors lg:w-full ${
+                      selected
+                        ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
+                        : "text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
+                    }`}
+                  >
+                    {section.label}
+                  </button>
+                );
+              })}
+            </div>
+          </nav>
 
-        {/* ── 语音朗读 ── */}
-        <section className="mb-8">
-          <SectionTitle hint="把导师回答念出来。浏览器语音免费；在线语音在本机模式直连、服务端模式由本项目代发。">
-            语音朗读
-          </SectionTitle>
-          <TtsSettings mode={effectiveMode} loggedIn={user !== null} />
-        </section>
-
-        {/* ── 联网搜索 ── */}
-        <section className="mb-8">
-          <SectionTitle hint="导师提问时可补充外部网页；结果会标为「未核对」，与教材/上传资料分开显示。">
-            联网搜索
-          </SectionTitle>
-          <SearchSettings mode={effectiveMode} loggedIn={user !== null} />
-        </section>
-
-        {/* ── 知识口径 ── */}
-        <section className="mb-8">
-          <SectionTitle hint="决定生成时引用哪本教材 / 哪份讲义，以及同一知识点出现口径分歧时按谁的说法。">
-            知识口径与出处
-          </SectionTitle>
-          <MaterialSourcePanel />
-          <Card className="mt-4">
-            <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
-              <li>
-                <strong className="text-[var(--ink)]">只存本浏览器。</strong>
-                来源选择、口径裁定与讲义正文都保存在 localStorage，不上传本项目服务器，也不写入任何日志。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">出题与讲解会把摘录发给模型供应商。</strong>
-                命中的教材 / 讲义 / 上传段落会随请求发到你配置的供应商：本机模式由浏览器直连，
-                服务端模式由本项目转发到你保存在账号里的端点。这是让模型按你的口径作答的前提，
-                不配置模型时不外发。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">公开方向会带上解析与出处。</strong>
-                基于摘录生成的题目解析与「依据：」标注会随方向保存；方向设为公开后任何访问者都能看到，
-                讲义正文原文不入库。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">登出与换号都会清空。</strong>
-                退出登录、或在本浏览器换另一个账号登录，都会删除上一位用户的资料存档。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">支持 Markdown / TXT / PDF。</strong>
-                PDF 在浏览器里用 pdfjs-dist 抽取文本，需要文件自带文本层；扫描件不做 OCR，PPT / DOCX 不解析。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">上传资料只存在本浏览器。</strong>
-                抽取后的文本按方向存进 IndexedDB，不保存原始文件、不上传本项目服务器；
-                换浏览器或换设备需要重新上传，方向市场里的副本默认是空库。
-              </li>
-            </ul>
-          </Card>
-        </section>
-
-        {/* ── 外观 ── */}
-        <section className="mb-8">
-          <SectionTitle hint="5 套配色全部通过 WCAG AAA 正文对比度（≥7:1），可随时切换。">
-            外观主题
-          </SectionTitle>
-          <Card>
-            <p className="mb-2 text-sm font-medium">明暗模式</p>
-            <div className="flex flex-wrap gap-1.5">
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setMode(m.id)}
-                  aria-pressed={mode === m.id}
-                  className={`rounded-lg px-3 py-1.5 text-sm ${
-                    mode === m.id
-                      ? "bg-[var(--accent)] text-[var(--on-accent)]"
-                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
-                  }`}
+          <div ref={panelRef} className="mt-6 min-w-0 lg:mt-0">
+            {/* ── 调用模式 ── */}
+            <div {...panelAttrs("mode", active)}>
+              <SettingsSection
+                title="调用模式"
+                hint="先决定请求由谁发出：服务端代发省心，本机直连不用登录。"
+              >
+                <SettingsGroup
+                  title="生效方式"
+                  hint="两种模式随时切换；切换只影响这台设备的调用链，账号里的配置不会因此被删除。"
                 >
-                  {m.label}
-                </button>
-              ))}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => chooseMode("server")}
+                      disabled={user === null}
+                      aria-pressed={effectiveMode === "server"}
+                      className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        effectiveMode === "server"
+                          ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                          : "border-[var(--line-strong)] hover:bg-[var(--line)]"
+                      }`}
+                    >
+                      <span className="block font-medium">服务端（默认）</span>
+                      <span className="mt-1 block max-w-[46ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                        密钥 AES-GCM 加密存进账号，换设备也能用；对话 / 搜索 / 语音由本项目代发
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chooseMode("local")}
+                      aria-pressed={effectiveMode === "local"}
+                      className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                        effectiveMode === "local"
+                          ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                          : "border-[var(--line-strong)] hover:bg-[var(--line)]"
+                      }`}
+                    >
+                      <span className="block font-medium">本机</span>
+                      <span className="mt-1 block max-w-[46ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                        密钥只存这个浏览器，请求由浏览器直连供应商；无需登录
+                      </span>
+                    </button>
+                  </div>
+
+                  {user === null ? (
+                    <p className="mt-4 max-w-[64ch] text-xs leading-relaxed text-[var(--ink-soft)]">
+                      {authLoading
+                        ? "正在确认登录状态…"
+                        : "未登录：服务端模式需要先登录，登录后可保存到账号；当前按本机模式工作。"}
+                      {authLoading ? null : (
+                        <>
+                          {" "}
+                          <a href="/login" className="underline">
+                            去登录
+                          </a>
+                        </>
+                      )}
+                    </p>
+                  ) : (
+                    <p className="mt-4 max-w-[64ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                      已登录 {user.email}。切换只影响这台设备的调用链，账号里的配置不会因切换被删除。
+                    </p>
+                  )}
+                </SettingsGroup>
+              </SettingsSection>
             </div>
 
-            <p className="mb-2 mt-5 text-sm font-medium">配色主题</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {THEMES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setTheme(t.id)}
-                  aria-pressed={theme === t.id}
-                  className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left ${
-                    theme === t.id
-                      ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                      : "border border-[var(--line-strong)] hover:bg-[var(--line)]"
-                  }`}
-                >
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium">{t.name}</span>
-                    <span className="block text-xs text-[var(--ink-faint)]">{t.note}</span>
-                  </span>
-                  {theme === t.id ? <Pill tone="accent">当前</Pill> : null}
-                </button>
-              ))}
-            </div>
-            <p className="mt-3 text-xs text-[var(--ink-faint)]">
-              主题与明暗是两个独立维度，5 × 2 = 10 个组合。选择会保存在本浏览器。
-            </p>
-          </Card>
-        </section>
+            {/* ── 模型供应商 ── */}
+            <div {...panelAttrs("provider", active)}>
+              <SettingsSection
+                title="模型供应商"
+                hint={
+                  effectiveMode === "server"
+                    ? "服务端模式：配置加密存在账号里，浏览器不保存密钥。"
+                    : "选一个预设，或填任何兼容端点。地址、密钥、模型名填齐后才能测试。"
+                }
+              >
+                {effectiveMode === "server" ? (
+                  <SecretConfigForm
+                    kind="llm"
+                    title="账号里的模型配置"
+                    description="保存后对话与出题由本项目代发（POST /api/llm/chat）；密钥只在服务端解密，浏览器只看到掩码。"
+                    fields={LLM_FIELDS}
+                    statusHint="删除这份配置后，服务端代发会明确报「还没有保存模型配置」，不会静默换成知识库回答。"
+                    onChanged={refreshServerState}
+                  />
+                ) : (
+                  <>
+                    <SettingsGroup
+                      title="预设"
+                      hint="选预设会自动填好地址与模型名，之后仍可逐项修改。"
+                    >
+                      <div className="flex flex-wrap gap-1.5">
+                        {PRESETS.filter((p) => !p.id.startsWith("custom")).map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => applyPreset(p.id)}
+                            aria-pressed={presetId === p.id}
+                            className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                              presetId === p.id
+                                ? "bg-[var(--accent)] text-[var(--on-accent)]"
+                                : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
 
-        {/* ── 安全说明 ── */}
-        <section>
-          <SectionTitle>密钥与隐私</SectionTitle>
-          <Card>
-            <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
-              <li>
-                <strong className="text-[var(--ink)]">两种模式，密钥位置不同。</strong>
-                服务端模式：密钥用 AES-GCM 加密存进账号数据库，浏览器只看到掩码，对话 / 搜索 / 语音由本项目代发；
-                本机模式：密钥只存这个浏览器的 localStorage，请求由浏览器直连供应商，本项目不经手。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">服务端模式需要登录。</strong>
-                未登录界面按本机模式工作；登录后可在上方切换并保存到账号。服务端缺少主密钥（ALP_SECRET_KEY）
-                时会拒绝保存并明确报错，不会明文落库。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">清除位置。</strong>
-                本机模式：模型供应商的「清除」删除 alp.provider.v1；搜索区块的「清除搜索配置」删除
-                alp.search.v1 与 alp.websearch.v1:*；语音区块的「清除语音配置」删除 alp.tts.v1 并停止播放。
-                服务端模式：各账号表单里的「删除账号配置」删除服务端那一行。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">上传资料不随请求整份外发。</strong>
-                只有检索命中的段落会随出题或问答请求发给你配置的模型；原文本身留在本浏览器的 IndexedDB。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">费用由填 key 的人承担。</strong>
-                调用计入你的账户额度；思考档会抬高 max_tokens，开思考前先看成本说明。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">HTTPS 站点不能请求 HTTP 地址。</strong>
-                这是本机模式下的浏览器混合内容策略，无法在页面内绕过；服务端模式由本项目代发，
-                端点只需通过服务端的 SSRF 校验（公网 https）。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">公共电脑上用完请点「清除」。</strong>
-                localStorage 在同一浏览器内共享；搜索与语音密钥需在上面的区块单独清除，
-                账号里的配置请在登录状态下用各表单的删除按钮。
-              </li>
-              <li>
-                <strong className="text-[var(--ink)]">路径功能不依赖任何密钥。</strong>
-                即使不配置，诊断与路径仍完整可用——这是本项目的核心设计。
-              </li>
-            </ul>
-          </Card>
-        </section>
+                      <p className="mt-4 text-xs font-medium text-[var(--ink-soft)]">自定义端点</p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {PRESETS.filter((p) => p.id.startsWith("custom")).map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => applyPreset(p.id)}
+                            aria-pressed={presetId === p.id}
+                            className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                              presetId === p.id
+                                ? "bg-[var(--accent)] text-[var(--on-accent)]"
+                                : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {preset ? (
+                        <p className="mt-3 max-w-[62ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                          {preset.note}
+                        </p>
+                      ) : null}
+                    </SettingsGroup>
+
+                    <SettingsGroup
+                      title="连接参数"
+                      hint="本机模式的密钥只保存在这个浏览器；地址填到 /v1 为止。"
+                    >
+                      <div className="max-w-2xl space-y-4">
+                        <FormRow label="显示名" hint="只用于界面标识">
+                          <input
+                            value={label}
+                            onChange={(e) => setLabel(e.target.value)}
+                            className={inputClass}
+                            placeholder="例如：我的 DeepSeek"
+                          />
+                        </FormRow>
+
+                        <FormRow
+                          label="API 地址（Base URL）"
+                          hint={
+                            kind === "anthropic"
+                              ? "填到 /v1 为止，会自动拼接 /messages"
+                              : "填到 /v1 为止，会自动拼接 /chat/completions"
+                          }
+                        >
+                          <input
+                            value={baseUrl}
+                            onChange={(e) => {
+                              setBaseUrl(e.target.value);
+                              setTest({ status: "idle" });
+                              resetThinkingStatus();
+                            }}
+                            className={monoInputClass}
+                            placeholder={
+                              kind === "anthropic"
+                                ? "https://api.anthropic.com/v1"
+                                : "https://api.deepseek.com/v1"
+                            }
+                            spellCheck={false}
+                          />
+                        </FormRow>
+
+                        {/* 地址问题就地提示，不等用户点测试 */}
+                        {urlCheck && urlCheck.kind !== "ok" ? (
+                          <div className="rounded-lg border-l-2 border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2.5 text-sm">
+                            <p className="font-medium text-[var(--warn)]">
+                              {urlCheck.kind === "mixed-content"
+                                ? "HTTPS 页面不能请求 HTTP 地址"
+                                : "地址有问题"}
+                            </p>
+                            <p className="mt-1 text-[var(--ink-soft)]">{urlCheck.detail}</p>
+                            {urlCheck.kind === "mixed-content" ? (
+                              <ul className="mt-2 space-y-1 text-xs leading-relaxed text-[var(--ink-soft)]">
+                                <li>· 这是浏览器的安全策略，无法在页面内绕过</li>
+                                <li>· 给该服务配 HTTPS 域名（推荐，前面挂一层反向代理 + 证书）</li>
+                                <li>· 或在本机跑本项目（http://localhost:3000）再连这个内网地址</li>
+                              </ul>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {localAddr && urlCheck?.kind === "ok" ? (
+                          <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                            检测到本地或内网地址。只有在同网络环境下的浏览器才能访问；
+                            若本项目部署在公网，请改用可公网访问的地址。
+                          </p>
+                        ) : null}
+
+                        <FormRow
+                          label="API Key"
+                          hint="本机模式：只保存在本浏览器，不上传到任何服务器；服务端模式的密钥在账号里加密保存"
+                        >
+                          <div className="flex gap-2">
+                            <input
+                              value={apiKey}
+                              onChange={(e) => setApiKey(e.target.value)}
+                              type={showKey ? "text" : "password"}
+                              className={`min-w-0 flex-1 ${monoInputClass}`}
+                              placeholder={kind === "anthropic" ? "sk-ant-…" : "sk-…"}
+                              spellCheck={false}
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowKey((v) => !v)}
+                              className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-sm text-[var(--ink-soft)]"
+                            >
+                              {showKey ? "隐藏" : "显示"}
+                            </button>
+                          </div>
+                        </FormRow>
+
+                        <FormRow label="模型名" hint="必须是供应商实际支持的模型 id">
+                          <input
+                            value={model}
+                            onChange={(e) => {
+                              setModel(e.target.value);
+                              resetThinkingStatus();
+                            }}
+                            className={monoInputClass}
+                            placeholder={kind === "anthropic" ? "claude-sonnet-4-5-20250929" : "deepseek-chat"}
+                            spellCheck={false}
+                          />
+                        </FormRow>
+
+                        <Collapse title="高级：协议类型与额外请求头">
+                          <div className="space-y-4">
+                            <FormRow
+                              label="协议"
+                              hint={
+                                kind === "anthropic"
+                                  ? "Anthropic Messages：POST /messages，密钥走 x-api-key"
+                                  : "OpenAI 兼容：POST /chat/completions，密钥走 Authorization"
+                              }
+                            >
+                              <select
+                                value={kind}
+                                onChange={(e) => {
+                                  setKind(e.target.value as ProviderKind);
+                                  setTest({ status: "idle" });
+                                  resetThinkingStatus();
+                                }}
+                                className={inputClass}
+                              >
+                                <option value="openai-compatible">OpenAI 兼容</option>
+                                <option value="anthropic">Anthropic Messages</option>
+                              </select>
+                            </FormRow>
+                            <FormRow label="额外请求头" hint='JSON 格式，例如 {"X-Org":"xxx"}'>
+                              <input
+                                value={extraHeaders}
+                                onChange={(e) => setExtraHeaders(e.target.value)}
+                                className={monoInputClass}
+                                placeholder='{"X-Custom":"value"}'
+                                spellCheck={false}
+                              />
+                            </FormRow>
+                          </div>
+                        </Collapse>
+                      </div>
+                    </SettingsGroup>
+
+                    <SettingsGroup
+                      title="保存与测试"
+                      hint="思考强度与依据核对也随「保存配置」写入本浏览器。"
+                    >
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          ref={saveButtonRef}
+                          type="button"
+                          onClick={save}
+                          disabled={!canTest}
+                          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {saved ? "已保存" : "保存配置"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={runTest}
+                          disabled={!canTest || test.status === "testing"}
+                          className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {test.status === "testing" ? "测试中…" : "测试连通性"}
+                        </button>
+                        <span role="status" className="max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                          {saved
+                            ? "已保存到本浏览器"
+                            : !canTest
+                              ? "填齐地址、密钥、模型名后才能测试与保存"
+                              : "保存后导师页立即使用这份配置"}
+                        </span>
+                      </div>
+
+                      {test.status === "done" ? <TestReport result={test.result} /> : null}
+
+                      {existing ? (
+                        <div className="mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-[var(--line)] pt-3">
+                          <p className="max-w-[56ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                            清除只删除本浏览器的 alp.provider.v1；导师页会回到知识库检索模式。
+                          </p>
+                          <DangerButton onClick={remove}>清除本机配置</DangerButton>
+                        </div>
+                      ) : null}
+                    </SettingsGroup>
+                  </>
+                )}
+              </SettingsSection>
+            </div>
+
+            {/* ── 思考与核对 ── */}
+            <div {...panelAttrs("thinking", active)}>
+              <SettingsSection
+                title="思考与核对"
+                hint="思考强度只影响导师回答；依据核对只给引用打标记，不改写回答。"
+              >
+                {effectiveMode === "server" ? (
+                  <p className="max-w-[68ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                    服务端模式下思考档随账号配置保存；「探测端点是否接受思考参数」需要浏览器直连，
+                    请切到本机模式后再探测。探测结论不影响服务端代发。
+                  </p>
+                ) : null}
+                <ThinkingSettings
+                  thinking={thinking}
+                  thinkingStatus={thinkingStatus}
+                  verification={verification}
+                  providerReady={effectiveMode === "local" && canTest}
+                  probe={probe}
+                  onThinkingChange={setThinking}
+                  onVerificationChange={setVerification}
+                  onProbe={runProbe}
+                />
+              </SettingsSection>
+            </div>
+
+            {/* ── 语音朗读 ── */}
+            <div {...panelAttrs("tts", active)}>
+              <SettingsSection
+                title="语音朗读"
+                hint="把导师回答念出来。浏览器语音免费；在线语音在本机模式直连、服务端模式由本项目代发。"
+              >
+                <TtsSettings mode={effectiveMode} loggedIn={user !== null} />
+              </SettingsSection>
+            </div>
+
+            {/* ── 联网搜索 ── */}
+            <div {...panelAttrs("search", active)}>
+              <SettingsSection
+                title="联网搜索"
+                hint="导师提问时可补充外部网页；结果会标为「未核对」，与教材 / 上传资料分开显示。"
+              >
+                <SearchSettings mode={effectiveMode} loggedIn={user !== null} />
+              </SettingsSection>
+            </div>
+
+            {/* ── 知识口径 ── */}
+            <div {...panelAttrs("materials", active)}>
+              <SettingsSection
+                title="知识口径与出处"
+                hint="决定生成时引用哪本教材 / 哪份讲义，以及同一知识点出现口径分歧时按谁的说法。"
+              >
+                <MaterialSourcePanel />
+                <SettingsGroup
+                  title="资料如何保存与外发"
+                  hint="这些边界不随界面折叠隐藏，避免误以为资料会上传。"
+                >
+                  <dl className="divide-y divide-[var(--line)]">
+                    {MATERIAL_NOTES.map((note) => (
+                      <div key={note.term} className="py-3 first:pt-0">
+                        <dt className="text-sm font-medium">{note.term}</dt>
+                        <dd className="mt-0.5 max-w-[68ch] text-sm leading-relaxed text-[var(--ink-soft)]">
+                          {note.detail}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </SettingsGroup>
+              </SettingsSection>
+            </div>
+
+            {/* ── 外观 ── */}
+            <div {...panelAttrs("appearance", active)}>
+              <SettingsSection
+                title="外观"
+                hint="5 套配色 × 明暗两种模式，选择会保存在本浏览器。"
+              >
+                <SettingsGroup title="明暗模式" hint="跟随系统时会实时响应系统的切换。">
+                  <div className="flex flex-wrap gap-1.5">
+                    {MODES.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setMode(m.id)}
+                        aria-pressed={mode === m.id}
+                        className={`rounded-lg px-3 py-1.5 text-sm ${
+                          mode === m.id
+                            ? "bg-[var(--accent)] text-[var(--on-accent)]"
+                            : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </SettingsGroup>
+
+                <SettingsGroup
+                  title="配色主题"
+                  hint="5 套配色全部通过 WCAG AAA 正文对比度（≥7:1），可随时切换。"
+                >
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {THEMES.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setTheme(t.id)}
+                        aria-pressed={theme === t.id}
+                        className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left ${
+                          theme === t.id
+                            ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                            : "border-[var(--line-strong)] hover:bg-[var(--line)]"
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">{t.name}</span>
+                          <span className="mt-0.5 block text-xs leading-relaxed text-[var(--ink-faint)]">
+                            {t.note}
+                          </span>
+                        </span>
+                        {theme === t.id ? <Pill tone="accent">当前</Pill> : null}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-3 max-w-[62ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                    主题与明暗是两个独立维度，5 × 2 = 10 个组合。
+                  </p>
+                </SettingsGroup>
+              </SettingsSection>
+            </div>
+
+            {/* ── 密钥与隐私 ── */}
+            <div {...panelAttrs("privacy", active)}>
+              <SettingsSection
+                title="密钥与隐私"
+                hint="只把边界说清楚：密钥存在哪、什么会外发、怎么彻底删除。"
+              >
+                <SettingsGroup
+                  title="存储与删除位置"
+                  hint="三类密钥位置不同，各有各的存储键与清除入口。"
+                >
+                  <dl className="divide-y divide-[var(--line)]">
+                    {PRIVACY_NOTES.map((note) => (
+                      <div key={note.term} className="py-3 first:pt-0">
+                        <dt className="text-sm font-medium">{note.term}</dt>
+                        <dd className="mt-0.5 max-w-[68ch] text-sm leading-relaxed text-[var(--ink-soft)]">
+                          {note.detail}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </SettingsGroup>
+              </SettingsSection>
+            </div>
+          </div>
+        </div>
       </main>
     </>
   );
@@ -918,7 +1117,7 @@ function TestReport({ result }: { result: TestResult }) {
   const title = result.ok ? "✓ 连接成功" : "✗ 连接失败";
 
   return (
-    <div className={`mt-3 rounded-lg border p-3 text-sm ${tone}`} role="status">
+    <div className={`mt-3 max-w-[68ch] rounded-lg border p-3 text-sm ${tone}`} role="status">
       <p className="flex flex-wrap items-center gap-2 font-medium">
         <span className={result.ok ? "text-[var(--good)]" : "text-[var(--bad)]"}>{title}</span>
         {result.latencyMs > 0 ? (
@@ -932,14 +1131,14 @@ function TestReport({ result }: { result: TestResult }) {
       </p>
       <p className="mt-1 text-[var(--ink-soft)]">{result.detail}</p>
       {result.hints && result.hints.length > 0 ? (
-        <ul className="mt-2 space-y-1 text-xs text-[var(--ink-soft)]">
+        <ul className="mt-2 space-y-1 text-xs leading-relaxed text-[var(--ink-soft)]">
           {result.hints.map((h) => (
             <li key={h}>· {h}</li>
           ))}
         </ul>
       ) : null}
       {result.ok ? (
-        <p className="mt-1 text-xs text-[var(--ink-faint)]">
+        <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">
           支持流式回答。导师页会使用此配置；思考强度只影响导师回答，出题仍是非思考模式。
         </p>
       ) : null}
@@ -959,21 +1158,3 @@ const FAILURE_LABEL: Record<string, string> = {
   network: "网络错误",
   response: "响应异常",
 };
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="block text-sm font-medium">{label}</span>
-      {hint ? <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">{hint}</span> : null}
-      <span className="mt-1.5 block">{children}</span>
-    </label>
-  );
-}

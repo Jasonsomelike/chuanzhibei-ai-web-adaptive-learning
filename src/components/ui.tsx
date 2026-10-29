@@ -1,10 +1,230 @@
+"use client";
+
 /**
  * 界面共用的展示组件。刻意保持小而直白，不做过度抽象。
+ *
+ * 本模块带 "use client"：折叠面板需要本地展开状态。
+ * 其余组件无副作用，可以在服务端组件里直接使用。
  */
 
 import Link from "next/link";
+import { useId, useState } from "react";
 import type { ReactNode } from "react";
 import { NavLinks } from "@/components/nav-links";
+
+/* ── 表单与设置页的排版原语 ───────────────────────────────── */
+
+/**
+ * 轻量分组容器。
+ *
+ * 设置页刻意不用「每块一张同样重的卡片」：分组之间靠间距 + 顶部细线分层，
+ * 只有真正需要独立边界的内容（账号配置、结果报告）才套 Panel。
+ */
+export function SettingsGroup({
+  title,
+  hint,
+  children,
+  className = "",
+}: {
+  title?: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      className={`border-t border-[var(--line)] pt-5 first:border-t-0 first:pt-0 ${className}`}
+    >
+      {title !== undefined || hint !== undefined ? (
+        <div className="mb-3 max-w-[62ch]">
+          {title !== undefined ? (
+            <h3 className="text-sm font-semibold tracking-tight">{title}</h3>
+          ) : null}
+          {hint !== undefined ? (
+            <p className="mt-0.5 text-xs leading-relaxed text-[var(--ink-faint)]">{hint}</p>
+          ) : null}
+        </div>
+      ) : null}
+      {children}
+    </section>
+  );
+}
+
+/**
+ * 设置页的一个分区：分区标题 + 一行用途说明。
+ *
+ * 说明只解释「这个分区决定什么」，不重复表单 hint；
+ * 分区内部的层级交给 SettingsGroup。
+ */
+export function SettingsSection({
+  title,
+  hint,
+  children,
+}: {
+  title: ReactNode;
+  hint: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section>
+      <div className="max-w-[62ch]">
+        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        <p className="mt-1 text-sm leading-relaxed text-[var(--ink-soft)]">{hint}</p>
+      </div>
+      <div className="mt-5 space-y-6">{children}</div>
+    </section>
+  );
+}
+
+/** 比 Card 更轻的独立块：只描边、不铺底色，避免整页都是同一种卡片。 */
+export function Panel({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`rounded-xl border border-[var(--line)] p-4 sm:p-5 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+/* 输入框统一高度与描边；主题色一律走 CSS 变量。 */
+export const inputClass =
+  "w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm";
+
+export const monoInputClass = `${inputClass} font-mono`;
+
+/**
+ * 表单行：Label 在上、输入在下、说明统一 12px 灰字并限制行宽。
+ *
+ * 不支持「左标签右输入」的硬排——窄屏会错位，长说明也会把输入挤成一条缝。
+ */
+export function FormRow({
+  label,
+  hint,
+  children,
+  className = "",
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <label className={`flex h-full min-w-0 flex-col ${className}`}>
+      <span className="block text-sm font-medium">{label}</span>
+      {hint !== undefined ? (
+        <span className="mt-0.5 block max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+          {hint}
+        </span>
+      ) : null}
+      <span className="mt-auto block pt-2">{children}</span>
+    </label>
+  );
+}
+
+/** 只有语义成对的短字段才用两列；其余一律单列。 */
+export function FormGrid({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return <div className={`grid gap-4 sm:grid-cols-2 ${className}`}>{children}</div>;
+}
+
+/** 低强调的危险操作：纯文字链接样式，不和主按钮并排抢注意力。 */
+export function DangerButton({
+  children,
+  onClick,
+  disabled = false,
+  className = "",
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded px-1.5 py-1 text-xs font-medium text-[var(--bad)] underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 折叠面板。
+ *
+ * 用 grid-template-rows 0fr → 1fr 做高度过渡：不需要测量高度，
+ * 也不会在收起时留下可聚焦的隐形内容（inert + aria-hidden）。
+ * prefers-reduced-motion 由 globals.css 统一把 transition 压到 0.01ms。
+ */
+export function Collapse({
+  title,
+  hint,
+  children,
+  defaultOpen = false,
+  className = "",
+}: {
+  title: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const panelId = useId();
+
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center justify-between gap-3 rounded-md py-2 text-left text-sm text-[var(--ink-soft)] transition-colors hover:text-[var(--ink)]"
+      >
+        <span className="min-w-0">
+          <span className="block font-medium">{title}</span>
+          {hint !== undefined ? (
+            <span className="mt-0.5 block max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+              {hint}
+            </span>
+          ) : null}
+        </span>
+        <span
+          aria-hidden="true"
+          className={`shrink-0 text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${
+            open ? "rotate-180" : ""
+          }`}
+        >
+          ▾
+        </span>
+      </button>
+      <div
+        id={panelId}
+        inert={!open}
+        aria-hidden={!open}
+        className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className={`pt-2 ${open ? "visible" : "invisible"}`}>{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function Card({
   children,
@@ -176,8 +396,8 @@ export function ButtonLink({
 /**
  * 顶部导航。
  *
- * 链接与登录态在 NavLinks 里（客户端组件），因为要根据登录状态渲染。
- * 这个外层保持服务端组件，避免整页变成客户端。
+ * 链接与登录态在 NavLinks 里，因为要根据登录状态渲染。
+ * Nav 本身无状态，跟随本模块作为客户端组件渲染，不引入额外数据依赖。
  */
 export function Nav() {
   return (

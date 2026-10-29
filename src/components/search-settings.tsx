@@ -14,7 +14,13 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { Card, Pill } from "@/components/ui";
+import {
+  DangerButton,
+  FormRow,
+  Pill,
+  SettingsGroup,
+  monoInputClass,
+} from "@/components/ui";
 import { SecretConfigForm, type SecretField } from "@/components/secret-config-form";
 import {
   DEFAULT_SEARCH_CONFIG,
@@ -136,52 +142,57 @@ export function SearchSettings({
   }
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-sm font-medium">搜索供应商</p>
-          <Pill tone={resolved.provider === "wikipedia" ? "neutral" : "accent"}>
-            {webProviderLabel(resolved.provider)}
-          </Pill>
-          <span className="text-xs text-[var(--ink-faint)]">
-            {mode === "server" ? "服务端模式" : "本机模式"}
+    <div className="space-y-6">
+      <SettingsGroup
+        title={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            搜索供应商
+            <Pill tone={resolved.provider === "wikipedia" ? "neutral" : "accent"}>
+              {webProviderLabel(resolved.provider)}
+            </Pill>
           </span>
-        </div>
-
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        }
+        hint="导师提问时按这里的选择补充外部网页；结果会标为「未核对」。"
+      >
+        <div className="grid gap-2 sm:grid-cols-3">
           {PROVIDERS.map((provider) => (
             <button
               key={provider.id}
               type="button"
               onClick={() => update({ provider: provider.id })}
               aria-pressed={config.provider === provider.id}
-              className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+              className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
                 config.provider === provider.id
                   ? "border-[var(--accent)] bg-[var(--accent-soft)]"
                   : "border-[var(--line-strong)] hover:bg-[var(--line)]"
               }`}
             >
               <span className="block font-medium">{provider.label}</span>
-              <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">{provider.note}</span>
+              <span className="mt-1 block text-xs leading-relaxed text-[var(--ink-faint)]">
+                {provider.note}
+              </span>
             </button>
           ))}
         </div>
 
         {resolved.notice !== null ? (
-          <p className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] p-2 text-xs text-[var(--warn)]">
+          <p
+            role="status"
+            className="mt-2 max-w-[68ch] rounded-lg border-l-2 border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--warn)]"
+          >
             {resolved.notice}
           </p>
         ) : null}
 
         {localTavily ? (
-          <div className="mt-4">
-            <Field label="Tavily API Key" hint="只保存在本浏览器，检索时只发往 api.tavily.com">
+          <div className="mt-4 max-w-2xl">
+            <FormRow label="Tavily API Key" hint="只保存在本浏览器，检索时只发往 api.tavily.com">
               <div className="flex gap-2">
                 <input
                   value={config.tavilyApiKey}
                   onChange={(e) => update({ tavilyApiKey: e.target.value })}
                   type={showKey ? "text" : "password"}
-                  className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
+                  className={`min-w-0 flex-1 ${monoInputClass}`}
                   placeholder="tvly-…"
                   spellCheck={false}
                   autoComplete="off"
@@ -194,24 +205,28 @@ export function SearchSettings({
                   {showKey ? "隐藏" : "显示"}
                 </button>
               </div>
-            </Field>
+            </FormRow>
           </div>
         ) : null}
 
         {serverTavily && !loggedIn ? (
-          <p className="mt-3 rounded-lg border border-[var(--line-strong)] p-2 text-xs text-[var(--ink-soft)]">
+          <p className="mt-3 max-w-[64ch] rounded-lg border-l-2 border-[var(--line-strong)] bg-[var(--line)] px-3 py-2 text-xs leading-relaxed text-[var(--ink-soft)]">
             服务端模式下的 Tavily 需要登录后保存密钥。登录后可在这里填写；未登录时检索会明确改用维基百科。
           </p>
         ) : null}
 
         {deepseek && !loggedIn ? (
-          <p className="mt-3 rounded-lg border border-[var(--line-strong)] p-2 text-xs text-[var(--ink-soft)]">
+          <p className="mt-3 max-w-[64ch] rounded-lg border-l-2 border-[var(--line-strong)] bg-[var(--line)] px-3 py-2 text-xs leading-relaxed text-[var(--ink-soft)]">
             DeepSeek 搜索没有浏览器直连路径：需要登录并在账号里保存搜索密钥。未登录时检索会明确改用维基百科。
           </p>
         ) : null}
+      </SettingsGroup>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <p className="text-sm font-medium">导师页默认开启「联网补充」</p>
+      <SettingsGroup
+        title="默认行为"
+        hint="只决定导师页「联网补充」开关的初始状态；每次提问仍可临时改。"
+      >
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => update({ defaultOn: !config.defaultOn })}
@@ -224,14 +239,19 @@ export function SearchSettings({
           >
             {config.defaultOn ? "默认开" : "默认关"}
           </button>
-          <span className="text-xs text-[var(--ink-faint)]">
+          <span className="max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
             {config.defaultOn
               ? "默认开；每次提问仍可在输入区临时关掉。"
               : "默认关；每次提问仍可在输入区临时开启。"}
           </span>
         </div>
+      </SettingsGroup>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4">
+      <SettingsGroup
+        title="测试与清理"
+        hint="测试会用固定词真实检索一次，选了计费供应商会消耗一次额度。"
+      >
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={runTest}
@@ -240,53 +260,66 @@ export function SearchSettings({
           >
             {test.status === "testing" ? "测试中…" : "测试搜索"}
           </button>
-          <button
-            type="button"
-            onClick={clearAll}
-            className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--bad)]"
-          >
-            清除搜索配置
-          </button>
-          <span className="text-xs text-[var(--ink-faint)]">
-            用「{TEST_QUERY}」检索一次，会消耗一次额度（若选了需要计费的供应商）。
+          <span className="max-w-[52ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+            用「{TEST_QUERY}」检索一次。
           </span>
         </div>
 
         {cleared ? (
-          <p className="mt-2 rounded-lg border border-[var(--good)] bg-[var(--good-soft)] p-2 text-xs text-[var(--good)]">
+          <p
+            role="status"
+            className="mt-2 max-w-[68ch] rounded-lg border border-[var(--good)] bg-[var(--good-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--good)]"
+          >
             已清除：本机的搜索配置（alp.search.v1）与当前标签页里缓存的检索结果（alp.websearch.v1:*）。
           </p>
         ) : null}
 
         {test.status === "done" ? <SearchReport outcome={test.outcome} /> : null}
 
-        <ul className="mt-3 space-y-1 text-xs text-[var(--ink-faint)]">
+        <div className="mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-[var(--line)] pt-3">
+          <p className="max-w-[56ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+            清除会删掉本浏览器的搜索配置与检索缓存；账号里的搜索密钥请在下方表单删除。
+          </p>
+          <DangerButton onClick={clearAll}>清除本机搜索配置</DangerButton>
+        </div>
+
+        <ul className="mt-3 max-w-[68ch] space-y-1 text-xs leading-relaxed text-[var(--ink-faint)]">
           <li>· 本机模式的 Tavily 密钥只存本浏览器 localStorage（alp.search.v1），不上传本项目服务器。</li>
           <li>· 服务端模式的密钥加密存在账号里，浏览器只看到掩码；检索由本项目转发。</li>
           <li>· 维基百科免密钥，两种模式下都由浏览器直连；查询词会发送给该站点。</li>
           <li>· 结果在当前标签页缓存 30 分钟（sessionStorage），失败不缓存；「清除搜索配置」会一并清掉。</li>
           <li>· 搜索失败不会阻塞回答：导师照常作答，只显示一条非阻塞提示。</li>
         </ul>
-      </Card>
+      </SettingsGroup>
 
       {deepseek && loggedIn ? (
-        <SecretConfigForm
-          kind="search-deepseek"
-          title="DeepSeek 搜索（账号）"
-          description="DeepSeek 搜索没有浏览器直连路径，必须由本项目代发；密钥只在服务端解密。"
-          fields={DEEPSEEK_FIELDS}
-          statusHint="保存后，选中 DeepSeek 的检索会走 /api/search；未保存时会明确报「未配置」。"
-        />
+        <SettingsGroup
+          title="账号里的 DeepSeek 搜索"
+          hint="DeepSeek 搜索没有浏览器直连路径，必须由本项目代发；密钥只在服务端解密。"
+        >
+          <SecretConfigForm
+            kind="search-deepseek"
+            title="DeepSeek 搜索（账号）"
+            description="DeepSeek 搜索没有浏览器直连路径，必须由本项目代发；密钥只在服务端解密。"
+            fields={DEEPSEEK_FIELDS}
+            statusHint="保存后，选中 DeepSeek 的检索会走 /api/search；未保存时会明确报「未配置」。"
+          />
+        </SettingsGroup>
       ) : null}
 
       {serverTavily && loggedIn ? (
-        <SecretConfigForm
-          kind="search-tavily"
-          title="Tavily 搜索（账号）"
-          description="服务端模式下检索走本项目代理，浏览器不接触 Tavily 密钥。"
-          fields={TAVILY_FIELDS}
-          statusHint="如果想用浏览器直连自己的 Tavily 密钥，请把上面的调用模式切到「本机」。"
-        />
+        <SettingsGroup
+          title="账号里的 Tavily 搜索"
+          hint="服务端模式下检索走本项目代理，浏览器不接触 Tavily 密钥。"
+        >
+          <SecretConfigForm
+            kind="search-tavily"
+            title="Tavily 搜索（账号）"
+            description="服务端模式下检索走本项目代理，浏览器不接触 Tavily 密钥。"
+            fields={TAVILY_FIELDS}
+            statusHint="如果想用浏览器直连自己的 Tavily 密钥，请把「调用模式」切到「本机」。"
+          />
+        </SettingsGroup>
       ) : null}
     </div>
   );
@@ -297,7 +330,7 @@ function SearchReport({ outcome }: { outcome: SearchOutcome }) {
 
   if (outcome.error !== null) {
     return (
-      <div className="mt-3 rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-3 text-sm">
+      <div className="mt-3 max-w-[68ch] rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-3 text-sm">
         <p className="font-medium text-[var(--bad)]">搜索失败（{providerLabel}）</p>
         <p className="mt-1 text-[var(--ink-soft)]">{outcome.error}</p>
         {outcome.notice !== null ? (
@@ -308,7 +341,7 @@ function SearchReport({ outcome }: { outcome: SearchOutcome }) {
   }
 
   return (
-    <div className="mt-3 rounded-lg border border-[var(--good)] bg-[var(--good-soft)] p-3 text-sm">
+    <div className="mt-3 max-w-[68ch] rounded-lg border border-[var(--good)] bg-[var(--good-soft)] p-3 text-sm">
       <p className="flex flex-wrap items-center gap-2 font-medium text-[var(--good)]">
         搜索成功
         <span className="text-xs font-normal text-[var(--ink-faint)]">
@@ -327,23 +360,5 @@ function SearchReport({ outcome }: { outcome: SearchOutcome }) {
         ))}
       </ul>
     </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="block text-sm font-medium">{label}</span>
-      {hint ? <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">{hint}</span> : null}
-      <span className="mt-1.5 block">{children}</span>
-    </label>
   );
 }

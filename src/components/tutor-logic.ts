@@ -25,6 +25,7 @@ import type { RetrievedDoc } from "@/lib/rag";
 import type { UploadHit } from "@/lib/knowledge";
 import { uploadCitationLabel } from "@/lib/knowledge";
 import type { WebHit } from "@/lib/websearch";
+import type { AnswerPlan } from "@/lib/grounding";
 import type { ProviderConfig } from "@/lib/provider";
 import type { ThinkingStrength } from "@/lib/reasoning";
 import type { Claim, ClaimVerdict, Verdict } from "@/lib/verify";
@@ -120,6 +121,43 @@ export function describeConflict(pack: MaterialPack, conflict: MaterialConflict)
 
 // ── 提示词拼装 ────────────────────────────────────────────────────
 
+/**
+ * 把回答策略里的声明句真正落到回答正文。
+ *
+ * 模型不一定照提示词写声明，界面不能因此假装它写过了：
+ *   - grounded：不改写（教材命中时不需要通用知识声明）；
+ *   - general-only：缺声明就补在最前面，内容仍保留；
+ *   - refuse-hint：不允许通用知识，只保留声明，不展示模型编的答案。
+ */
+export function ensureAnswerDeclaration(reply: string, plan: AnswerPlan): string {
+  if (plan.mode === "grounded") return reply;
+  if (plan.mode === "refuse-hint") return plan.declaration;
+
+  if (reply.includes("不是来自你的教材")) return reply;
+  const trimmed = reply.trim();
+  return trimmed === "" ? plan.declaration : `${plan.declaration}\n\n${reply}`;
+}
+
+/**
+ * 引用区只列「回复里真的引用了、且本次确实有摘录」的教材 / 讲义出处。
+ *
+ * materialForAnswer().sources 是「本次注入的摘录」，不是「模型用了的」。
+ * 直接把注入清单当出处展示，会让没被引用的书目也看起来像依据。
+ */
+export function citedMaterialSources(
+  excerpts: ReadonlyMap<string, MaterialExcerpt>,
+  citedKcIds: readonly string[],
+): string[] {
+  const sources: string[] = [];
+  for (const kcId of citedKcIds) {
+    const excerpt = excerpts.get(kcId);
+    if (excerpt === undefined) continue;
+    const label = citationLabel(excerpt);
+    if (!sources.includes(label)) sources.push(label);
+  }
+  return sources;
+}
+
 export interface TutorPromptInput {
   readonly question: string;
   readonly docs: readonly RetrievedDoc[];
@@ -127,6 +165,45 @@ export interface TutorPromptInput {
   readonly materialContext: string;
   readonly uploadContext: string;
   readonly webContext: string;
+  /** 本次回答口径（教材优先 / 通用知识 / 拒绝作答）。缺省时保持旧行为。 */
+  readonly plan?: AnswerPlan;
+}
+
+/**
+ * 回答口径块：把产品规则写进提示词，而不是指望模型自己猜。
+ *
+ * 尤其是「教材没命中」这一支：必须让模型先写声明，否则它会把
+ * 通用知识包装成「资料里说」——这正是用户投诉的那种跑偏。
+ */
+export function answerPolicyBlock(plan: AnswerPlan): string {
+  const lines = ["【回答口径】"];
+
+  switch (plan.mode) {
+    case "grounded":
+      lines.push(
+        "教材 / 上传资料已命中：以这些摘录为第一依据，每个结论都要给出书目、章节或页码；知识点资料只用于定位知识点，不能替代教材；不得用网络结果替代教材。",
+      );
+      break;
+    case "general-only":
+      lines.push(
+        "教材与上传资料都没有命中：可以基于通用知识回答，但不得声称内容来自教材，不得编造书名、章节或页码。",
+      );
+      break;
+    case "refuse-hint":
+      lines.push(
+        "教材与上传资料都没有命中，且不允许使用通用知识：只说明资料里没有，不要编造答案。",
+      );
+      break;
+  }
+
+  lines.push(`必须在回答中写明：${plan.declaration}`);
+  lines.push(
+    plan.webAllowed
+      ? "网络结果只作补充；与教材 / 讲义冲突时以教材为准。与当前方向无关的网页一律忽略，不要写进回答，也不要引用。"
+      : "本次没有可注入的网络结果；不要用记忆里的网页内容凑依据。",
+  );
+
+  return lines.join("\n");
 }
 
 /**
@@ -149,9 +226,15 @@ export function buildTutorUserPrompt(input: TutorPromptInput): string {
             return `[${doc.kcId}] ${doc.title}\n资料：${doc.snippet}\n${mastery}`;
           })
           .join("\n\n")
-      : "（没有检索到相关资料，请直接说明资料里没有）";
+      : input.plan?.mode === "general-only"
+        ? "（没有检索到相关知识点，也没有教材 / 上传资料摘录；可按通用知识回答并声明）"
+        : input.plan?.mode === "grounded"
+          ? "（课程知识库没有检索到相关知识点；请以教材 / 上传资料摘录为准）"
+          : "（没有检索到相关资料，请直接说明资料里没有）";
 
-  const blocks = [`学生的问题：${input.question}`, `可用资料：\n${context}`];
+  const blocks: string[] = [];
+  if (input.plan !== undefined) blocks.push(answerPolicyBlock(input.plan));
+  blocks.push(`学生的问题：${input.question}`, `可用资料：\n${context}`);
 
   const material = input.materialContext.trim();
   if (material !== "") {
