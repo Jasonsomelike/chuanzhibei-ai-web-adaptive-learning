@@ -120,42 +120,56 @@ describe("域外门控", () => {
     expect(search(kbIndex, "红烧肉怎么做才好吃？", 3)).toEqual([]);
   });
 
+  it("只有跨词 bigram 命中时也清空", () => {
+    const docs: KbDocument[] = [
+      { kcId: "p", title: "图论", text: "图的最短路径是一条很长的路，需要逐步逼近" },
+      { kcId: "q", title: "排序", text: "比较排序与计数排序的复杂度" },
+    ];
+    const index = buildIndex(docs);
+    // 「路线」在语料里不存在，只有跨词 bigram「的路」在正文里出现一次；
+    // 它不能证明这篇文档在讲「北京三日游」。
+    expect(search(index, "推荐一条北京三日游的路线", 3)).toEqual([]);
+  });
+
+  it("有主题词但教材没直接答案的查询仍然返回相关文档", () => {
+    // answer-absent 查询：答案不在知识点里，但 avl / 旋转 是可核对的背景。
+    const results = search(kbIndex, "红黑树和 AVL 树在插入时的旋转次数有什么区别？", 3);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it("主题词命中标题时放行，哪怕正文里只出现一次", () => {
+    const docs: KbDocument[] = [
+      { kcId: "avl", title: "AVL 树", text: "平衡因子与四种旋转" },
+      { kcId: "sort", title: "排序", text: "比较与交换" },
+    ];
+    const index = buildIndex(docs);
+    expect(search(index, "AVL 树的旋转有哪几种", 3).map((r) => r.kcId)).toContain("avl");
+  });
+
   it("域内同义问法仍然命中", () => {
     const results = search(kbIndex, "什么是渐进分析方法？", 3);
     expect(results.map((r) => r.kcId)).toContain("c04");
   });
 
-  it("单字查询没有非单字词可比，仍按分数返回", () => {
+  it("单字查询没有主题词可比，仍按分数返回", () => {
     expect(search(kbIndex, "栈", 3).map((r) => r.kcId)).toContain("c09");
   });
 
-  it("常见短查询不会被中位数或命中数条件误杀", () => {
-    // 「排序」命中大量同分文档，top1 相对中位数并不突出，但它确实是域内主题
+  it("常见短查询不会被误杀", () => {
+    // 「排序」命中大量文档，但它是实词，应当照常返回。
     expect(search(kbIndex, "排序", 3).length).toBeGreaterThan(0);
-    // 「平衡树」的第二个 bigram「衡树」跨了词典里的「平衡二叉树」，不能因此清空
+    // 「平衡树」的第二个 bigram「衡树」跨了词典里的「平衡二叉树」，不能因此清空。
     expect(search(kbIndex, "平衡树", 3).map((r) => r.kcId)).toContain("c32");
   });
 
-  it("只命中一个通用词时清空，不把整条查询当成命中", () => {
+  it("只命中通用词时清空，不把疑问句当成命中", () => {
     const docs: KbDocument[] = [
       { kcId: "x", title: "排序", text: "排序算法怎么实现，怎么排序，怎么分析" },
       { kcId: "y", title: "图", text: "图的遍历与最短路径" },
     ];
     const index = buildIndex(docs);
-    // 「红烧肉怎么做才好吃」里只有「怎么」在 x 中出现，覆盖率 1/8
+    // 「怎么」在 x 里出现，但它是疑问词，不是主题词。
     expect(search(index, "红烧肉怎么做才好吃", 3)).toEqual([]);
-  });
-
-  it("候选分数持平时视为没有突出命中", () => {
-    const repeated = "排序算法排序算法排序算法排序算法排序算法";
-    const docs: KbDocument[] = [
-      { kcId: "a", title: "排序", text: repeated },
-      { kcId: "b", title: "排序", text: repeated },
-      { kcId: "c", title: "排序", text: repeated },
-    ];
-    const index = buildIndex(docs);
-    // 三篇同分且都过 MIN_SCORE：top1 等于中位数，门控按「没有峰」处理
-    expect(search(index, "排序算法", 3)).toEqual([]);
   });
 });
 

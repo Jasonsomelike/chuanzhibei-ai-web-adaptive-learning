@@ -17,7 +17,7 @@
 | 命令 | 验证什么 | 本轮实测（2026-10-29） |
 | --- | --- | --- |
 | `npm run typecheck` | TypeScript strict | exit 0（无输出） |
-| `npm run test` | 单元测试（74 个文件：67 个 `src/lib` + 7 个 `src/components`） | **1721 passed / 74 files**，exit 0 |
+| `npm run test` | 单元测试（74 个文件：67 个 `src/lib` + 7 个 `src/components`） | **1723 passed / 74 files**，exit 0 |
 | `npm run kg:validate` | 9 学科逐科：无环、无悬空边、每 KC 恰好 3 题、难度均值在 1.8–2.9 | 0 error（9 学科 / 360 点 / 540 边 / 1080 题） |
 | `npm run check:secrets` | 仓库无真实密钥 | **exit 0**：扫 252 个文件，未发现疑似密钥（`config-route.test.ts` 的测试假值已改为非凭据形状的占位符，见 [§11](limits.md) 第 19 条） |
 | `npm run path:hash` | 打印 golden case 双指纹 | 与 `src/lib/plan.test.ts:26-27` 字面量一致（`inputHash f9f99992…` / `pathHash ad7ccec5…`） |
@@ -45,7 +45,7 @@ EXIT=0
 ```text
 $ npm run test
  Test Files  74 passed (74)
-      Tests  1721 passed (1721)
+      Tests  1723 passed (1723)
 EXIT=0
 ```
 
@@ -103,9 +103,9 @@ $ npm run eval:rag
   recall@3                 1.000（30/30）   字面 1.000（15/15） / 同义 1.000（15/15）
   MRR@10                   1.000（30/30）
   goldPhraseInFullText     1.000（30/30）
-  answer-absent relatedHitRate   0.600（6/10）
+  answer-absent relatedHitRate   1.000（10/10）
   out-of-domain emptyRate        1.000（10/10）
-  unanswerableEmptyRate    0.700（14/20）   （answer-absent ∪ out-of-domain）
+  unanswerableEmptyRate    0.500（10/20）   （answer-absent ∪ out-of-domain）
 混合检索：未测（未提供 --vectors，且未配置 ALP_EMBED_BASE_URL / ALP_EMBED_API_KEY / ALP_EMBED_MODEL）
 EXIT=0
 ```

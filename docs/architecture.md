@@ -364,4 +364,4 @@ app/api/*              14 个路由：auth、progress、directions(×3)、config
 
 知识口径的纯函数在 `src/lib/materials.ts`，localStorage 读写与订阅在 `src/lib/materialStore.ts`；章节聚合与候选范围在 `src/lib/chapters.ts`；反事实汇总在 `src/lib/planDiff.ts`；方向题目的 IO 与流程轨迹在 `src/lib/directionItems.ts`。
 
-学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **69 个非测试模块 + 67 个测试文件**；`src/components/` 另有 7 个测试文件（`calibration-card`、`knowledge-upload`、`market-status`、`memory-review`、`mini-markdown`、`nav-links`、`tutor-logic`），合计 **74 个测试文件、1721 条用例**（`npm run test` 本轮实测）。
+学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **69 个非测试模块 + 67 个测试文件**；`src/components/` 另有 7 个测试文件（`calibration-card`、`knowledge-upload`、`market-status`、`memory-review`、`mini-markdown`、`nav-links`、`tutor-logic`），合计 **74 个测试文件、1723 条用例**（`npm run test` 本轮实测）。

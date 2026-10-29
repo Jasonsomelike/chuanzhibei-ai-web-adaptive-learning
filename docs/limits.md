@@ -9,7 +9,7 @@
 ## 已验证能力
 
 - 9 学科图谱与题库规模一致：`npm run kg:validate` → 0 error（360 点 / 540 边 / 1080 题）。
-- 掌握度、排序、装包、指纹、检索、混合检索、题目校验、知识口径、数据库双实现、方向题目接口语义、记忆、校准、切块、引用核对、SSE 解析、搜索、TTS、密钥加密、SSRF、同源校验、KB / 记忆卡同步语义、手动路径存档：`npm run test` → **1721 passed / 74 files**（本轮实测）。
+- 掌握度、排序、装包、指纹、检索、混合检索、题目校验、知识口径、数据库双实现、方向题目接口语义、记忆、校准、切块、引用核对、SSE 解析、搜索、TTS、密钥加密、SSRF、同源校验、KB / 记忆卡同步语义、手动路径存档：`npm run test` → **1723 passed / 74 files**（本轮实测）。
 - 主流程、认证与市场、MCP 协议：`auth-smoke` **34/34**、`mcp-smoke` **16/16** 本轮实跑；`smoke.ts` 53/53 为上一轮结果，本轮未重跑。新增能力仍未进 `smoke.ts`。
 - 生产构建：`npm run build` exit 0（24 个路由）；`npm run typecheck` exit 0。
 - 5 套配色 210 对对比度：0 失败（上一轮实测；本轮未重跑）。
@@ -90,7 +90,7 @@
 23. **记忆卡单卡删除没有接线。** `memoryClient.deleteMemory`（`src/lib/memoryClient.ts:91`）没有调用方；界面移除一张卡后只靠 `pushMemories` 快照同步，而 `PUT /api/memories` 永不删行，下一次 `pullMemories` 会把这张卡复活。只有「清空学科」走了显式 `clearMemories`。
 24. **账号级存储实例不回收，换号清理不等待完成。** `syncedStorages` 按 userId 缓存复合存储，登出/换号不清（只有测试用的 `__resetKbStorageCacheForTests`）；`applyAccountTransition` 用 `void clearKbDatabase()`，另一个标签页仍持连接时，新账号可能短暂读到上一位用户的文档。正确做法是 `await` 删除或在删除完成前禁用 KB 读取。
 25. **没有自建限流，两个路由没有请求体上限。** `/api/search` 与 `/api/tts` 直接 `request.json()`，没有 `readLimitedText`；搜索成功响应也没有字节上限。登录用户可以无限调用代发与 8 MiB PUT；线上必须在反向代理层限流 / 限体积。
-26. **域外门控已加（本轮修复）。** `search()` 在按 k 截断之前对完整候选跑 `passesRelevanceGate`（`src/lib/rag.ts:133-163`，调用点 `:218`）：top1 对查询非单字词的覆盖率、非单字命中数、top1 相对中位数三项任一不达标就整体返回 `[]`。本轮 `npm run eval:rag` 的 `outOfDomainEmpty` 为 `1.000`（10/10），falseContext 为 0；代价是 answer-absent 的 relatedHit 从上一轮 `1.000` 降到 `0.600`（门控也会清掉部分「相关但答不上」的命中），这是当前取舍。混合检索仍未测（第 27 条）。
+26. **域外门控已加（本轮修复）。** `search()` 在按 k 截断之前对完整候选跑 `passesRelevanceGate`（`src/lib/rag.ts:138-163`，调用点 `:217`）：查询里必须有至少一个「非疑问词、且语料真实存在」的主题词出现在 top1——标题命中直接放行；正文命中时再排除虚词开头的跨词 bigram（如「…的路…」）。本轮 `npm run eval:rag` 的 `outOfDomainEmpty` 为 `1.000`（10/10），falseContext 为 0，answer-absent 的 relatedHit 保持 `1.000`（10/10）。门控只覆盖内置知识点检索，上传资料的混合检索仍未测（第 27 条）。
 27. **内置知识点仍只走纯 BM25，混合检索只在生产里接上传资料。** 导师页的知识点检索先 `buildIndex(target.graph.concepts)`（`app/tutor/page.tsx:338`），查询用 `search(index, question, 3)`（`:399`），只有上传片段走 `createRetriever` + RRF（`:488-494`）。50 条评测针对的是 `kbDocuments`，且已饱和（answerable 的 recall 全 1.000），所以它既不能证明上传资料的混合检索，也不能证明「向量/RRF 提升」。
 28. **契约里的 `search_exhausted` / `tts_unavailable` 没有路由产出，错误体有两种形状。** `/api/config`、`/api/llm/*`、`/api/kb`、`/api/memories` 回 `{error:{code,message}}`；`/api/search`、`/api/tts` 回 `{error,code}`。客户端必须按路由选解析器（`serverConfig.errorOf` 是现成实现）；新增客户端不应假设统一。
 29. **主密钥只能有一把。** `resolveSecretKey` 只读 `ALP_SECRET_KEY` / `ALP_SECRET_KEY_ID`，轮换后旧行统一报 `KEY_KID_UNKNOWN`，必须让所有用户重存一次；没有「新旧密钥并存、逐行迁移」的自动路径。`HEALTH_TOKEN` 的详细健康检查已实现，并已写进 `.env.example`。

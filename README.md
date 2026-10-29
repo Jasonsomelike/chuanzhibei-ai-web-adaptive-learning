@@ -8,7 +8,7 @@
 
 [在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [已知限制](docs/limits.md)
 
-![tests](https://img.shields.io/badge/tests-1721%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-1723%20passed-brightgreen)
 ![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
 ![subjects](https://img.shields.io/badge/subjects-9-blue)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -110,7 +110,7 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 
 **存储链路**：浏览器解析 PDF / Markdown → 切块 → 未登录写 IndexedDB（单事务）；登录后本地先写，再 `PUT /api/kb` 做文档级 CAS 写入 `kb_docs` / `kb_chunks`，向量以 JSON 文本存列、按游标分页取回（不引 pgvector）。10 张表：`users`、`sessions`、`progress`、`directions`、`direction_picks`、`direction_items`、`user_secrets`、`kb_docs`、`kb_chunks`、`memories`。
 
-**实测与边界**（`npm run eval:rag`，2026-10-29 本机）：recall@3 `1.000`、MRR@10 `1.000`、全文金句 `1.000`。但这套评测**已饱和**，只能证明基础检索没坏，不能证明评测用的标题加权或向量 / RRF 的提升；域外门控生效后 emptyRate 为 `1.000`（10 条全部清空，falseContext 为 0），但 answer-absent relatedHit 从 `1.000` 降到 `0.600`（门控也会清掉部分「相关但答不上」的命中）；混合检索只接上传资料且尚未评测。
+**实测与边界**（`npm run eval:rag`，2026-10-29 本机）：recall@3 `1.000`、MRR@10 `1.000`、全文金句 `1.000`。但这套评测**已饱和**，只能证明基础检索没坏，不能证明评测用的标题加权或向量 / RRF 的提升；域外门控生效后 emptyRate 为 `1.000`（10 条全部清空，falseContext 为 0），answer-absent relatedHit 仍为 `1.000`（门控只清「没有任何主题词」的查询，不误杀「有相关点但教材没展开」的问题）；混合检索只接上传资料且尚未评测。
 
 完整链路、参数出处、降级矩阵、数据表与评测明细见 [检索与存储](docs/rag.md)。
 
@@ -121,7 +121,7 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 | 命令 | 验证什么 | 最近实测（2026-10-29） |
 | --- | --- | --- |
 | `npm run verify` | typecheck + 单测 + 图谱 + 密钥扫描 | **exit 0** |
-| `npm run test` | 74 个测试文件 | **1721 passed** |
+| `npm run test` | 74 个测试文件 | **1723 passed** |
 | `npm run kg:validate` | 9 学科图谱与题库 | **0 error**（360 点 / 540 边 / 1080 题） |
 | `npm run build` | Next 16 生产构建 | **exit 0**（24 个路由） |
 | `npm run eval:rag` | 50 条检索评测 | recall@3 `1.000`，OOD empty `1.000` |
@@ -149,7 +149,7 @@ scripts/                 validate-kg / eval-rag / check-secrets / 三个 E2E
 ## 已知限制
 
 - **没有教师班级视图**，也不使用任何真实学生数据；4 个新增学科未经任课教师逐题复核。
-- **检索评测饱和**：recall@3 与全文金句已到 1.000，证明力有限；域外门控已加（OOD empty 1.000），但代价是 answer-absent relatedHit 降到 0.600。
+- **检索评测饱和**：recall@3 与全文金句已到 1.000，证明力有限；域外门控已加（OOD empty 1.000、falseContext 0），answer-absent relatedHit 1.000。
 - **内置知识点仍走纯 BM25**，混合检索只接上传资料，且这部分没有评测集。
 - **没有 CI**，所有门禁靠本地 `npm run verify` 与 E2E 脚本手动跑。
 - **知识库同步不承诺线性化**：删除无 tombstone、CAS 不是事务、远端读会覆盖本地未上传的修改。

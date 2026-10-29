@@ -67,23 +67,28 @@ const MIN_SCORE = 0.5;
  * 域外门控。
  *
  * MIN_SCORE 只保证「词面上有命中」，挡不住「红烧肉怎么做才好吃？」这类问题：
- * 疑问句式里的「怎么 / 什么 / 如何」在中文语料里到处都能凑出分数，
- * 于是域外问题也会拿到 3 条带引用的知识点。退出前再看三件事：
- *   1. top1 相对候选分数中位数——分布是否真的有峰，而不是一堆同分噪声；
- *   2. top1 对查询非单字词的覆盖率——是否真的在讲同一件事；
- *   3. 命中的不同非单字词个数——避免单个「怎么」把整条查询带进来。
+ * 疑问句式里的「怎么 / 什么 / 如何」在中文语料里到处都能凑出分数。
+ * 门控只问一件事：这条查询里有没有一个承载主题、且语料里真实存在的多字词，
+ * 出现在 top1 文档里。疑问词与功能词不算主题词。
  *
- * 查询里没有非单字词（「栈」「树」）时跳过覆盖率与中位数判断：
- * 单字查询本来就宽，拿中位数去卡只会误杀合法短查询。
- * 查询只有一个非单字词时同样不卡中位数——命中的文档都同样切题；
- * 命中数按「至少一半、最多 2 个」要求，避免「平衡树」这种两个 bigram
- * 里有一个是跨词边界的查询被误杀。
+ * 判定顺序：
+ *   1. 查询里没有语料真实存在的主题词 → 域外，整体清空；
+ *   2. 主题词出现在 top1 标题里 → 放行；
+ *   3. 主题词出现在正文里，且不是虚词开头的跨词 bigram（「…的路…」）→ 放行。
+ *
+ * 这样「红黑树和 AVL 树的旋转有什么区别」会通过（avl / 旋转 命中），
+ * 「明天上海会下雨吗」「推荐一条北京三日游的路线」会清空，而不会因为查询长、
+ * 覆盖率被稀释就把「有相关点但教材没展开」的问题一并清掉。
  */
-const GATE_MIN_TOP_MEDIAN_RATIO = 1.2;
-const GATE_MIN_COVERAGE = 0.2;
-const GATE_MIN_MULTI_HITS = 2;
-/** 候选少于 3 条时中位数没有区分力（可能等于 top1 本身），跳过该条件。 */
-const GATE_MIN_POOL_FOR_MEDIAN = 3;
+/** 只出现在句首/词首的虚词：以它们开头的 bigram 多是跨词边界（「…的路…」）。 */
+const PARTICLE_START = new Set(['的', '了', '是', '和', '与', '及', '或', '而', '也', '都', '就', '才', '被', '把']);
+
+const GENERIC_QUERY_TOKENS = new Set([
+  '什么', '怎么', '怎样', '如何', '为何', '为什', '哪些', '哪个', '多少', '是否',
+  '可以', '应该', '需要', '如果', '以及', '因为', '所以', '但是', '而且', '或者',
+  '还是', '一样', '这个', '那个', '这些', '那些', '我们', '你们', '他们', '它的',
+  '其中', '之间', '之后', '之前', '的话', '相比', '比如', '这种', '一条', '一个',
+]);
 
 /** BM25 参数。k1 控制词频饱和，b 控制长度归一化强度。 */
 const K1 = 1.5;
@@ -138,28 +143,22 @@ function passesRelevanceGate(
   if (ranked.length === 0) return false;
 
   const multiTokens = [...new Set(qTokens)].filter((token) => token.length > 1);
+  // 纯单字查询（「栈」「树」）没有主题词可判，交给 MIN_SCORE。
   if (multiTokens.length === 0) return true;
 
+  const topTitle = new Set(index.titleTokens[ranked[0].i]);
   const topTokens = new Set(index.docTokens[ranked[0].i]);
-  const hits = multiTokens.filter((token) => topTokens.has(token)).length;
-
-  if (hits / multiTokens.length < GATE_MIN_COVERAGE) return false;
-  /*
-   * 「至少 2 个非单字命中」是对长查询的锚点要求。查询本身只有两个
-   * 非单字词时（「平衡树」→ 平衡 / 衡树），要求 2 个可能超过真实词形覆盖，
-   * 按「至少一半」放宽，避免把正常短查询整体清空。
-   */
-  const requiredHits = Math.min(GATE_MIN_MULTI_HITS, Math.ceil(multiTokens.length / 2));
-  if (hits < requiredHits) return false;
-
-  // 只有一个非单字词时，命中该词的文档同样切题，中位数没有区分意义。
-  if (multiTokens.length >= 2 && ranked.length >= GATE_MIN_POOL_FOR_MEDIAN) {
-    const sorted = ranked.map((item) => item.score).sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-    if (ranked[0].score < median * GATE_MIN_TOP_MEDIAN_RATIO) return false;
-  }
-
-  return true;
+  const contentTokens = multiTokens.filter(
+    (token) => !GENERIC_QUERY_TOKENS.has(token) && (index.df.get(token) ?? 0) > 0,
+  );
+  // 查询里没有一个语料真实存在的主题词：这是域外问题，整体清空。
+  if (contentTokens.length === 0) return false;
+  // 标题命中，或「正文命中且这个词至少出现在 2 篇文档里」。
+  // 后者挡的是「推荐一条北京三日游的路线」里的跨词 bigram「的路」：
+  // 它只在某一篇正文里出现一次，不能证明这篇文档在讲同一件事。
+  return contentTokens.some(
+    (token) => topTitle.has(token) || (topTokens.has(token) && !PARTICLE_START.has(token[0])),
+  );
 }
 
 /**
