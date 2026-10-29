@@ -9,15 +9,18 @@
  *     自建 vLLM / One-API / LM Studio / Ollama）都兼容
  *   - anthropic：/messages + x-api-key 头，Anthropic 官方与兼容实现
  *
- * 安全边界（界面上也要写明）：
- * - key 存在浏览器 localStorage，**不上传到我们的服务器**。
- * - 请求由浏览器直接发往用户填的 baseURL，不经过本项目后端。
- * - 因此 Vercel 部署后，用户填自己的 key 即可使用，我们无需保管任何密钥。
+ * 两种运行模式（ProviderConfig.mode）：
+ * - local（默认，旧存档即此模式）：key 存在浏览器 localStorage，
+ *   **不上传到我们的服务器**；请求由浏览器直接发往用户填的 baseURL，不经过本项目后端。
+ *   因此 Vercel 部署后，用户填自己的 key 即可使用，我们无需保管任何密钥。
+ * - server：key 加密存在服务端（user_secrets），浏览器只发消息、由服务端代发；
+ *   配置以 GET /api/config 的 llm 行水合进本地状态，本地**永远不写 apiKey**。
+ *   这条路径解决 CORS / 混合内容限制，也让新设备登录后无需重填密钥。
  *
  * ⚠️ 混合内容（Mixed Content）：本项目是 HTTPS 站点，浏览器**禁止**从 HTTPS 页面
  * 请求 HTTP 地址。用户若填 http:// 的内网或本地地址，请求会在发出前就被拦截，
  * 表现为 TypeError: Failed to fetch + 耗时极短。这与 CORS 失败的表面现象相同，
- * 但原因不同，必须在测试与错误提示里区分开。
+ * 但原因不同，必须在测试与错误提示里区分开。server 模式不受此限制（请求发往本站）。
  */
 
 import {
@@ -32,12 +35,28 @@ export type ProviderKind = "openai-compatible" | "anthropic";
 /** 设置页探测思考参数的结论。unknown 表示没探测过或探测未完成。 */
 export type ThinkingStatus = "unknown" | "verified" | "verified-empty" | "unsupported";
 
+/**
+ * 配置来源。
+ * - local：浏览器直连（BYOK），key 只在 localStorage；
+ * - server：服务端代发，key 在服务端密文里，本地 apiKey 恒为空。
+ *
+ * 旧存档没有 mode 字段：只要存过 apiKey 就按 local 解释（见 loadProvider）。
+ */
+export type ProviderMode = "local" | "server";
+
+/** 向量化能力状态。unsupported 表示服务端明确回了 404/503，而不是网络抖动。 */
+export type EmbeddingStatus = "unknown" | "available" | "unsupported";
+
 export interface ProviderConfig {
   /** 显示名，用户自己起。 */
   readonly label: string;
   readonly kind: ProviderKind;
   /** API 根地址，不含 /chat/completions 或 /messages。 */
   readonly baseUrl: string;
+  /**
+   * local 模式必填；server 模式恒为空串——密钥只在服务端密文里，
+   * 浏览器不持有，也不从 GET /api/config 读回。
+   */
   readonly apiKey: string;
   readonly model: string;
   /** 可选：额外请求头，JSON 字符串。 */
@@ -45,12 +64,21 @@ export interface ProviderConfig {
   /**
    * 思考强度。只作用于导师流式问答（callChatStream）；
    * callChat 故意不读，避免出题 JSON 被思考 token 吃光。
+   * server 模式下由服务端配置决定，客户端发送的档位不生效。
    */
   readonly thinking?: ThinkingStrength;
   /** 探测结论。写回只发生在调用方（设置页/导师页），本模块不自己改。 */
   readonly thinkingStatus?: ThinkingStatus;
   /** 依据核对开关，默认开。 */
   readonly verification?: boolean;
+  /** 缺省按 local 解释，兼容没有该字段的旧存档。 */
+  readonly mode?: ProviderMode;
+  /** server 模式下服务端是否已有 llm 配置；其它模式无意义。 */
+  readonly serverConfigured?: boolean;
+  /** 服务端保存的向量模型名；空表示没有向量能力，检索退化为纯 BM25。 */
+  readonly embeddingModel?: string;
+  /** 向量能力状态，只由 404/503 这类明确拒绝写成 unsupported。 */
+  readonly embeddingStatus?: EmbeddingStatus;
 }
 
 /** 常见供应商预设。用户仍可改地址与模型名。 */
@@ -157,13 +185,28 @@ export function loadProvider(): ProviderConfig | null {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const p = JSON.parse(raw) as Partial<ProviderConfig>;
-    if (typeof p.baseUrl !== "string" || typeof p.apiKey !== "string") return null;
-    if (p.baseUrl.trim() === "" || p.apiKey.trim() === "") return null;
+    if (typeof p.baseUrl !== "string") return null;
+
+    /*
+     * 旧存档没有 mode：存过 apiKey 就是 local（历史行为）。
+     * server 模式反过来——apiKey 本来就不落盘，用「key 为空」判模式会把
+     * 服务端代发误判成「没配置」，因此这里只认显式的 mode 字段。
+     */
+    const mode: ProviderMode = p.mode === "server" ? "server" : "local";
+    const storedKey = typeof p.apiKey === "string" ? p.apiKey.trim() : "";
+    if (mode === "server") {
+      // 服务端没有 llm 行时 serverConfigured=false：配置记住了但不可用
+      if (p.serverConfigured !== true) return null;
+    } else {
+      if (p.baseUrl.trim() === "" || storedKey === "") return null;
+    }
+
     return {
-      label: p.label ?? "自定义",
+      label: p.label ?? (mode === "server" ? "服务端配置" : "自定义"),
       kind: p.kind === "anthropic" ? "anthropic" : "openai-compatible",
       baseUrl: p.baseUrl.trim().replace(/\/+$/, ""),
-      apiKey: p.apiKey.trim(),
+      // server 模式即使旧存档里残留过 key，也不读回内存
+      apiKey: mode === "server" ? "" : storedKey,
       model: (p.model ?? "").trim(),
       extraHeaders: p.extraHeaders,
       /*
@@ -179,6 +222,15 @@ export function loadProvider(): ProviderConfig | null {
           ? p.thinkingStatus
           : "unknown",
       verification: p.verification !== false,
+      mode,
+      serverConfigured: p.serverConfigured === true,
+      ...(typeof p.embeddingModel === "string" && p.embeddingModel.trim() !== ""
+        ? { embeddingModel: p.embeddingModel.trim() }
+        : {}),
+      embeddingStatus:
+        p.embeddingStatus === "available" || p.embeddingStatus === "unsupported"
+          ? p.embeddingStatus
+          : "unknown",
     };
   } catch {
     return null;
@@ -188,12 +240,19 @@ export function loadProvider(): ProviderConfig | null {
 export function saveProvider(config: ProviderConfig): void {
   if (typeof window === "undefined") return;
   try {
+    const mode = effectiveProviderMode(config);
     // 三项显式落盘：调用方构造的 config 可能没有它们，读回时才能区分
     // 「用户显式关掉」与「从来没存过」。
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         ...config,
+        mode,
+        /*
+         * server 模式不写 key：密钥只存在服务端密文里。
+         * 写空串而不是省略字段，保证从 local 切到 server 时旧 key 被覆盖掉。
+         */
+        apiKey: mode === "server" ? "" : config.apiKey,
         thinking: config.thinking ?? "off",
         thinkingStatus: config.thinkingStatus ?? "unknown",
         verification: config.verification !== false,
@@ -211,6 +270,156 @@ export function clearProvider(): void {
   } catch {
     // ignore
   }
+}
+
+// ── 运行模式与就绪判定 ────────────────────────────────────────────
+
+/** 缺省按 local：旧存档、设置页构造的 config 都不带 mode。 */
+export function effectiveProviderMode(config: ProviderConfig): ProviderMode {
+  return config.mode === "server" ? "server" : "local";
+}
+
+/**
+ * 「能不能发起模型调用」的唯一判定。
+ *
+ * local 需要用户填齐三项（key 在浏览器）；server 只看服务端有没有 llm 行——
+ * 本地 apiKey 恒为空，拿它判就绪会让每个新设备都掉进「未配置」分支。
+ * 注意与 `provider !== null` 的区别：serverConfigured=false 的配置对象存在，但不可用。
+ */
+export function isProviderReady(config: ProviderConfig | null | undefined): boolean {
+  if (config === null || config === undefined) return false;
+  if (effectiveProviderMode(config) === "server") return config.serverConfigured === true;
+  return (
+    config.baseUrl.trim() !== "" &&
+    config.apiKey.trim() !== "" &&
+    config.model.trim() !== ""
+  );
+}
+
+// ── 从服务端水合 ──────────────────────────────────────────────────
+
+/** GET /api/config 里 llm 槽位的公开字段；只取这里列出的键。 */
+interface ServerLlmEntry {
+  readonly configured: boolean;
+  readonly label: string;
+  readonly api: string;
+  readonly baseUrl: string;
+  readonly model: string;
+  readonly options: Record<string, unknown>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function textOf(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readLlmEntry(json: unknown): ServerLlmEntry | null {
+  const llm = asRecord(asRecord(json)["config"])["llm"];
+  if (typeof llm !== "object" || llm === null) return null;
+  const record = llm as Record<string, unknown>;
+  return {
+    configured: record["configured"] === true,
+    label: textOf(record["label"]),
+    api: textOf(record["api"]),
+    baseUrl: textOf(record["baseUrl"]),
+    model: textOf(record["model"]),
+    options: asRecord(record["options"]),
+  };
+}
+
+function thinkingOf(value: unknown): ThinkingStrength {
+  return value === "standard" || value === "deep" ? value : "off";
+}
+
+function thinkingStatusOf(value: unknown): ThinkingStatus {
+  return value === "verified" || value === "verified-empty" || value === "unsupported"
+    ? value
+    : "unknown";
+}
+
+function embeddingStatusOf(value: unknown): EmbeddingStatus {
+  return value === "available" || value === "unsupported" ? value : "unknown";
+}
+
+/** 服务端确认没有 llm 行：更新标记，但绝不覆盖一份可用的本地配置。 */
+function withoutServerConfig(): ProviderConfig {
+  const current = loadProvider();
+  if (current !== null && effectiveProviderMode(current) === "local") {
+    return { ...current, serverConfigured: false };
+  }
+
+  const base: ProviderConfig = current ?? {
+    label: "服务端配置",
+    kind: "openai-compatible",
+    baseUrl: "",
+    apiKey: "",
+    model: "",
+  };
+  const next: ProviderConfig = {
+    ...base,
+    apiKey: "",
+    mode: "server",
+    serverConfigured: false,
+  };
+  saveProvider(next);
+  return next;
+}
+
+/**
+ * 用服务端保存的 llm 配置水合本地状态。
+ *
+ * 返回 null 表示**什么都没变**：未登录（401）、网络错误、响应形状不对。
+ * 只有服务端明确回答「有」或「没有」时才写本地存档，避免一次网络抖动
+ * 把一份能用的配置清成「未配置」。
+ *
+ * 有 llm 行时 apiKey 恒为空：密钥只留在服务端密文里，浏览器不持有。
+ * 无 llm 行时保留已有 local 配置——用户自带的 key 仍是可用路径。
+ */
+export async function hydrateProviderFromServer(signal?: AbortSignal): Promise<ProviderConfig | null> {
+  if (typeof window === "undefined") return null;
+
+  let response: Response;
+  try {
+    response = await fetch("/api/config", { cache: "no-store", signal });
+  } catch {
+    return null;
+  }
+  if (response.status === 401) return null;
+  if (!response.ok) return null;
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    return null;
+  }
+
+  const entry = readLlmEntry(json);
+  if (entry === null) return null;
+  if (!entry.configured) return withoutServerConfig();
+
+  const embeddingModel = textOf(entry.options["embeddingModel"]);
+  const next: ProviderConfig = {
+    label: entry.label !== "" ? entry.label : "服务端配置",
+    kind: entry.api === "anthropic" ? "anthropic" : "openai-compatible",
+    baseUrl: entry.baseUrl.replace(/\/+$/, ""),
+    apiKey: "",
+    model: entry.model,
+    thinking: thinkingOf(entry.options["thinking"]),
+    thinkingStatus: thinkingStatusOf(entry.options["thinkingStatus"]),
+    verification: entry.options["verification"] !== false,
+    ...(embeddingModel !== "" ? { embeddingModel } : {}),
+    embeddingStatus: embeddingStatusOf(entry.options["embeddingStatus"]),
+    mode: "server",
+    serverConfigured: true,
+  };
+  saveProvider(next);
+  return next;
 }
 
 /** 把 key 打码，用于回显。 */

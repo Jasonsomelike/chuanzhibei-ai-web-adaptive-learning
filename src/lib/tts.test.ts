@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_TTS_CONFIG,
+  MIMO_PRESET,
   RATE_MAX,
   RATE_MIN,
   SPEECH_MAX_CHARS,
   TTS_STORAGE_KEY,
   cleanTextForSpeech,
+  clearTtsConfig,
   isSpeaking,
   listBrowserVoices,
   loadTtsConfig,
@@ -551,7 +553,7 @@ describe("speakRemote", () => {
     vi.stubGlobal("fetch", vi.fn(async () => AUDIO_RESPONSE()));
 
     const controller = new AbortController();
-    const pending = speakRemote("正文", REMOTE, controller.signal);
+    const pending = speakRemote("正文", REMOTE, { signal: controller.signal });
     await vi.waitFor(() => expect(instances).toHaveLength(1));
 
     controller.abort();
@@ -570,7 +572,7 @@ describe("speakRemote", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const result = await speakRemote("正文", REMOTE, controller.signal);
+    const result = await speakRemote("正文", REMOTE, { signal: controller.signal });
 
     expect(result).toEqual({ ok: false });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -599,5 +601,215 @@ describe("speakRemote", () => {
     expect(result).toEqual({ ok: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(utterances).toHaveLength(0);
+  });
+});
+
+// ── 服务端模式（/api/tts） ────────────────────────────────────────
+
+describe("server 模式的语音", () => {
+  it("只要求 engine=openai-compatible：缺 apiKey/model/voice 也不回退", () => {
+    const bare: TtsConfig = { engine: "openai-compatible", rate: 1 };
+
+    expect(ttsConfigIssues(bare, "server")).toEqual([]);
+    expect(ttsConfigIssues(bare, "local")).toEqual(["API 地址", "API Key", "模型名", "音色"]);
+    // 缺省参数保持本机语义，老调用不会突然放宽校验
+    expect(ttsConfigIssues(bare)).toEqual(["API 地址", "API Key", "模型名", "音色"]);
+  });
+
+  it("POST /api/tts，只带 text，不带 Authorization；音频照常播放", async () => {
+    installSpeech();
+    const { instances } = installAudio();
+    installObjectUrl();
+    const fetchMock = vi.fn(async () => AUDIO_RESPONSE());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = speakRemote(
+      "正文[stack]。",
+      { engine: "openai-compatible", rate: 1 },
+      { mode: "server" },
+    );
+
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(endpoint).toBe("/api/tts");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(String(init.body))).toEqual({ text: "正文。" });
+
+    instances[0].onended?.();
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
+  it("401：回退浏览器语音并提示登录，而不是抱怨缺 API Key", async () => {
+    const { utterances } = installSpeech();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: "请先登录", code: "unauthorized" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+
+    const result = await speakRemote(
+      "正文",
+      { engine: "openai-compatible", rate: 1 },
+      { mode: "server" },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.fallbackReason).toContain("登录");
+    expect(result.fallbackReason).not.toContain("API Key");
+    expect(utterances).toHaveLength(1);
+  });
+
+  it("404 provider_not_configured：提示去设置页保存，不反复重试", async () => {
+    const { utterances } = installSpeech();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ error: "语音服务未配置，请到设置页填写", code: "provider_not_configured" }),
+            { status: 404, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+
+    const result = await speakRemote(
+      "正文",
+      { engine: "openai-compatible", rate: 1 },
+      { mode: "server" },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.fallbackReason).toContain("还没有保存语音配置");
+    expect(result.fallbackReason).toContain("设置页");
+    expect(utterances).toHaveLength(1);
+  });
+});
+
+// ── 小米 mimo（chat-audio 协议） ──────────────────────────────────
+
+const MIMO: TtsConfig = {
+  engine: "openai-compatible",
+  rate: 1,
+  protocol: "chat-audio",
+  format: "mp3",
+  baseUrl: "https://api.mimo.example/v1",
+  apiKey: "mk-test",
+  model: "mimo-tts",
+  voice: "茉莉",
+};
+
+function mimoAudioResponse(data = "AQID"): Response {
+  return new Response(JSON.stringify({ choices: [{ message: { audio: { data } } }] }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+describe("mimo 协议", () => {
+  it("ttsEndpoint 按协议分流：chat-audio 走 /chat/completions，绝不拼 /audio/speech", () => {
+    expect(ttsEndpoint("https://api.mimo.example/v1", "chat-audio")).toBe(
+      "https://api.mimo.example/v1/chat/completions",
+    );
+    expect(ttsEndpoint("https://api.mimo.example/v1/chat/completions", "chat-audio")).toBe(
+      "https://api.mimo.example/v1/chat/completions",
+    );
+    expect(ttsEndpoint("https://api.openai.com/v1", "speech")).toBe(
+      "https://api.openai.com/v1/audio/speech",
+    );
+    expect(ttsEndpoint("https://api.mimo.example/v1")).toBe(
+      "https://api.mimo.example/v1/audio/speech",
+    );
+  });
+
+  it("请求体带 modalities/audio，响应 base64 解码后播放", async () => {
+    installSpeech();
+    const { instances } = installAudio();
+    installObjectUrl();
+    const fetchMock = vi.fn(async () => mimoAudioResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = speakRemote("正文", MIMO);
+
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(endpoint).toBe("https://api.mimo.example/v1/chat/completions");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer mk-test");
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: "mimo-tts",
+      messages: [{ role: "assistant", content: "正文" }],
+      modalities: ["audio"],
+      audio: { voice: "茉莉", format: "mp3" },
+    });
+
+    instances[0].onended?.();
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
+  it("响应没有音频数据：回退浏览器语音并点名 MiMo", async () => {
+    const { utterances } = installSpeech();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ choices: [{ message: {} }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+
+    const result = await speakRemote("正文", MIMO);
+
+    expect(result.ok).toBe(false);
+    expect(result.fallbackReason).toContain("MiMo");
+    expect(utterances).toHaveLength(1);
+  });
+
+  it("protocol / format 能存进 alp.tts.v1，非法 format 被丢弃", () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+
+    saveTtsConfig(MIMO);
+
+    expect(loadTtsConfig()).toEqual(MIMO);
+    expect(parseTtsConfig({ protocol: "chat-audio", format: "wav" })).toEqual({
+      engine: "browser",
+      rate: 1,
+      protocol: "chat-audio",
+    });
+    expect(MIMO_PRESET).toEqual({ protocol: "chat-audio", voice: "茉莉", format: "mp3" });
+  });
+});
+
+// ── 清除配置 ──────────────────────────────────────────────────────
+
+describe("clearTtsConfig", () => {
+  it("先停朗读再删 alp.tts.v1，避免删完还在响", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveTtsConfig(REMOTE);
+    expect(storage.getItem(TTS_STORAGE_KEY)).not.toBeNull();
+
+    const { synth } = installSpeech({ autoEnd: false });
+    const pending = speakBrowser("一段很长的正文", { engine: "browser", rate: 1 });
+    expect(isSpeaking()).toBe(true);
+
+    clearTtsConfig();
+
+    expect(synth.cancel).toHaveBeenCalled();
+    expect(storage.getItem(TTS_STORAGE_KEY)).toBeNull();
+    await pending;
+  });
+
+  it("SSR 或存储抛错时不冒泡", () => {
+    vi.stubGlobal("window", undefined);
+    expect(() => clearTtsConfig()).not.toThrow();
   });
 });

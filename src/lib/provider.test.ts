@@ -2,6 +2,9 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   PRESETS,
   checkBaseUrl,
+  effectiveProviderMode,
+  hydrateProviderFromServer,
+  isProviderReady,
   isLocalAddress,
   loadProvider,
   maskKey,
@@ -9,6 +12,25 @@ import {
   testConnection,
   type ProviderConfig,
 } from "@/lib/provider";
+
+/** 内存版 localStorage；vitest 的 node 环境没有 window。 */
+function memoryStorage(): Storage {
+  const map = new Map<string, string>();
+  return {
+    get length() {
+      return map.size;
+    },
+    clear: () => map.clear(),
+    getItem: (key: string) => map.get(key) ?? null,
+    key: (index: number) => Array.from(map.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      map.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      map.set(key, value);
+    },
+  };
+}
 
 describe("预设列表", () => {
   it("不含 Ollama 预设（这是公网 Web 服务，不该突出本地部署）", () => {
@@ -390,24 +412,6 @@ describe("ProviderConfig 持久化（thinking / thinkingStatus / verification）
     vi.unstubAllGlobals();
   });
 
-  function memoryStorage(): Storage {
-    const map = new Map<string, string>();
-    return {
-      get length() {
-        return map.size;
-      },
-      clear: () => map.clear(),
-      getItem: (key: string) => map.get(key) ?? null,
-      key: (index: number) => Array.from(map.keys())[index] ?? null,
-      removeItem: (key: string) => {
-        map.delete(key);
-      },
-      setItem: (key: string, value: string) => {
-        map.set(key, value);
-      },
-    };
-  }
-
   const base: ProviderConfig = {
     label: "持久化测试",
     kind: "openai-compatible",
@@ -459,5 +463,219 @@ describe("ProviderConfig 持久化（thinking / thinkingStatus / verification）
     expect(raw.thinking).toBe("off");
     expect(raw.thinkingStatus).toBe("verified");
     expect(raw.verification).toBe(true);
+  });
+});
+
+// ── server 模式（服务端代发） ────────────────────────────────────
+
+describe("server 模式：读档与就绪判定", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const serverBase: ProviderConfig = {
+    label: "服务端配置",
+    kind: "openai-compatible",
+    baseUrl: "https://api.example.com/v1",
+    apiKey: "",
+    model: "deepseek-chat",
+    mode: "server",
+    serverConfigured: true,
+  };
+
+  it("旧存档有 apiKey 且没有 mode 时按 local 解释", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "alp.provider.v1",
+      JSON.stringify({
+        label: "旧存档",
+        kind: "openai-compatible",
+        baseUrl: "https://api.example.com/v1",
+        apiKey: "secret",
+        model: "m",
+      }),
+    );
+    vi.stubGlobal("window", { localStorage: storage });
+
+    const loaded = loadProvider();
+    expect(loaded).not.toBeNull();
+    expect(effectiveProviderMode(loaded!)).toBe("local");
+    expect(isProviderReady(loaded)).toBe(true);
+  });
+
+  it("server 模式允许 apiKey 为空，且不会把残留的 key 读回内存", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "alp.provider.v1",
+      JSON.stringify({ ...serverBase, apiKey: "stale-key" }),
+    );
+    vi.stubGlobal("window", { localStorage: storage });
+
+    const loaded = loadProvider();
+    expect(loaded).not.toBeNull();
+    expect(loaded!.mode).toBe("server");
+    expect(loaded!.apiKey).toBe("");
+    expect(loaded!.serverConfigured).toBe(true);
+    expect(loaded!.embeddingStatus).toBe("unknown");
+  });
+
+  it("server 模式 serverConfigured=false 时视为未配置", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "alp.provider.v1",
+      JSON.stringify({ ...serverBase, serverConfigured: false }),
+    );
+    vi.stubGlobal("window", { localStorage: storage });
+
+    expect(loadProvider()).toBeNull();
+  });
+
+  it("saveProvider 在 server 模式不写 apiKey", () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+
+    saveProvider({ ...serverBase, apiKey: "should-not-persist" });
+    const raw = JSON.parse(storage.getItem("alp.provider.v1") ?? "{}") as Record<string, unknown>;
+
+    expect(raw.mode).toBe("server");
+    expect(raw.apiKey).toBe("");
+  });
+
+  it("isProviderReady：local 看三项，server 只看 serverConfigured", () => {
+    expect(isProviderReady(null)).toBe(false);
+    expect(
+      isProviderReady({
+        label: "l",
+        kind: "openai-compatible",
+        baseUrl: "https://api.example.com/v1",
+        apiKey: "",
+        model: "m",
+      }),
+    ).toBe(false);
+    expect(isProviderReady(serverBase)).toBe(true);
+    expect(isProviderReady({ ...serverBase, serverConfigured: false })).toBe(false);
+  });
+});
+
+describe("hydrateProviderFromServer", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubConfig(body: unknown, status = 200): Array<{ url: string; init?: RequestInit }> {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    return calls;
+  }
+
+  it("服务端有 llm 行：写 mode=server / serverConfigured=true，apiKey 为空并带上 options", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    const calls = stubConfig({
+      config: {
+        llm: {
+          configured: true,
+          hint: "sk-…abcd",
+          label: "团队 DeepSeek",
+          api: "anthropic",
+          baseUrl: "https://api.example.com/v1/",
+          model: "claude-sonnet",
+          options: {
+            thinking: "deep",
+            thinkingStatus: "unsupported",
+            verification: false,
+            embeddingModel: "text-embedding-v3",
+            embeddingStatus: "available",
+          },
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      },
+    });
+
+    const hydrated = await hydrateProviderFromServer();
+
+    expect(calls[0].url).toBe("/api/config");
+    expect(calls[0].init?.cache).toBe("no-store");
+    expect(hydrated).not.toBeNull();
+    expect(hydrated!.mode).toBe("server");
+    expect(hydrated!.serverConfigured).toBe(true);
+    expect(hydrated!.apiKey).toBe("");
+    expect(hydrated!.label).toBe("团队 DeepSeek");
+    expect(hydrated!.kind).toBe("anthropic");
+    expect(hydrated!.baseUrl).toBe("https://api.example.com/v1");
+    expect(hydrated!.model).toBe("claude-sonnet");
+    expect(hydrated!.thinking).toBe("deep");
+    expect(hydrated!.thinkingStatus).toBe("unsupported");
+    expect(hydrated!.verification).toBe(false);
+    expect(hydrated!.embeddingModel).toBe("text-embedding-v3");
+    expect(hydrated!.embeddingStatus).toBe("available");
+    expect(isProviderReady(hydrated)).toBe(true);
+
+    // 已持久化，且磁盘上没有明文 key 可抄
+    const raw = JSON.parse(storage.getItem("alp.provider.v1") ?? "{}") as Record<string, unknown>;
+    expect(raw.mode).toBe("server");
+    expect(raw.apiKey).toBe("");
+    expect(raw.serverConfigured).toBe(true);
+  });
+
+  it("服务端没有 llm 行：serverConfigured=false，且不覆盖可用的本地配置", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveProvider({
+      label: "本地 BYOK",
+      kind: "openai-compatible",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "local-key",
+      model: "m",
+    });
+    stubConfig({ config: { llm: { configured: false, options: {} } } });
+
+    const hydrated = await hydrateProviderFromServer();
+
+    expect(hydrated).not.toBeNull();
+    expect(hydrated!.serverConfigured).toBe(false);
+    expect(hydrated!.mode).toBe("local");
+    expect(hydrated!.apiKey).toBe("local-key");
+    // 本地存档原样保留
+    const raw = JSON.parse(storage.getItem("alp.provider.v1") ?? "{}") as Record<string, unknown>;
+    expect(raw.apiKey).toBe("local-key");
+  });
+
+  it("登录态 401 时什么都不改", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    const before = JSON.stringify({ label: "本地", apiKey: "k" });
+    storage.setItem("alp.provider.v1", before);
+    stubConfig({ error: { code: "unauthorized", message: "请先登录" } }, 401);
+
+    await expect(hydrateProviderFromServer()).resolves.toBeNull();
+    expect(storage.getItem("alp.provider.v1")).toBe(before);
+  });
+
+  it("网络错误 / 响应形状不对时返回 null，不动本地状态", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    storage.setItem("alp.provider.v1", "{}");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    await expect(hydrateProviderFromServer()).resolves.toBeNull();
+
+    stubConfig({ nope: true });
+    await expect(hydrateProviderFromServer()).resolves.toBeNull();
+    expect(storage.getItem("alp.provider.v1")).toBe("{}");
   });
 });

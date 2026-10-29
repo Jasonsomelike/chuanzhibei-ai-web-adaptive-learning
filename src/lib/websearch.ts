@@ -8,7 +8,7 @@
  * - 空结果必须得到空字符串上下文，调用方据此不注入网络块。
  */
 
-export type WebProvider = "tavily" | "wikipedia";
+export type WebProvider = "tavily" | "wikipedia" | "deepseek";
 
 export interface WebResult {
   readonly title: string;
@@ -142,6 +142,55 @@ export function normalizeTavily(raw: unknown): WebResult[] {
   return dedupeByUrl(results).slice(0, MAX_WEB_RESULTS);
 }
 
+/**
+ * DeepSeek 搜索的 { results: [{ title, url, summary, rerank_score }] }。
+ *
+ * 供应商按 rerank_score 给相关度，但字段可能缺失、也可能是字符串；
+ * 缺失的排在最后并保留原始顺序。摘要字段在不同网关下有 summary / snippet /
+ * content 三种名字，按这个优先级取第一个非空值。
+ */
+export function normalizeDeepSeek(raw: unknown): WebResult[] {
+  if (!isRecord(raw) || !Array.isArray(raw.results)) return [];
+
+  const scored: { result: WebResult; score: number; position: number }[] = [];
+  raw.results.forEach((item, position) => {
+    if (!isRecord(item)) return;
+    const url = textOf(item.url).trim();
+    if (!isHttpUrl(url)) return;
+
+    const title = collapseWhitespace(textOf(item.title)) || domainOf(url) || url;
+    const snippetText = firstNonEmptyText([
+      textOf(item.summary),
+      textOf(item.snippet),
+      textOf(item.content),
+    ]);
+    const snippet = clampCodePoints(collapseWhitespace(snippetText), MAX_SNIPPET_CHARS);
+    const score = finiteNumber(item.rerank_score);
+
+    scored.push({
+      result: { title, url, snippet, provider: "deepseek" },
+      // 没有分数的条目排在所有有分数的条目之后，而不是被当成 0 分。
+      score: score ?? Number.NEGATIVE_INFINITY,
+      position,
+    });
+  });
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    return a.position - b.position;
+  });
+
+  // 先排序再去重：同一 URL 出现多次时留下相关度最高的那条。
+  return dedupeByUrl(scored.map((entry) => entry.result)).slice(0, MAX_WEB_RESULTS);
+}
+
+function firstNonEmptyText(values: readonly string[]): string {
+  for (const value of values) {
+    if (value.trim() !== "") return value;
+  }
+  return "";
+}
+
 function wikiPages(raw: unknown): unknown[] {
   if (!isRecord(raw) || !isRecord(raw.query)) return [];
   const pages = raw.query.pages;
@@ -213,6 +262,30 @@ export function normalizeWikipedia(raw: unknown): WebResult[] {
     });
   }
   return dedupeByUrl(results).slice(0, MAX_WEB_RESULTS);
+}
+
+/**
+ * 供应商的展示名。
+ *
+ * 必须是穷尽 switch：新增供应商却忘了在这里补文案时，编译期就会失败。
+ * 调用方不得再用 `provider === "tavily" ? ... : ...` 之类的三元判断——
+ * 那会把 deepseek 静默标成 Tavily 或维基百科。
+ */
+export function webProviderLabel(provider: WebProvider): string {
+  switch (provider) {
+    case "wikipedia":
+      return "维基百科";
+    case "tavily":
+      return "Tavily 摘要";
+    case "deepseek":
+      return "DeepSeek 搜索摘要";
+    default:
+      return assertNever(provider);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`未处理的搜索供应商：${String(value)}`);
 }
 
 /** 展示用抬头：《标题》 域名。 */

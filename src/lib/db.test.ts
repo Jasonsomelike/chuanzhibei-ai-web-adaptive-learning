@@ -1,5 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { getDb, __resetMemoryDbForTests } from "@/lib/db";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import {
+  getDb,
+  __resetMemoryDbForTests,
+  dbBackend,
+  __setDbBackendForTests,
+} from "@/lib/db";
 
 /**
  * 内存实现的查询分支测试。
@@ -11,6 +16,10 @@ import { getDb, __resetMemoryDbForTests } from "@/lib/db";
 
 beforeEach(() => {
   __resetMemoryDbForTests();
+});
+
+afterEach(() => {
+  __setDbBackendForTests(null);
 });
 
 async function seedUser(id = "u1") {
@@ -203,5 +212,492 @@ describe("progress 内存实现", () => {
       await db.run("DELETE FROM progress WHERE user_id = $1 AND subject_id = $2", ["u1", "nope"]),
     ).toBe(0);
     expect(await db.run("DELETE FROM progress WHERE user_id = $1", ["u1"])).toBe(0);
+  });
+});
+
+// ── 四张新表 ─────────────────────────────────────────────────────
+
+type TestDb = Awaited<ReturnType<typeof getDb>>;
+
+/*
+ * 下面四条 SQL 是生产代码实际使用的 canonical 形状。
+ * 内存实现按列名解析 ON CONFLICT，因此这里的列顺序必须与调用方一致；
+ * 一旦两处分叉，upsert 会抛错而不是静默写错字段。
+ */
+const UPSERT_SECRET_SQL = `INSERT INTO user_secrets (
+  user_id, kind, label, api, base_url, model, options_json,
+  secret_ct, secret_iv, secret_tag, secret_kid, secret_hint, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+ON CONFLICT (user_id, kind) DO UPDATE SET
+  label = EXCLUDED.label,
+  api = EXCLUDED.api,
+  base_url = EXCLUDED.base_url,
+  model = EXCLUDED.model,
+  options_json = EXCLUDED.options_json,
+  secret_ct = EXCLUDED.secret_ct,
+  secret_iv = EXCLUDED.secret_iv,
+  secret_tag = EXCLUDED.secret_tag,
+  secret_kid = EXCLUDED.secret_kid,
+  secret_hint = EXCLUDED.secret_hint,
+  updated_at = EXCLUDED.updated_at`;
+
+function secretParams(over: Partial<Record<string, string>> = {}): string[] {
+  return [
+    over.user_id ?? "u1",
+    over.kind ?? "llm",
+    over.label ?? "文本模型",
+    over.api ?? "openai-compatible",
+    over.base_url ?? "https://api.deepseek.com/v1",
+    over.model ?? "deepseek-chat",
+    over.options_json ?? "{}",
+    over.secret_ct ?? "ct",
+    over.secret_iv ?? "iv",
+    over.secret_tag ?? "tag",
+    over.secret_kid ?? "v1",
+    over.secret_hint ?? "••••1234",
+    over.created_at ?? "2026-10-29T00:00:00.000Z",
+    over.updated_at ?? "2026-10-29T00:00:00.000Z",
+  ];
+}
+
+const UPSERT_DOC_SQL = `INSERT INTO kb_docs (
+  user_id, doc_id, direction_id, title, file_name, kind, size,
+  page_count, char_count, chunk_count, kc_ids_json, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+ON CONFLICT (user_id, doc_id) DO UPDATE SET
+  direction_id = EXCLUDED.direction_id,
+  title = EXCLUDED.title,
+  file_name = EXCLUDED.file_name,
+  kind = EXCLUDED.kind,
+  size = EXCLUDED.size,
+  page_count = EXCLUDED.page_count,
+  char_count = EXCLUDED.char_count,
+  chunk_count = EXCLUDED.chunk_count,
+  kc_ids_json = EXCLUDED.kc_ids_json,
+  updated_at = EXCLUDED.updated_at`;
+
+async function seedDoc(
+  db: TestDb,
+  over: Partial<Record<string, string | number>> = {},
+): Promise<void> {
+  await db.run(UPSERT_DOC_SQL, [
+    over.user_id ?? "u1",
+    over.doc_id ?? "doc1",
+    over.direction_id ?? "d1",
+    over.title ?? "文档",
+    over.file_name ?? "doc.pdf",
+    over.kind ?? "pdf",
+    over.size ?? 1024,
+    1,
+    over.char_count ?? 100,
+    over.chunk_count ?? 1,
+    over.kc_ids_json ?? "[]",
+    over.created_at ?? "2026-10-29T00:00:00.000Z",
+    over.updated_at ?? "2026-10-29T00:00:00.000Z",
+  ]);
+}
+
+const UPSERT_CHUNK_SQL = `INSERT INTO kb_chunks (
+  user_id, chunk_id, doc_id, direction_id, idx, title, section,
+  page_from, page_to, text, embedding, embedding_model, embedding_dim, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+ON CONFLICT (user_id, chunk_id) DO UPDATE SET
+  doc_id = EXCLUDED.doc_id,
+  direction_id = EXCLUDED.direction_id,
+  idx = EXCLUDED.idx,
+  title = EXCLUDED.title,
+  section = EXCLUDED.section,
+  page_from = EXCLUDED.page_from,
+  page_to = EXCLUDED.page_to,
+  text = EXCLUDED.text,
+  embedding = EXCLUDED.embedding,
+  embedding_model = EXCLUDED.embedding_model,
+  embedding_dim = EXCLUDED.embedding_dim,
+  updated_at = EXCLUDED.updated_at`;
+
+async function seedChunk(
+  db: TestDb,
+  over: Partial<Record<string, string | number | null>> = {},
+): Promise<void> {
+  await db.run(UPSERT_CHUNK_SQL, [
+    over.user_id ?? "u1",
+    over.chunk_id ?? "c1",
+    over.doc_id ?? "doc1",
+    over.direction_id ?? "d1",
+    over.idx ?? 0,
+    over.title ?? "标题",
+    over.section ?? "小节",
+    1,
+    1,
+    over.text ?? "正文",
+    over.embedding ?? null,
+    over.embedding_model ?? null,
+    over.embedding_dim ?? null,
+    over.updated_at ?? "2026-10-29T00:00:00.000Z",
+  ]);
+}
+
+const UPSERT_MEMORY_SQL = `INSERT INTO memories (
+  user_id, mem_id, subject_id, kind, kc_id, with_kc_id, question_id, status, payload, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (user_id, mem_id) DO UPDATE SET
+  subject_id = EXCLUDED.subject_id,
+  kind = EXCLUDED.kind,
+  kc_id = EXCLUDED.kc_id,
+  with_kc_id = EXCLUDED.with_kc_id,
+  question_id = EXCLUDED.question_id,
+  status = EXCLUDED.status,
+  payload = EXCLUDED.payload,
+  updated_at = EXCLUDED.updated_at`;
+
+async function seedMemory(
+  db: TestDb,
+  over: Partial<Record<string, string | null>> = {},
+): Promise<void> {
+  await db.run(UPSERT_MEMORY_SQL, [
+    over.user_id ?? "u1",
+    over.mem_id ?? "m1",
+    over.subject_id ?? "data-structures",
+    over.kind ?? "error",
+    over.kc_id ?? "c01",
+    over.with_kc_id ?? null,
+    over.question_id ?? "q1",
+    over.status ?? "open",
+    over.payload ?? "{}",
+    over.created_at ?? "2026-10-29T00:00:00.000Z",
+    over.updated_at ?? "2026-10-29T00:00:00.000Z",
+  ]);
+}
+
+describe("user_secrets 内存实现", () => {
+  it("同一 (user_id, kind) 重复写入是更新：行数不变、created_at 保留", async () => {
+    const db = await seedUser();
+
+    expect(await db.run(UPSERT_SECRET_SQL, secretParams())).toBe(1);
+    expect(
+      await db.run(
+        UPSERT_SECRET_SQL,
+        secretParams({
+          label: "新标签",
+          secret_ct: "ct2",
+          updated_at: "2026-10-29T01:00:00.000Z",
+        }),
+      ),
+    ).toBe(1);
+
+    const rows = await db.all<{
+      label: string;
+      secret_ct: string;
+      created_at: string;
+      updated_at: string;
+    }>("SELECT * FROM user_secrets WHERE user_id = $1", ["u1"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].label).toBe("新标签");
+    expect(rows[0].secret_ct).toBe("ct2");
+    expect(rows[0].created_at).toBe("2026-10-29T00:00:00.000Z");
+    expect(rows[0].updated_at).toBe("2026-10-29T01:00:00.000Z");
+  });
+
+  it("按 user_id 与 kind 隔离", async () => {
+    const db = await seedUser("u1");
+    await seedUser("u2");
+    await db.run(UPSERT_SECRET_SQL, secretParams({ kind: "llm" }));
+    await db.run(UPSERT_SECRET_SQL, secretParams({ kind: "tts", api: "browser" }));
+    await db.run(UPSERT_SECRET_SQL, secretParams({ user_id: "u2", label: "别人的" }));
+
+    const mine = await db.all<{ kind: string }>(
+      "SELECT * FROM user_secrets WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(mine.map((r) => r.kind)).toEqual(["llm", "tts"]);
+
+    const other = await db.one<{ label: string }>(
+      "SELECT * FROM user_secrets WHERE user_id = $1 AND kind = $2",
+      ["u2", "llm"],
+    );
+    expect(other?.label).toBe("别人的");
+
+    const missing = await db.one("SELECT * FROM user_secrets WHERE user_id = $1 AND kind = $2", [
+      "u1",
+      "search-tavily",
+    ]);
+    expect(missing).toBeNull();
+  });
+
+  it("删除形状 user_secrets(user_id,kind)：只删该行并返回真实数量", async () => {
+    const db = await seedUser();
+    await db.run(UPSERT_SECRET_SQL, secretParams({ kind: "llm" }));
+    await db.run(UPSERT_SECRET_SQL, secretParams({ kind: "tts", api: "browser" }));
+
+    expect(
+      await db.run("DELETE FROM user_secrets WHERE user_id = $1 AND kind = $2", ["u1", "llm"]),
+    ).toBe(1);
+    expect(
+      await db.run("DELETE FROM user_secrets WHERE user_id = $1 AND kind = $2", ["u1", "llm"]),
+    ).toBe(0);
+
+    const rows = await db.all<{ kind: string }>(
+      "SELECT * FROM user_secrets WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(rows.map((r) => r.kind)).toEqual(["tts"]);
+  });
+});
+
+describe("kb_docs / kb_chunks 内存实现", () => {
+  it("文档 upsert 更新同键不新增行，单条查询按 (user_id, doc_id)", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1", title: "旧标题", chunk_count: 1 });
+    await seedDoc(db, { doc_id: "doc1", title: "新标题", chunk_count: 3 });
+
+    const rows = await db.all("SELECT * FROM kb_docs WHERE user_id = $1", ["u1"]);
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as { title: string }).title).toBe("新标题");
+    expect((rows[0] as { chunk_count: number }).chunk_count).toBe(3);
+
+    const byDoc = await db.all("SELECT * FROM kb_docs WHERE user_id = $1 AND doc_id = $2", [
+      "u1",
+      "doc1",
+    ]);
+    expect(byDoc).toHaveLength(1);
+
+    const one = await db.one<{ title: string }>(
+      "SELECT * FROM kb_docs WHERE user_id = $1 AND doc_id = $2",
+      ["u1", "doc1"],
+    );
+    expect(one?.title).toBe("新标题");
+  });
+
+  it("片段 upsert 后按方向读取并按 doc_id、idx 排序", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1" });
+    await seedDoc(db, { doc_id: "doc2" });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc1", idx: 1, text: "第二段" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", idx: 0, text: "第一段" });
+    await seedChunk(db, { chunk_id: "c3", doc_id: "doc2", idx: 0, text: "另一篇" });
+
+    const rows = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1 AND direction_id = $2",
+      ["u1", "d1"],
+    );
+    expect(rows.map((r) => r.chunk_id)).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("按 doc_id 列片段时不会带上其它文档（putKbDocument 的旧片段清理依赖它）", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1" });
+    await seedDoc(db, { doc_id: "doc2" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", idx: 0 });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc2", idx: 0 });
+    await seedChunk(db, { chunk_id: "c3", doc_id: "doc1", idx: 1 });
+
+    const rows = await db.all<{ chunk_id: string }>(
+      "SELECT chunk_id, doc_id FROM kb_chunks WHERE user_id = $1 AND doc_id = $2 ORDER BY chunk_id",
+      ["u1", "doc1"],
+    );
+    expect(rows.map((r) => r.chunk_id)).toEqual(["c1", "c3"]);
+  });
+
+  /*
+   * 回归：分页 SQL 同时含 `direction_id = $2` 与 `chunk_id > $3`。
+   * 先判 direction_id 会一次返回整方向（c2,c3,c4），after 游标永远推不动。
+   */
+  it("kb_chunks 游标分页：after=c1&limit=2 只返回 c2,c3", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1" });
+    for (const id of ["c1", "c2", "c3", "c4"]) {
+      await seedChunk(db, { chunk_id: id, doc_id: "doc1", idx: Number(id.slice(1)) });
+    }
+
+    const rows = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1 AND direction_id = $2 AND chunk_id > $3 ORDER BY chunk_id LIMIT $4",
+      ["u1", "d1", "c1", 2],
+    );
+    expect(rows.map((r) => r.chunk_id)).toEqual(["c2", "c3"]);
+  });
+
+  it("删除形状 kb_docs(user_id,doc_id)：删一篇并级联删它的片段", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1" });
+    await seedDoc(db, { doc_id: "doc2" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", idx: 0 });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc1", idx: 1 });
+    await seedChunk(db, { chunk_id: "c3", doc_id: "doc2", idx: 0 });
+
+    expect(
+      await db.run("DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2", ["u1", "doc1"]),
+    ).toBe(1);
+    expect(
+      await db.run("DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2", ["u1", "doc1"]),
+    ).toBe(0);
+
+    const docs = await db.all<{ doc_id: string }>("SELECT * FROM kb_docs WHERE user_id = $1", ["u1"]);
+    expect(docs.map((r) => r.doc_id)).toEqual(["doc2"]);
+    const chunks = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(chunks.map((r) => r.chunk_id)).toEqual(["c3"]);
+  });
+
+  it("删除形状 kb_docs(user_id,direction_id)：删整个方向的文档与片段", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1", direction_id: "d1" });
+    await seedDoc(db, { doc_id: "doc2", direction_id: "d1" });
+    await seedDoc(db, { doc_id: "doc3", direction_id: "d2" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", direction_id: "d1" });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc2", direction_id: "d1" });
+    await seedChunk(db, { chunk_id: "c3", doc_id: "doc3", direction_id: "d2" });
+
+    expect(
+      await db.run("DELETE FROM kb_docs WHERE user_id = $1 AND direction_id = $2", ["u1", "d1"]),
+    ).toBe(2);
+
+    const docs = await db.all<{ doc_id: string }>("SELECT * FROM kb_docs WHERE user_id = $1", ["u1"]);
+    expect(docs.map((r) => r.doc_id)).toEqual(["doc3"]);
+    const chunks = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(chunks.map((r) => r.chunk_id)).toEqual(["c3"]);
+  });
+
+  it("删除形状 kb_chunks(user_id,doc_id)：删该文档的全部片段", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1" });
+    await seedDoc(db, { doc_id: "doc2" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", idx: 0 });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc1", idx: 1 });
+    await seedChunk(db, { chunk_id: "c3", doc_id: "doc2", idx: 0 });
+
+    expect(
+      await db.run("DELETE FROM kb_chunks WHERE user_id = $1 AND doc_id = $2", ["u1", "doc1"]),
+    ).toBe(2);
+    const chunks = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(chunks.map((r) => r.chunk_id)).toEqual(["c3"]);
+  });
+
+  it("删除形状 kb_chunks(user_id,chunk_id)：只删一段并返回真实数量", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", idx: 0 });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc1", idx: 1 });
+
+    expect(
+      await db.run("DELETE FROM kb_chunks WHERE user_id = $1 AND chunk_id = $2", ["u1", "c2"]),
+    ).toBe(1);
+    expect(
+      await db.run("DELETE FROM kb_chunks WHERE user_id = $1 AND chunk_id = $2", ["u1", "c2"]),
+    ).toBe(0);
+
+    const chunks = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(chunks.map((r) => r.chunk_id)).toEqual(["c1"]);
+  });
+
+  it("删除形状 kb_chunks(user_id,direction_id)：删整个方向的片段", async () => {
+    const db = await seedUser();
+    await seedDoc(db, { doc_id: "doc1", direction_id: "d1" });
+    await seedDoc(db, { doc_id: "doc2", direction_id: "d2" });
+    await seedChunk(db, { chunk_id: "c1", doc_id: "doc1", direction_id: "d1" });
+    await seedChunk(db, { chunk_id: "c2", doc_id: "doc1", direction_id: "d1" });
+    await seedChunk(db, { chunk_id: "c3", doc_id: "doc2", direction_id: "d2" });
+
+    expect(
+      await db.run("DELETE FROM kb_chunks WHERE user_id = $1 AND direction_id = $2", ["u1", "d1"]),
+    ).toBe(2);
+    const chunks = await db.all<{ chunk_id: string }>(
+      "SELECT * FROM kb_chunks WHERE user_id = $1",
+      ["u1"],
+    );
+    expect(chunks.map((r) => r.chunk_id)).toEqual(["c3"]);
+  });
+});
+
+describe("memories 内存实现", () => {
+  it("upsert 更新同键不新增行，按 subject_id 与 status 过滤", async () => {
+    const db = await seedUser();
+    await seedMemory(db, { mem_id: "m1", payload: "{\"v\":1}" });
+    await seedMemory(db, { mem_id: "m1", payload: "{\"v\":2}" });
+    await seedMemory(db, { mem_id: "m2", subject_id: "algorithms", question_id: "q2" });
+    await seedMemory(db, { mem_id: "m3", status: "resolved", question_id: "q3" });
+
+    const rows = await db.all<{ mem_id: string; payload: string }>(
+      "SELECT * FROM memories WHERE user_id = $1 AND subject_id = $2",
+      ["u1", "data-structures"],
+    );
+    expect(rows.map((r) => r.mem_id)).toEqual(["m1", "m3"]);
+    expect(rows[0].payload).toBe("{\"v\":2}");
+
+    const open = await db.all<{ mem_id: string }>(
+      "SELECT * FROM memories WHERE user_id = $1 AND subject_id = $2 AND status = $3",
+      ["u1", "data-structures", "resolved"],
+    );
+    expect(open.map((r) => r.mem_id)).toEqual(["m3"]);
+  });
+
+  it("删除形状 memories(user_id,subject_id)：清空学科快照", async () => {
+    const db = await seedUser();
+    await seedMemory(db, { mem_id: "m1", subject_id: "data-structures" });
+    await seedMemory(db, { mem_id: "m2", subject_id: "data-structures" });
+    await seedMemory(db, { mem_id: "m3", subject_id: "algorithms", question_id: "q3" });
+
+    expect(
+      await db.run("DELETE FROM memories WHERE user_id = $1 AND subject_id = $2", [
+        "u1",
+        "data-structures",
+      ]),
+    ).toBe(2);
+
+    const rows = await db.all<{ mem_id: string }>("SELECT * FROM memories WHERE user_id = $1", [
+      "u1",
+    ]);
+    expect(rows.map((r) => r.mem_id)).toEqual(["m3"]);
+  });
+
+  it("删除形状 memories(user_id,mem_id)：删单张并返回真实数量", async () => {
+    const db = await seedUser();
+    await seedMemory(db, { mem_id: "m1" });
+    await seedMemory(db, { mem_id: "m2", question_id: "q2" });
+
+    expect(await db.run("DELETE FROM memories WHERE user_id = $1 AND mem_id = $2", ["u1", "m2"])).toBe(
+      1,
+    );
+    expect(await db.run("DELETE FROM memories WHERE user_id = $1 AND mem_id = $2", ["u1", "m2"])).toBe(
+      0,
+    );
+
+    const rows = await db.all<{ mem_id: string }>("SELECT * FROM memories WHERE user_id = $1", [
+      "u1",
+    ]);
+    expect(rows.map((r) => r.mem_id)).toEqual(["m1"]);
+  });
+});
+
+describe("dbBackend", () => {
+  it("按 DATABASE_URL 判定，可被 __setDbBackendForTests 覆盖", () => {
+    const original = process.env.DATABASE_URL;
+    try {
+      delete process.env.DATABASE_URL;
+      expect(dbBackend()).toBe("memory");
+
+      process.env.DATABASE_URL = "postgres://user:pass@localhost/db";
+      expect(dbBackend()).toBe("postgres");
+
+      __setDbBackendForTests("memory");
+      expect(dbBackend()).toBe("memory");
+
+      __setDbBackendForTests("postgres");
+      expect(dbBackend()).toBe("postgres");
+    } finally {
+      __setDbBackendForTests(null);
+      if (original === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = original;
+    }
   });
 });

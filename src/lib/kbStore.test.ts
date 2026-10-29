@@ -9,11 +9,14 @@ import {
   estimateImportBytes,
   formatBytes,
   importDocument,
+  initialKbViewState,
+  kbViewReducer,
   loadDirectionKb,
   updateDocKcIds,
   type KbStorage,
   type KbStorageEstimate,
 } from "@/lib/kbStore";
+import { KB_CONFLICT_MESSAGE, KbConflictError } from "@/lib/kbRemote";
 import {
   MAX_DIRECTION_CHARS,
   MAX_DIRECTION_CHUNKS,
@@ -378,6 +381,105 @@ describe("容量与预算纯函数", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(2048)).toBe("2 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5 MB");
+  });
+});
+
+// ── 视图状态：方向切换必须先清空 ──────────────────────────────────
+
+describe("知识库视图状态", () => {
+  it("方向 / 账号切换时先清空 docs、chunks 与向量，再进入 loading", () => {
+    const doc = makeDoc({ id: "doc-a" });
+    const loaded = kbViewReducer(initialKbViewState(), {
+      type: "loaded",
+      docs: [doc],
+      chunks: makeChunks(doc, 2),
+      syncWarning: "同步失败",
+    });
+    expect(loaded.docs).toHaveLength(1);
+    expect(loaded.chunks).toHaveLength(2);
+    expect(loaded.loading).toBe(false);
+    expect(loaded.syncWarning).toBe("同步失败");
+
+    const reset = kbViewReducer(loaded, { type: "reset" });
+    expect(reset.docs).toEqual([]);
+    expect(reset.chunks).toEqual([]);
+    expect(reset.vectors.size).toBe(0);
+    expect(reset.syncWarning).toBeNull();
+    expect(reset.error).toBeNull();
+    expect(reset.loading).toBe(true);
+  });
+
+  it("读取失败时清空列表并保留错误；重新加载会清掉旧错误", () => {
+    const failed = kbViewReducer(initialKbViewState(), {
+      type: "failed",
+      error: "读取知识库失败：网络中断",
+      syncWarning: "登录已过期",
+    });
+    expect(failed.loading).toBe(false);
+    expect(failed.docs).toEqual([]);
+    expect(failed.error).toContain("网络中断");
+    expect(failed.syncWarning).toBe("登录已过期");
+
+    const loading = kbViewReducer(failed, { type: "loading" });
+    expect(loading.loading).toBe(true);
+    expect(loading.error).toBeNull();
+  });
+
+  it("向量按 chunk id 建索引，读取失败时清空加载态", () => {
+    const vectors = new Map([
+      [
+        "doc-a:0",
+        { id: "doc-a:0", embedding: [0.1, 0.2], embeddingModel: "m", embeddingDim: 2 },
+      ],
+    ]);
+    const loaded = kbViewReducer(
+      kbViewReducer(initialKbViewState(), { type: "vectorsLoading" }),
+      { type: "vectorsLoaded", vectors, syncWarning: null },
+    );
+    expect(loaded.vectorsLoading).toBe(false);
+    expect(loaded.vectors.get("doc-a:0")?.embeddingDim).toBe(2);
+
+    const failed = kbViewReducer(loaded, {
+      type: "vectorsFailed",
+      syncWarning: "读取向量失败",
+    });
+    expect(failed.vectorsLoading).toBe(false);
+    expect(failed.syncWarning).toBe("读取向量失败");
+  });
+});
+
+// ── 409 冲突的文案 ────────────────────────────────────────────────
+
+describe("远端版本冲突", () => {
+  it("importDocument 原样返回冲突文案，不谎称「已导入 0 段」", async () => {
+    const storage = new MemoryKbStorage();
+    storage.putDocWithChunks = async () => {
+      throw new KbConflictError();
+    };
+    const doc = makeDoc({ id: "doc-a" });
+
+    const result = await importDocument(storage, doc, makeChunks(doc, 1));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(KB_CONFLICT_MESSAGE);
+    expect(result.error).toContain("刷新");
+    expect(result.error).not.toContain("已导入 0/");
+  });
+
+  it("updateDocKcIds 冲突时给出可操作的提示", async () => {
+    const storage = new MemoryKbStorage();
+    const doc = makeDoc({ id: "doc-a", kcIds: [] });
+    await storage.putDocWithChunks(doc, makeChunks(doc, 1));
+    storage.putDocWithChunks = async () => {
+      throw new KbConflictError();
+    };
+
+    const result = await updateDocKcIds(storage, "doc-a", ["c01"]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(KB_CONFLICT_MESSAGE);
   });
 });
 

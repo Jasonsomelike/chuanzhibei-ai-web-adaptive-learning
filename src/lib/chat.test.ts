@@ -171,6 +171,7 @@ describe("callChatStream", () => {
     const result = await callChatStream(provider({ thinking: "deep" }), { user: "问" });
 
     expect(result.thinkingDowngraded).toBe(true);
+    expect(result.downgradeReason).toBe("thinking");
     expect(result.text).toBe("降级后");
     expect(calls).toHaveLength(2);
 
@@ -188,8 +189,10 @@ describe("callChatStream", () => {
     expect(second.stream).toBe(true);
   });
 
-  it("降级后仍 400 时直接失败并带 status，不会无限重试", async () => {
-    const calls = stubFetch(() => jsonResponse({ error: "nope" }, 400));
+  it("400 与思考无关（模型名错）时不重发，错误体原样带回", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ error: { message: "Model Not Exist", type: "invalid_request_error" } }, 400),
+    );
 
     const err = await callChatStream(provider({ thinking: "standard" }), { user: "问" }).catch(
       (e: unknown) => e,
@@ -198,6 +201,30 @@ describe("callChatStream", () => {
     expect(err).toBeInstanceOf(ChatError);
     expect((err as ChatError).kind).toBe("http");
     expect((err as ChatError).status).toBe(400);
+    // 归因是 other：去掉思考参数也没用，不能无谓地再花一次 token
+    expect((err as ChatError).downgradeReason).toBe("other");
+    expect((err as ChatError).responseBody).toContain("Model Not Exist");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("降级后仍 400 时直接失败并带 status，不会无限重试", async () => {
+    const calls = stubFetch((_url, init) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      // 第一次因思考字段被拒，第二次仍然 400：不能再次降级
+      if (body.reasoning_effort !== undefined) {
+        return jsonResponse({ error: "unsupported reasoning_effort" }, 400);
+      }
+      return jsonResponse({ error: { message: "still bad" } }, 400);
+    });
+
+    const err = await callChatStream(provider({ thinking: "standard" }), { user: "问" }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(ChatError);
+    expect((err as ChatError).kind).toBe("http");
+    expect((err as ChatError).status).toBe(400);
+    expect((err as ChatError).downgradeReason).toBe("thinking");
     expect(calls).toHaveLength(2);
   });
 
@@ -291,7 +318,7 @@ describe("callChat", () => {
     expect(result.finishReason).toBe("end_turn");
   });
 
-  it("HTTP 400 抛出带 status 的 ChatError", async () => {
+  it("HTTP 400 抛出带 status 与原始错误体的 ChatError", async () => {
     stubFetch(() => new Response("bad request", { status: 400 }));
 
     const err = await callChat(provider(), { user: "问" }).catch((e: unknown) => e);
@@ -299,6 +326,9 @@ describe("callChat", () => {
     expect(err).toBeInstanceOf(ChatError);
     expect((err as ChatError).kind).toBe("http");
     expect((err as ChatError).status).toBe(400);
+    expect((err as ChatError).responseBody).toBe("bad request");
+    // 没带思考字段被 400，归因是 other（不是思考参数的锅）
+    expect((err as ChatError).downgradeReason).toBe("other");
   });
 
   it("忽略 provider.thinking：只有请求显式指定档位才发送思考字段", async () => {
@@ -476,5 +506,121 @@ describe("流式协议的两处真实缺口（回归）", () => {
     const result = await callChatStream(provider(), { user: "问" });
     expect(result.text).toBe("非流式正文");
     expect(result.thinkingDowngraded).toBe(false);
+  });
+});
+
+// ── server 模式（服务端代发） ────────────────────────────────────
+
+describe("server 模式请求形状", () => {
+  function serverProvider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
+    return {
+      label: "服务端配置",
+      kind: "openai-compatible",
+      baseUrl: "https://should-not-be-used.test/v1",
+      apiKey: "",
+      model: "server-model",
+      mode: "server",
+      serverConfigured: true,
+      ...overrides,
+    };
+  }
+
+  it("callChat 打 /api/llm/chat：body 带 kind、不带 baseUrl/apiKey/model，请求头只有 Content-Type", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({
+        choices: [{ message: { content: "服务端回答", reasoning_content: "服务端思考" }, finish_reason: "stop" }],
+      }),
+    );
+
+    const result = await callChat(serverProvider(), {
+      system: "系统提示",
+      user: "用户问题",
+      maxTokens: 500,
+      temperature: 0.2,
+      thinking: "deep",
+    });
+
+    expect(calls[0].url).toBe("/api/llm/chat");
+    const headers = calls[0].init.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(headers.Authorization).toBeUndefined();
+    expect(headers["x-api-key"]).toBeUndefined();
+
+    const body = bodyOf(calls[0]);
+    expect(body.kind).toBe("openai-compatible");
+    expect(body.messages).toEqual([
+      { role: "system", content: "系统提示" },
+      { role: "user", content: "用户问题" },
+    ]);
+    expect(body.maxTokens).toBe(500);
+    expect(body.temperature).toBe(0.2);
+    expect(body.stream).toBe(false);
+    // 服务端代发不接受这三个字段：出现就会被 strictObject 拒绝
+    expect(body.baseUrl).toBeUndefined();
+    expect(body.apiKey).toBeUndefined();
+    expect(body.model).toBeUndefined();
+    // 思考档也由服务端配置决定，客户端不发思考字段
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.thinking).toBeUndefined();
+
+    expect(result.text).toBe("服务端回答");
+    expect(result.reasoning).toBe("服务端思考");
+  });
+
+  it("callChatStream 打 /api/llm/chat 并解析服务端转发的 SSE", async () => {
+    const calls = stubFetch(() =>
+      sseResponse(
+        sse({ choices: [{ delta: { content: "流式" } }] }) +
+          sse({ choices: [{ delta: { content: "回答" }, finish_reason: "stop" }] }),
+      ),
+    );
+
+    const result = await callChatStream(serverProvider(), { user: "问", maxTokens: 800 });
+
+    expect(calls[0].url).toBe("/api/llm/chat");
+    const body = bodyOf(calls[0]);
+    expect(body.stream).toBe(true);
+    expect(body.kind).toBe("openai-compatible");
+    expect(body.model).toBeUndefined();
+    expect(result.text).toBe("流式回答");
+    expect(result.thinkingDowngraded).toBe(false);
+    expect(result.downgradeReason).toBeNull();
+  });
+
+  it("服务端返回的匿名 JSON 错误体原样挂在 ChatError 上", async () => {
+    stubFetch(() =>
+      jsonResponse({ error: { code: "CONFIG_MISSING", message: "该账号还没有保存模型配置" } }, 404),
+    );
+
+    const err = await callChat(serverProvider(), { user: "问" }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatError);
+    expect((err as ChatError).status).toBe(404);
+    expect((err as ChatError).responseBody).toContain("CONFIG_MISSING");
+  });
+});
+
+describe("probeThinking 的 400 归因", () => {
+  it("400 但不是思考参数 → unknown，并展示截断后的错误体", async () => {
+    stubFetch(() =>
+      jsonResponse({ error: { message: "This model does not exist" } }, 400),
+    );
+
+    const result = await probeThinking(provider({ thinking: "deep" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("unknown");
+    expect(result.detail).toContain("does not exist");
+  });
+
+  it("200 但正文与 reasoning 双空 → unknown，不冒充 verified-empty", async () => {
+    stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "" }, finish_reason: "stop" }] }),
+    );
+
+    const result = await probeThinking(provider({ thinking: "standard" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("unknown");
   });
 });

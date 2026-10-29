@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { tokenize, buildIndex, search, type KbDocument } from "@/lib/rag";
+import {
+  tokenize,
+  buildIndex,
+  search,
+  type Bm25Index,
+  type KbDocument,
+  type RetrievedDoc,
+} from "@/lib/rag";
 import { kbDocuments, kbIndex } from "@/data/kb";
 
 describe("中文 bigram 切分", () => {
@@ -103,6 +110,108 @@ describe("真实知识库", () => {
       expect(r.kcId).toMatch(/^c\d+$/);
       expect(r.title.length).toBeGreaterThan(0);
       expect(r.snippet.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+/**
+ * 标题加权上线前的实现，原样复制在这里作为参照。
+ *
+ * search 对外只暴露保留 4 位小数的分数，所以「逐位一致」是在
+ * 公开输出层面比较：分数、顺序、截断都必须完全相同。
+ */
+function legacySearch(index: Bm25Index, query: string, k = 3): RetrievedDoc[] {
+  const qTokens = tokenize(query);
+  if (qTokens.length === 0) return [];
+
+  const n = index.docs.length;
+  const scores: number[] = new Array(n).fill(0);
+
+  for (const q of new Set(qTokens)) {
+    const dfq = index.df.get(q);
+    if (!dfq) continue;
+    const idf = Math.log(1 + (n - dfq + 0.5) / (dfq + 0.5));
+    const weight = q.length === 1 ? 0.35 : 1;
+
+    for (let i = 0; i < n; i += 1) {
+      const tf = index.docTokens[i].filter((t) => t === q).length;
+      if (tf === 0) continue;
+      const lenNorm = 1 - 0.75 + (0.75 * index.docLengths[i]) / index.avgLength;
+      scores[i] += weight * idf * ((tf * (1.5 + 1)) / (tf + 1.5 * lenNorm));
+    }
+  }
+
+  return scores
+    .map((score, i) => ({ i, score }))
+    .filter((x) => x.score >= 0.5)
+    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.i - b.i))
+    .slice(0, k)
+    .map(({ i, score }) => ({
+      kcId: index.docs[i].kcId,
+      title: index.docs[i].title,
+      snippet: index.docs[i].text.slice(0, 160),
+      score: Number(score.toFixed(4)),
+    }));
+}
+
+describe("BM25 标题加权", () => {
+  const docs: KbDocument[] = [
+    { kcId: "both", title: "heap 线性表", text: "heap heap heap 的插入与删除" },
+    { kcId: "title-only", title: "heap", text: "一种完全二叉树" },
+    { kcId: "other", title: "栈", text: "后进先出" },
+  ];
+  const index = buildIndex(docs);
+
+  it("buildIndex 单独保留标题切分，不混入正文", () => {
+    expect(index.titleTokens).toHaveLength(docs.length);
+    expect(index.titleTokens[0]).toEqual(tokenize("heap 线性表"));
+    expect(index.titleTokens[2]).toEqual(tokenize("栈"));
+    expect(index.titleTokens[2]).not.toContain("后进");
+    expect(index.docTokens[2]).toContain("后进");
+  });
+
+  it("默认不读标题加权，分数与旧实现逐位一致", () => {
+    for (const query of ["heap", "树", "heap 树", "栈", "不存在"]) {
+      expect(search(index, query, 10)).toEqual(legacySearch(index, query, 10));
+      expect(search(kbIndex, query, 10)).toEqual(legacySearch(kbIndex, query, 10));
+    }
+  });
+
+  it("titleBoost 为 1、非有限值或不大于 1 时与默认完全相同", () => {
+    const query = "栈和队列的区别";
+    const baseline = search(kbIndex, query, 10);
+    expect(search(kbIndex, query, 10, { titleBoost: 1 })).toEqual(baseline);
+    expect(search(kbIndex, query, 10, { titleBoost: 0.5 })).toEqual(baseline);
+    expect(search(kbIndex, query, 10, { titleBoost: Number.NaN })).toEqual(baseline);
+    expect(search(kbIndex, query, 10, { titleBoost: Number.POSITIVE_INFINITY })).toEqual(baseline);
+  });
+
+  it("大于 1 时，只给标题命中追加正向分数", () => {
+    const plain = search(index, "heap", 10);
+    const boosted = search(index, "heap", 10, { titleBoost: 2 });
+
+    const plainById = new Map(plain.map((r) => [r.kcId, r.score] as const));
+    const boostedById = new Map(boosted.map((r) => [r.kcId, r.score] as const));
+
+    expect(boostedById.get("both")!).toBeGreaterThan(plainById.get("both")!);
+    // 「other」正文与标题都不含 heap，分数不变。
+    expect(plainById.has("other")).toBe(false);
+    expect(boostedById.has("other")).toBe(false);
+  });
+
+  it("标题命中的文档能被加权抬过 MIN_SCORE", () => {
+    const plain = search(index, "heap", 10).map((r) => r.kcId);
+    expect(plain).toEqual(["both"]);
+
+    const boosted = search(index, "heap", 10, { titleBoost: 5 }).map((r) => r.kcId);
+    expect(boosted).toContain("title-only");
+    expect(boosted[0]).toBe("both");
+  });
+
+  it("加权后仍然按分数降序、同分按文档顺序", () => {
+    const results = search(index, "heap", 10, { titleBoost: 5 });
+    for (let i = 1; i < results.length; i += 1) {
+      expect(results[i - 1].score).toBeGreaterThanOrEqual(results[i].score);
     }
   });
 });

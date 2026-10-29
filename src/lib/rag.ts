@@ -70,6 +70,8 @@ const B = 0.75;
 export interface Bm25Index {
   readonly docs: readonly KbDocument[];
   readonly docTokens: readonly string[][];
+  /** 只含标题的切分，供可选标题加权；默认搜索不读它。 */
+  readonly titleTokens: readonly string[][];
   readonly docLengths: readonly number[];
   readonly avgLength: number;
   readonly df: ReadonlyMap<string, number>;
@@ -77,6 +79,7 @@ export interface Bm25Index {
 
 export function buildIndex(docs: readonly KbDocument[]): Bm25Index {
   const docTokens = docs.map((d) => tokenize(`${d.title} ${d.text}`));
+  const titleTokens = docs.map((d) => tokenize(d.title));
   const docLengths = docTokens.map((t) => t.length);
   const avgLength = docLengths.reduce((a, b) => a + b, 0) / Math.max(1, docLengths.length);
 
@@ -85,16 +88,36 @@ export function buildIndex(docs: readonly KbDocument[]): Bm25Index {
     for (const t of new Set(tokens)) df.set(t, (df.get(t) ?? 0) + 1);
   }
 
-  return { docs, docTokens, docLengths, avgLength, df };
+  return { docs, docTokens, titleTokens, docLengths, avgLength, df };
+}
+
+export interface SearchOptions {
+  /**
+   * 标题加权倍数，默认 1。
+   *
+   * 1 表示完全不读 titleTokens——不是「加 0」，而是整段分支都不执行，
+   * 保证分数与未加权实现逐位一致。大于 1 时每条命中的标题词额外追加
+   * (titleBoost - 1) * idf * tf / (tf + K1)；小于等于 1 或非有限值按 1 处理。
+   */
+  readonly titleBoost?: number;
 }
 
 /**
  * 检索。返回按分数降序的前 k 条。
  * 分数为 0 的文档不返回——宁可不给依据，也不给无关依据。
  */
-export function search(index: Bm25Index, query: string, k = 3): RetrievedDoc[] {
+export function search(
+  index: Bm25Index,
+  query: string,
+  k = 3,
+  opts: SearchOptions = {},
+): RetrievedDoc[] {
   const qTokens = tokenize(query);
   if (qTokens.length === 0) return [];
+
+  const rawBoost = opts.titleBoost ?? 1;
+  const titleBoost = Number.isFinite(rawBoost) && rawBoost > 1 ? rawBoost : 1;
+  const useTitleBoost = titleBoost > 1;
 
   const n = index.docs.length;
   const scores: number[] = new Array(n).fill(0);
@@ -113,6 +136,15 @@ export function search(index: Bm25Index, query: string, k = 3): RetrievedDoc[] {
       if (tf === 0) continue;
       const lenNorm = 1 - B + (B * index.docLengths[i]) / index.avgLength;
       scores[i] += weight * idf * ((tf * (K1 + 1)) / (tf + K1 * lenNorm));
+    }
+
+    // 标题加权只做加法追加，不改变上面的任何一项，默认路径与旧实现逐位一致。
+    if (useTitleBoost) {
+      for (let i = 0; i < n; i += 1) {
+        const titleTf = index.titleTokens[i].filter((t) => t === q).length;
+        if (titleTf === 0) continue;
+        scores[i] += (titleBoost - 1) * idf * (titleTf / (titleTf + K1));
+      }
     }
   }
 

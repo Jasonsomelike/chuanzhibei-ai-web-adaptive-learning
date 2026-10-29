@@ -30,7 +30,7 @@ import {
 } from "@/lib/directionItems";
 import { kcEvidenceTarget, type ItemSource } from "@/lib/itemgen";
 import { useMaterialPack } from "@/lib/materialStore";
-import { getDefaultKbStorage, loadDirectionKb } from "@/lib/kbStore";
+import { getKbStorageForUser, loadDirectionKb } from "@/lib/kbStore";
 import { uploadsToPack } from "@/lib/knowledge";
 import type { MaterialPack } from "@/lib/materials";
 import type { ProviderConfig } from "@/lib/provider";
@@ -461,6 +461,7 @@ export default function DirectionsPage() {
                           <GenerateAllButton
                             direction={d}
                             provider={draftState.provider}
+                            userId={user?.id ?? null}
                             onError={(message) =>
                               setGenAllError((prev) => ({ ...prev, [d.id]: message ?? "" }))
                             }
@@ -514,6 +515,7 @@ export default function DirectionsPage() {
                       <KnowledgeBasePanel
                         directionId={d.id}
                         concepts={d.graph?.concepts ?? []}
+                        userId={user?.id ?? null}
                         onCounts={(counts) => handleKbCounts(d.id, counts)}
                       />
                     ) : null}
@@ -568,11 +570,14 @@ function traceTone(status: ItemTraceStep["status"]): string {
 function GenerateAllButton({
   direction,
   provider,
+  userId,
   onError,
   onFinished,
 }: {
   direction: DirectionSummary;
   provider: ProviderConfig | null;
+  /** 有账号时读「本地 + 账号」复合知识库；为空只读本机。 */
+  userId?: string | null;
   /** 失败原因交给父组件显示在按钮行下方；null 表示清除。 */
   onError: (message: string | null) => void;
   onFinished: () => void;
@@ -648,9 +653,10 @@ function GenerateAllButton({
       /*
        * 读当前方向的上传资料。uploadsToPack 只收绑定了知识点的文档，
        * 未绑定的只服务导师检索，不会混进出题与依据核对。
+       * 登录用户走 getKbStorageForUser：本地 + 账号并集，换设备后仍能出题。
        */
       let uploadedPack: MaterialPack | undefined;
-      const storage = getDefaultKbStorage();
+      const storage = getKbStorageForUser(userId);
       if (storage !== null) {
         try {
           const kb = await loadDirectionKb(storage, direction.id);
@@ -662,7 +668,9 @@ function GenerateAllButton({
       }
       if (uploadedPack !== undefined && uploadedPack.chunks.length > 0) {
         setUploadNote(
-          `本次生成带上了上传资料 ${uploadedPack.chunks.length} 段（仅本浏览器；未绑定知识点的文档不参与出题）。`,
+          `本次生成带上了上传资料 ${uploadedPack.chunks.length} 段（${
+            userId ? "含账号同步" : "仅本浏览器"
+          }；未绑定知识点的文档不参与出题）。`,
         );
       }
 

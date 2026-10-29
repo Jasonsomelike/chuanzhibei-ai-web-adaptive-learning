@@ -352,6 +352,39 @@ describe("报告字段口径", () => {
 });
 
 
+describe("calibrationDetail：小样本提示", () => {
+  function detailLines(n: number): string[] {
+    return calibrationDetail(
+      calibrationReport(fixedAttempts(n, Math.ceil(n / 2), 0.6)),
+    ).split("\n");
+  }
+
+  it("n=5 与 n=12 在 O/E 与 Brier 行之前写明样本少、不作解读", () => {
+    for (const n of [5, 12]) {
+      const lines = detailLines(n);
+      const notice = `n=${n}<30，样本少，不作解读；以下仅为计算口径`;
+      const noticeIndex = lines.indexOf(notice);
+      const summaryIndex = lines.findIndex(
+        (line) => line.includes("O/E =") && line.includes("Brier ="),
+      );
+
+      expect(noticeIndex).toBeGreaterThanOrEqual(0);
+      expect(summaryIndex).toBeGreaterThan(noticeIndex);
+    }
+  });
+
+  it("n=40 已达 preliminary，不加「不作解读」", () => {
+    const detail = calibrationDetail(calibrationReport(fixedAttempts(40, 25, 0.62)));
+    expect(detail).not.toContain("不作解读");
+  });
+
+  it("n=0 分支不变，也不加小样本提示", () => {
+    const detail = calibrationDetail(calibrationReport([]));
+    expect(detail).toContain("还没有有效样本");
+    expect(detail).not.toContain("不作解读");
+  });
+});
+
 describe("仅练习的作答不进校准（回归）", () => {
   it("counted=false 或 weightScale=0 的样本被排除，不影响 O/E 与 Brier", () => {
     const report = calibrationReport([

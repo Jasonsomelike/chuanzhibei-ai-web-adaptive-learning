@@ -1,14 +1,34 @@
 /**
  * 浏览器 / 在线 TTS 运行时。
  *
- * 边界：
- * - 密钥只存 localStorage，请求由浏览器直接发往用户填的端点，不经过本项目后端。
+ * 两种调用模式：
+ * - local：密钥只存 localStorage，请求由浏览器直接发往用户填的端点；
+ * - server：POST /api/tts，端点 / 密钥 / 模型来自账号里的 tts 行，浏览器不接触明文。
+ *
+ * 在线语音有两套协议，不能混用：
+ * - speech：POST {baseUrl}/audio/speech，直接返回音频字节（OpenAI 兼容）；
+ * - chat-audio：POST {baseUrl}/chat/completions + modalities:["audio"]，
+ *   音频以 base64 放在 choices[0].message.audio.data（小米 mimo，实测其
+ *   /audio/speech 返回 404）。
+ *
+ * 其他边界：
  * - 朗读前先清洗文本：只把回答正文发给语音服务，引用标记与 Markdown 不进音频。
  * - 在线失败（CORS / HTTP / 播放）一律回退浏览器语音，并返回可展示的中文原因。
  * - 模块顶层不碰 window / speechSynthesis / Audio，SSR 与测试环境可以安全 import。
  */
 
+import {
+  MIMO_AUDIO_MIME,
+  buildMimoTtsBody,
+  decodeBase64Audio,
+  mimoEndpoint,
+  parseMimoTtsResponse,
+} from "@/lib/mimo";
+import type { CallMode } from "@/lib/serverConfig";
+
 export type TtsEngine = "browser" | "openai-compatible";
+
+export type TtsProtocol = "speech" | "chat-audio";
 
 export interface TtsConfig {
   readonly engine: TtsEngine;
@@ -16,6 +36,10 @@ export interface TtsConfig {
   readonly browserVoice?: string;
   /** 0.8–1.2，超出范围在解析与播放时都会被夹紧。 */
   readonly rate: number;
+  /** 在线协议；缺省按 speech（老配置没有这个字段）。 */
+  readonly protocol?: TtsProtocol;
+  /** 目前只支持 mp3；mimo 固定 mp3，speech 用它当 response_format。 */
+  readonly format?: "mp3";
   readonly baseUrl?: string;
   readonly apiKey?: string;
   readonly model?: string;
@@ -23,6 +47,13 @@ export interface TtsConfig {
 }
 
 export const TTS_STORAGE_KEY = "alp.tts.v1";
+
+/** 小米 mimo 预设：请求体只接受 chat/completions 的音频模态。 */
+export const MIMO_PRESET = Object.freeze({
+  protocol: "chat-audio" as TtsProtocol,
+  voice: "茉莉",
+  format: "mp3" as const,
+});
 
 /** 单次朗读的正文上限；超出部分不发送、不播放。 */
 export const SPEECH_MAX_CHARS = 2000;
@@ -105,11 +136,16 @@ export function parseTtsConfig(raw: unknown): TtsConfig {
   const apiKey = optionalText(value.apiKey);
   const model = optionalText(value.model);
   const voice = optionalText(value.voice);
+  const protocol =
+    value.protocol === "chat-audio" ? "chat-audio" : value.protocol === "speech" ? "speech" : undefined;
+  const format = value.format === "mp3" ? "mp3" : undefined;
 
   return {
     engine: value.engine === "openai-compatible" ? "openai-compatible" : "browser",
     rate: rateOf(value.rate),
     ...(browserVoice !== undefined ? { browserVoice } : {}),
+    ...(protocol !== undefined ? { protocol } : {}),
+    ...(format !== undefined ? { format } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(model !== undefined ? { model } : {}),
@@ -138,9 +174,31 @@ export function saveTtsConfig(config: TtsConfig): void {
   }
 }
 
+/**
+ * 清除语音配置。
+ *
+ * 先停掉正在播的声音再删键：否则删完配置后音频仍在响，用户会以为没清掉。
+ */
+export function clearTtsConfig(): void {
+  stopSpeaking();
+  const storage = browserStorage();
+  if (storage === null) return;
+  try {
+    storage.removeItem(TTS_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 /** 在线引擎缺哪些必填项；空数组表示可以发请求。设置页据此禁用「试听」。 */
-export function ttsConfigIssues(config: TtsConfig): string[] {
+export function ttsConfigIssues(config: TtsConfig, mode: CallMode = "local"): string[] {
   if (config.engine !== "openai-compatible") return [];
+
+  /*
+   * 服务端模式：端点、密钥、模型与音色都在账号的 tts 行里，
+   * 本机只决定「用哪个引擎」。这里再要求 apiKey 会让 server 模式永远回退浏览器语音。
+   */
+  if (mode === "server") return [];
 
   const issues: string[] = [];
   const baseUrl = config.baseUrl?.trim() ?? "";
@@ -169,10 +227,20 @@ export function ttsConfigIssues(config: TtsConfig): string[] {
   return issues;
 }
 
-/** 用户可能把完整端点粘进 baseUrl；这里避免拼成 /audio/speech/audio/speech。 */
-export function ttsEndpoint(baseUrl: string): string {
-  const base = baseUrl.trim().replace(/\/+$/, "");
-  return /\/audio\/speech$/i.test(base) ? base : `${base}/audio/speech`;
+/**
+ * 在线语音端点。两套协议不能混用：
+ * - speech 拼 /audio/speech，并避免粘了完整端点后重复拼接；
+ * - chat-audio 走 mimoEndpoint（/chat/completions），绝不能拼成 /audio/speech。
+ */
+export function ttsEndpoint(baseUrl: string, protocol: TtsProtocol = "speech"): string {
+  switch (protocol) {
+    case "chat-audio":
+      return mimoEndpoint(baseUrl);
+    case "speech": {
+      const base = baseUrl.trim().replace(/\/+$/, "");
+      return /\/audio\/speech$/i.test(base) ? base : `${base}/audio/speech`;
+    }
+  }
 }
 
 // ── 文本清洗 ──────────────────────────────────────────────────────
@@ -483,9 +551,101 @@ function playFailureReason(error: unknown): string {
   return "在线语音播放失败，已改用浏览器内置语音";
 }
 
+interface RemoteErrorBody {
+  readonly code: string;
+  readonly message: string;
+}
+
+async function readRemoteError(res: Response): Promise<RemoteErrorBody> {
+  try {
+    const raw: unknown = await res.json();
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      const record = raw as Record<string, unknown>;
+      return {
+        code: typeof record.code === "string" ? record.code : "",
+        message: typeof record.error === "string" ? record.error : "",
+      };
+    }
+  } catch {
+    // 非 JSON 错误体：只保留状态码
+  }
+  return { code: "", message: "" };
+}
+
+/** 服务端代理失败的原因。401 / 未配置 / 缺主密钥各说各的，不能笼统报「播放失败」。 */
+function serverFailureReason(status: number, error: RemoteErrorBody): string {
+  const detail = error.message === "" ? "" : `：${error.message}`;
+  switch (error.code) {
+    case "unauthorized":
+      return "登录后才能使用服务端语音，已改用浏览器内置语音";
+    case "provider_not_configured":
+      return `服务端还没有保存语音配置${detail}，已改用浏览器内置语音`;
+    case "secret_key_missing":
+      return "服务端缺少主密钥（ALP_SECRET_KEY），无法读取语音配置，已改用浏览器内置语音";
+    default:
+      if (status === 401) return "登录后才能使用服务端语音，已改用浏览器内置语音";
+      if (status === 404) return `服务端还没有保存语音配置${detail}，已改用浏览器内置语音`;
+      if (status === 429) return "语音服务限流，已改用浏览器内置语音";
+      if (status === 504) return "语音合成超时，已改用浏览器内置语音";
+      if (status >= 500) return "服务端语音暂时不可用，已改用浏览器内置语音";
+      return `在线语音请求失败（HTTP ${status}${detail}），已改用浏览器内置语音`;
+  }
+}
+
+/** local 模式的两套直连协议；请求体形状由协议唯一决定。 */
+async function requestLocalSpeech(
+  input: string,
+  config: TtsConfig,
+  signal: AbortSignal,
+): Promise<Response> {
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${(config.apiKey ?? "").trim()}`,
+  };
+
+  switch (config.protocol ?? "speech") {
+    case "speech":
+      return fetch(ttsEndpoint(config.baseUrl ?? "", "speech"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: (config.model ?? "").trim(),
+          voice: (config.voice ?? "").trim(),
+          input,
+          response_format: config.format ?? "mp3",
+          speed: clampRate(config.rate),
+        }),
+        signal,
+      });
+    case "chat-audio":
+      return fetch(ttsEndpoint(config.baseUrl ?? "", "chat-audio"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(
+          buildMimoTtsBody({
+            model: (config.model ?? "").trim(),
+            text: input,
+            voice: (config.voice ?? "").trim(),
+            ...(config.format !== undefined ? { format: config.format } : {}),
+          }),
+        ),
+        signal,
+      });
+  }
+}
+
+async function readJsonUnknown(res: Response): Promise<unknown> {
+  try {
+    return (await res.json()) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 async function requestRemoteSpeech(
   input: string,
   config: TtsConfig,
+  mode: CallMode,
   signal: AbortSignal | undefined,
 ): Promise<RemoteRequest> {
   if (typeof fetch !== "function") {
@@ -502,27 +662,55 @@ async function requestRemoteSpeech(
   const requestSignal = signal !== undefined ? combineSignals(signal, controller.signal) : controller.signal;
 
   try {
-    const res = await fetch(ttsEndpoint(config.baseUrl ?? ""), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${(config.apiKey ?? "").trim()}`,
-      },
-      body: JSON.stringify({
-        model: (config.model ?? "").trim(),
-        voice: (config.voice ?? "").trim(),
-        input,
-        response_format: "mp3",
-        speed: clampRate(config.rate),
-      }),
-      signal: requestSignal,
-    });
+    const res =
+      mode === "server"
+        ? await fetch("/api/tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: input }),
+            signal: requestSignal,
+          })
+        : await requestLocalSpeech(input, config, requestSignal);
 
     if (!res.ok) {
+      if (mode === "server") {
+        return { kind: "error", reason: serverFailureReason(res.status, await readRemoteError(res)) };
+      }
       return {
         kind: "error",
         reason: `在线语音请求失败（HTTP ${res.status}：${httpReason(res.status)}），已改用浏览器内置语音`,
       };
+    }
+
+    if (mode === "server") {
+      // 服务端对两条协议都统一返回 audio/mpeg，客户端只有一套播放逻辑。
+      const blob = await res.blob();
+      if (blob.size === 0) {
+        return { kind: "error", reason: "服务端返回了空音频，已改用浏览器内置语音" };
+      }
+      if (controller.signal.aborted) return { kind: "aborted" };
+      return { kind: "audio", blob };
+    }
+
+    if ((config.protocol ?? "speech") === "chat-audio") {
+      const parsed = await readJsonUnknown(res);
+      const data = parseMimoTtsResponse(parsed);
+      if (data === null) {
+        return {
+          kind: "error",
+          reason: "MiMo 响应里没有音频数据，已改用浏览器内置语音",
+        };
+      }
+      const bytes = decodeBase64Audio(data);
+      if (bytes === null) {
+        return { kind: "error", reason: "MiMo 返回的音频 base64 无法解码，已改用浏览器内置语音" };
+      }
+      const blob = new Blob([bytes], { type: MIMO_AUDIO_MIME });
+      if (blob.size === 0) {
+        return { kind: "error", reason: "MiMo 返回了空音频，已改用浏览器内置语音" };
+      }
+      if (controller.signal.aborted) return { kind: "aborted" };
+      return { kind: "audio", blob };
     }
 
     const contentType = res.headers?.get("content-type") ?? "";
@@ -547,7 +735,13 @@ async function requestRemoteSpeech(
         : { kind: "aborted" };
     }
     // fetch 抛 TypeError 的常见原因就是 CORS（混合内容在设置页已拦截）
-    return { kind: "error", reason: "该语音服务不允许浏览器直连，已改用浏览器内置语音" };
+    return {
+      kind: "error",
+      reason:
+        mode === "server"
+          ? "无法连接本项目的语音代理，已改用浏览器内置语音"
+          : "该语音服务不允许浏览器直连，已改用浏览器内置语音",
+    };
   } finally {
     clearTimeout(timer);
     if (remoteFetch === controller) remoteFetch = null;
@@ -644,11 +838,19 @@ function playAudioBlob(blob: Blob, token: number, signal?: AbortSignal): Promise
  * 在线朗读。Promise 在音频读完、失败回退浏览器语音读完、或被停止时 resolve。
  * 在线失败不会 reject，而是回退浏览器语音并返回 fallbackReason。
  */
+export interface SpeakRemoteOptions {
+  /** 调用模式；缺省按 local，避免未显式传模式的旧调用突然改成服务端请求。 */
+  readonly mode?: CallMode;
+  readonly signal?: AbortSignal;
+}
+
 export async function speakRemote(
   text: string,
   config: TtsConfig,
-  signal?: AbortSignal,
+  options: SpeakRemoteOptions = {},
 ): Promise<SpeakRemoteResult> {
+  const mode = options.mode ?? "local";
+  const signal = options.signal;
   const spoken = prepareSpeechText(text).text;
   if (spoken === "") return { ok: false };
   if (signal?.aborted) return { ok: false };
@@ -658,7 +860,7 @@ export async function speakRemote(
     return { ok: true };
   }
 
-  const issues = ttsConfigIssues(config);
+  const issues = ttsConfigIssues(config, mode);
   if (issues.length > 0) {
     await speakBrowser(spoken, config);
     return {
@@ -670,7 +872,7 @@ export async function speakRemote(
   stopSpeaking();
   const token = generation;
 
-  const request = await requestRemoteSpeech(spoken, config, signal);
+  const request = await requestRemoteSpeech(spoken, config, mode, signal);
   if (request.kind === "aborted") return { ok: false };
   if (request.kind === "error") {
     if (token !== generation) return { ok: false };

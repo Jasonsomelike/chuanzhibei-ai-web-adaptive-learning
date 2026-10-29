@@ -1,0 +1,50 @@
+{"id":"lit-01","category":"literal","query":"数据的存储结构（物理结构）指什么？","goldKcIds":["c01"],"relatedKcIds":[],"goldPhrase":"存储结构（物理结构）指数据在计算机中的表示"}
+{"id":"lit-02","category":"literal","query":"`for(i=1;i<n;i*=2)` 的循环体执行次数约为多少？","goldKcIds":["c02"],"relatedKcIds":[],"goldPhrase":"达到 n 需 log₂n 步"}
+{"id":"lit-03","category":"literal","query":"空间复杂度通常只算哪部分空间？","goldKcIds":["c03"],"relatedKcIds":[],"goldPhrase":"空间复杂度通常只算辅助空间，不含输入本身占用的空间"}
+{"id":"lit-04","category":"literal","query":"顺序表按下标访问第 i 个元素的地址怎么算？","goldKcIds":["c05"],"relatedKcIds":[],"goldPhrase":"base + i×size"}
+{"id":"lit-05","category":"literal","query":"双向链表每个结点比单链表多哪些指针？","goldKcIds":["c07"],"relatedKcIds":[],"goldPhrase":"每个结点有 prior 和 next 两个指针"}
+{"id":"lit-06","category":"literal","query":"栈的存取特点是什么？","goldKcIds":["c09"],"relatedKcIds":[],"goldPhrase":"栈只允许在栈顶插入和删除"}
+{"id":"lit-07","category":"literal","query":"循环队列长度计算公式是什么？","goldKcIds":["c10"],"relatedKcIds":[],"goldPhrase":"取模保证 rear 绕回时不出现负数"}
+{"id":"lit-08","category":"literal","query":"检查括号是否匹配用什么方法？","goldKcIds":["c11"],"relatedKcIds":[],"goldPhrase":"遇到左括号入栈，遇到右括号与栈顶比较并出栈"}
+{"id":"lit-09","category":"literal","query":"空串与空格串的区别是什么？","goldKcIds":["c13"],"relatedKcIds":[],"goldPhrase":"空串不含任何字符，长度 0"}
+{"id":"lit-10","category":"literal","query":"KMP 的 next 数组表示什么？","goldKcIds":["c14"],"relatedKcIds":[],"goldPhrase":"最长相等真前缀与真后缀的长度"}
+{"id":"lit-11","category":"literal","query":"一棵有 n 个结点的树有多少条边？","goldKcIds":["c15"],"relatedKcIds":[],"goldPhrase":"n 个结点的树恰有 n-1 条边"}
+{"id":"lit-12","category":"literal","query":"二叉树第 i 层最多有多少个结点？","goldKcIds":["c16"],"relatedKcIds":[],"goldPhrase":"第 i 层最多 2^(i-1) 个"}
+{"id":"lit-13","category":"literal","query":"n 个结点的二叉链表有多少个空指针域？","goldKcIds":["c17"],"relatedKcIds":[],"goldPhrase":"空指针 2n-(n-1) = n+1 个"}
+{"id":"lit-14","category":"literal","query":"已知先序序列 ABDECF 与中序序列 DBEACF，后序序列是什么？","goldKcIds":["c18"],"relatedKcIds":[],"goldPhrase":"后序：D E B F C A"}
+{"id":"lit-15","category":"literal","query":"n 个顶点的连通图至少有多少条边？","goldKcIds":["c22"],"relatedKcIds":[],"goldPhrase":"连通 n 个顶点至少要 n-1 条边"}
+{"id":"para-01","category":"paraphrase","query":"链表里已经拿到某个结点，往它后面塞一个新结点要动几个指针？","goldKcIds":["c06"],"relatedKcIds":[],"goldPhrase":"只需改两个指针"}
+{"id":"para-02","category":"paraphrase","query":"稀疏图用邻接矩阵还是邻接表更省空间？","goldKcIds":["c23"],"relatedKcIds":[],"goldPhrase":"稀疏图上明显优于邻接矩阵"}
+{"id":"para-03","category":"paraphrase","query":"广度优先遍历图时队列起什么作用？","goldKcIds":["c24"],"relatedKcIds":[],"goldPhrase":"BFS 从源点出发逐层扩展"}
+{"id":"para-04","category":"paraphrase","query":"稠密图求最小生成树，Prim 和 Kruskal 哪个更合适？","goldKcIds":["c25"],"relatedKcIds":[],"goldPhrase":"Prim 复杂度 O(n²)，与边数无关，稠密图上更优"}
+{"id":"para-05","category":"paraphrase","query":"有负权边的时候 Dijkstra 还能用吗？","goldKcIds":["c26"],"relatedKcIds":[],"goldPhrase":"负权边会破坏这个前提"}
+{"id":"para-06","category":"paraphrase","query":"怎么用入度法判断一个有向图有没有环？","goldKcIds":["c27"],"relatedKcIds":[],"goldPhrase":"输出数少于 n"}
+{"id":"para-07","category":"paraphrase","query":"折半查找为什么不能用在链表上？","goldKcIds":["c29"],"relatedKcIds":[],"goldPhrase":"链表无法 O(1) 定位中间元素"}
+{"id":"para-08","category":"paraphrase","query":"分块查找的块长取多少性能最好？","goldKcIds":["c30"],"relatedKcIds":[],"goldPhrase":"s = √n"}
+{"id":"para-09","category":"paraphrase","query":"二叉排序树按有序序列插入会变成什么样？","goldKcIds":["c31"],"relatedKcIds":[],"goldPhrase":"按有序序列依次插入会退化成单支树"}
+{"id":"para-10","category":"paraphrase","query":"AVL 的平衡因子是怎么定义的？","goldKcIds":["c32"],"relatedKcIds":[],"goldPhrase":"平衡因子 = 左子树高度 − 右子树高度"}
+{"id":"para-11","category":"paraphrase","query":"B+ 树为什么范围查询快？","goldKcIds":["c33"],"relatedKcIds":[],"goldPhrase":"全部数据在叶子层"}
+{"id":"para-12","category":"paraphrase","query":"开放定址法删除元素为什么不能直接置空？","goldKcIds":["c34"],"relatedKcIds":[],"goldPhrase":"置空会让探测在此中断"}
+{"id":"para-13","category":"paraphrase","query":"快速排序一趟划分后枢轴的位置还会变吗？","goldKcIds":["c37"],"relatedKcIds":[],"goldPhrase":"划分保证枢轴左边的都不大于它"}
+{"id":"para-14","category":"paraphrase","query":"堆排序建初始堆的复杂度是 O(n log n) 吗？","goldKcIds":["c38"],"relatedKcIds":[],"goldPhrase":"自底向上调整建堆的总代价是 O(n)"}
+{"id":"para-15","category":"paraphrase","query":"归并排序相比快排最吃亏的地方是什么？","goldKcIds":["c39"],"relatedKcIds":[],"goldPhrase":"归并需要与原数组等长的临时空间"}
+{"id":"abs-01","category":"answer-absent","query":"红黑树和 AVL 树在插入时的旋转次数有什么区别？","goldKcIds":[],"relatedKcIds":["c31","c32"]}
+{"id":"abs-02","category":"answer-absent","query":"跳表和平衡二叉树的查找性能相比如何？","goldKcIds":[],"relatedKcIds":["c31","c32"]}
+{"id":"abs-03","category":"answer-absent","query":"B* 树相比 B+ 树在磁盘索引上的区别是什么？","goldKcIds":[],"relatedKcIds":["c33"]}
+{"id":"abs-04","category":"answer-absent","query":"后缀数组这种字符串索引结构的构造复杂度是多少？","goldKcIds":[],"relatedKcIds":["c13","c14"]}
+{"id":"abs-05","category":"answer-absent","query":"布隆过滤器基于哈希，它的误判率怎么计算？","goldKcIds":[],"relatedKcIds":["c34"]}
+{"id":"abs-06","category":"answer-absent","query":"一致性哈希为什么要引入虚拟结点？","goldKcIds":[],"relatedKcIds":["c34"]}
+{"id":"abs-07","category":"answer-absent","query":"线段树这种二叉树结构如何支持区间最值查询？","goldKcIds":[],"relatedKcIds":["c15","c16"]}
+{"id":"abs-08","category":"answer-absent","query":"摊还分析中的势能法怎么理解？","goldKcIds":[],"relatedKcIds":["c02","c04"]}
+{"id":"abs-09","category":"answer-absent","query":"外部排序为什么要做多路归并而不是二路归并？","goldKcIds":[],"relatedKcIds":["c35","c39"]}
+{"id":"abs-10","category":"answer-absent","query":"并查集的路径压缩如何影响 Kruskal 算法的复杂度？","goldKcIds":[],"relatedKcIds":["c25"]}
+{"id":"ood-01","category":"out-of-domain","query":"明天上海会下雨吗？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-02","category":"out-of-domain","query":"红烧肉怎么做才好吃？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-03","category":"out-of-domain","query":"今天的股票大盘走势如何？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-04","category":"out-of-domain","query":"最近有什么好看的电影推荐？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-05","category":"out-of-domain","query":"感冒发烧应该吃什么药？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-06","category":"out-of-domain","query":"劳动合同到期不续签怎么赔偿？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-07","category":"out-of-domain","query":"世界杯决赛是哪支球队夺冠？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-08","category":"out-of-domain","query":"如何用 Python 读取 Excel 文件？","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-09","category":"out-of-domain","query":"推荐一条北京三日游的路线","goldKcIds":[],"relatedKcIds":[]}
+{"id":"ood-10","category":"out-of-domain","query":"猫咪为什么喜欢趴在键盘上？","goldKcIds":[],"relatedKcIds":[]}

@@ -11,12 +11,12 @@
  * 这里只展示、绑定与删除，并在变更后 reload 让检索侧重新读取。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   deleteDocument,
   directionCapacity,
-  getDefaultKbStorage,
+  getKbStorageForUser,
   updateDocKcIds,
   useKnowledgeBase,
 } from "@/lib/kbStore";
@@ -45,20 +45,39 @@ function formatCreatedAt(iso: string): string {
 export function KnowledgeBasePanel({
   directionId,
   concepts,
+  userId,
   onCounts,
   onChanged,
 }: {
   directionId: string;
   /** 方向图谱里的知识点；用于展示与编辑绑定。 */
   concepts: readonly { id: string; name: string }[];
+  /** 有账号时读/写「本地 + 账号」复合存储；为空表示只看本浏览器。 */
+  userId?: string | null;
   /** 首次读取或变更后把「N 份 · M 段」回传给卡片上的按钮。 */
   onCounts?: (counts: KbCounts) => void;
   /** 导入 / 删除 / 绑定变更后通知父组件（例如刷新覆盖度）。 */
   onChanged?: () => void;
 }) {
-  const { docs, chunks, loading, error, reload } = useKnowledgeBase(directionId);
+  const { docs, chunks, loading, error, syncWarning, reload } = useKnowledgeBase(
+    directionId,
+    userId,
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyDocId, setBusyDocId] = useState<string | null>(null);
+
+  /*
+   * 统计与列表前再按 directionId 过滤一次：复合存储返回的是「本地 + 远端」并集，
+   * 远端快照理论上只含该方向，但任何一条越界的行都不该影响容量与计数。
+   */
+  const directionDocs = useMemo(
+    () => docs.filter((doc) => doc.directionId === directionId),
+    [docs, directionId],
+  );
+  const directionChunks = useMemo(
+    () => chunks.filter((chunk) => chunk.directionId === directionId),
+    [chunks, directionId],
+  );
 
   const onCountsRef = useRef(onCounts);
   useEffect(() => {
@@ -66,12 +85,13 @@ export function KnowledgeBasePanel({
   }, [onCounts]);
 
   useEffect(() => {
-    onCountsRef.current?.({ docs: docs.length, chunks: chunks.length });
-  }, [docs.length, chunks.length]);
+    onCountsRef.current?.({ docs: directionDocs.length, chunks: directionChunks.length });
+  }, [directionDocs.length, directionChunks.length]);
 
-  const capacity = directionCapacity(docs);
-  const totalChars = docs.reduce((sum, doc) => sum + doc.charCount, 0);
+  const capacity = directionCapacity(directionDocs);
+  const totalChars = directionDocs.reduce((sum, doc) => sum + doc.charCount, 0);
   const nameById = new Map(concepts.map((concept) => [concept.id, concept.name] as const));
+  const hasAccount = userId !== undefined && userId !== null && userId.trim() !== "";
 
   const afterChange = (): void => {
     reload();
@@ -88,7 +108,7 @@ export function KnowledgeBasePanel({
       return;
     }
 
-    const storage = getDefaultKbStorage();
+    const storage = getKbStorageForUser(userId);
     if (storage === null) {
       setActionError("当前浏览器不支持 IndexedDB，无法删除上传资料。");
       return;
@@ -106,7 +126,7 @@ export function KnowledgeBasePanel({
   };
 
   const saveBinding = async (doc: UploadDoc, kcIds: readonly string[]): Promise<boolean> => {
-    const storage = getDefaultKbStorage();
+    const storage = getKbStorageForUser(userId);
     if (storage === null) {
       setActionError("当前浏览器不支持 IndexedDB，无法保存绑定。");
       return false;
@@ -128,17 +148,21 @@ export function KnowledgeBasePanel({
     <div className="mt-4 rounded-lg border border-[var(--line)] p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-medium">知识库（仅本浏览器）</p>
+          <p className="text-sm font-medium">
+            知识库{hasAccount ? "（已开启账号同步）" : "（仅本浏览器）"}
+          </p>
           <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
-            上传资料只存在本浏览器的 IndexedDB：不上传到服务器，不随方向公开、复制或换设备同步，
-            方向市场里的副本默认是空库。只保存抽取后的文本与片段，不保存原始文件；本版本不做 OCR。
+            {hasAccount
+              ? "上传资料写入本机 IndexedDB 并同步到账号：换设备登录后可继续使用；远端失败时仍保留本机副本并给出告警。"
+              : "上传资料只存在本浏览器的 IndexedDB：不上传到服务器，不随方向公开、复制或换设备同步，方向市场里的副本默认是空库。"}
+            只保存抽取后的文本与片段，不保存原始文件；本版本不做 OCR。
             引用抬头按实际来源显示，例如 [讲义·《文件名》·上传资料·第3页]（md / txt 没有页码时不带页码）。
           </p>
         </div>
         <span className="tabular shrink-0 text-xs text-[var(--ink-soft)]">
           {loading
             ? "读取中…"
-            : `${docs.length} 份 · ${chunks.length} 段 · ${formatNumber(totalChars)} 字`}
+            : `${directionDocs.length} 份 · ${directionChunks.length} 段 · ${formatNumber(totalChars)} 字`}
         </span>
       </div>
 
@@ -148,6 +172,12 @@ export function KnowledgeBasePanel({
         {capacity.remainingChunks} 段 · {formatNumber(capacity.remainingChars)} 字。装不下时整份文件会被拒绝，
         不会只导入一半。
       </p>
+
+      {syncWarning !== null ? (
+        <p role="status" className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] p-2 text-xs text-[var(--warn)]">
+          {syncWarning}
+        </p>
+      ) : null}
 
       {error !== null ? (
         <p role="alert" className="mt-2 rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-2 text-xs text-[var(--bad)]">
@@ -164,22 +194,23 @@ export function KnowledgeBasePanel({
       <KnowledgeUpload
         directionId={directionId}
         concepts={concepts}
+        userId={userId}
         onImported={afterChange}
       />
 
-      {loading && docs.length === 0 ? (
-        <p className="mt-3 text-xs text-[var(--ink-soft)]">正在读取本地知识库…</p>
+      {loading && directionDocs.length === 0 ? (
+        <p className="mt-3 text-xs text-[var(--ink-soft)]">正在读取知识库…</p>
       ) : null}
 
-      {!loading && docs.length === 0 ? (
+      {!loading && directionDocs.length === 0 ? (
         <p className="mt-3 text-xs text-[var(--ink-soft)]">
           还没有上传资料。可以上传讲义、笔记或教材节选；没有绑定知识点的文档只会用于导师问答检索。
         </p>
       ) : null}
 
-      {docs.length > 0 ? (
+      {directionDocs.length > 0 ? (
         <ul className="mt-3 space-y-2">
-          {docs.map((doc) => {
+          {directionDocs.map((doc) => {
             const boundNames = doc.kcIds.map((id) => nameById.get(id) ?? id);
             return (
               <li key={doc.id} className="rounded-lg border border-[var(--line)] p-2.5">

@@ -26,8 +26,9 @@ import {
 } from "@/lib/knowledge";
 import {
   formatBytes,
-  getDefaultKbStorage,
+  getKbStorageForUser,
   importDocument,
+  kbSyncWarningOf,
 } from "@/lib/kbStore";
 import { extractPdfText } from "@/lib/pdf";
 import { readFileBytes, readTextFile } from "@/lib/textFile";
@@ -244,10 +245,13 @@ const STAGE_PERCENT: Record<Exclude<UploadStage, "idle">, number> = {
 export function KnowledgeUpload({
   directionId,
   concepts,
+  userId,
   onImported,
 }: {
   directionId: string;
   concepts: readonly { id: string; name: string }[];
+  /** 有账号时写入「本地 + 账号」复合存储；为空表示只存本浏览器。 */
+  userId?: string | null;
   /** 导入成功后调用；面板据此重新读取 docs / chunks。 */
   onImported: () => void;
 }) {
@@ -342,7 +346,7 @@ export function KnowledgeUpload({
         return;
       }
 
-      const storage = getDefaultKbStorage();
+      const storage = getKbStorageForUser(userId);
       if (storage === null) {
         setError("当前浏览器不支持 IndexedDB，上传资料无法保存。");
         setStage("idle");
@@ -352,11 +356,18 @@ export function KnowledgeUpload({
       setStage("writing");
       const result = await importDocument(storage, rows.doc, rows.chunks);
       if (!result.ok) {
-        // 失败只在内存里报错：docs / chunks 一条都没写
+        // 失败只在内存里报错：docs / chunks 一条都没写（409 冲突除外，提示原文已说明）
         setError(result.error);
         setStage("idle");
         return;
       }
+
+      /*
+       * 成功文案必须区分「真同步了」与「只写在本机」：
+       * 远端失败时 importDocument 仍然成功（本地已落库），但 syncWarning 会给出原因。
+       */
+      const syncWarning = kbSyncWarningOf(storage);
+      const synced = userId !== undefined && userId !== null && userId.trim() !== "" && syncWarning === null;
 
       const parts = [
         `${rows.doc.chunkCount} 段`,
@@ -364,7 +375,13 @@ export function KnowledgeUpload({
       ];
       if (parsed.pageCount !== undefined) parts.push(`${parsed.pageCount} 页`);
       if (parsed.encoding !== undefined) parts.push(`按 ${parsed.encoding.toUpperCase()} 读取`);
-      setMessage(`已导入《${file.name}》：${parts.join(" · ")}。仅存本浏览器。`);
+      const where =
+        synced
+          ? "已同步到账号。"
+          : syncWarning !== null
+            ? `已保存到本机；账号同步失败：${syncWarning}`
+            : "仅存本浏览器。";
+      setMessage(`已导入《${file.name}》：${parts.join(" · ")}。${where}`);
       setStage("done");
       setFile(null);
       setKind(null);
@@ -378,8 +395,14 @@ export function KnowledgeUpload({
     }
   };
 
+  const hasAccount = userId !== undefined && userId !== null && userId.trim() !== "";
   const percent = stage === "idle" ? 0 : STAGE_PERCENT[stage];
-  const stageLabel = stage === "idle" ? "" : STAGE_LABEL[stage];
+  const stageLabel =
+    stage === "idle"
+      ? ""
+      : stage === "writing" && hasAccount
+        ? "写入知识库（本机 + 账号）…"
+        : STAGE_LABEL[stage];
 
   return (
     <div className="mt-4 rounded-lg border border-[var(--line-strong)] p-3">
@@ -388,6 +411,7 @@ export function KnowledgeUpload({
         Markdown（.md）、纯文本（.txt）与带文本层的 PDF；单份 ≤{formatBytes(MAX_FILE_BYTES)}、
         ≤{MAX_FILE_CHARS.toLocaleString("zh-CN")} 字，PDF ≤{MAX_PDF_PAGES} 页。
         解析在本浏览器完成，不保存原始文件；扫描件没有文本层会被拒绝（本版本不做 OCR）。
+        {hasAccount ? "登录状态下会同时写入账号，换设备可继续使用。" : ""}
       </p>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">

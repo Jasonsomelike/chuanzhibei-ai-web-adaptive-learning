@@ -1,19 +1,23 @@
 "use client";
 
 /**
- * 每个方向的上传知识库：IndexedDB 持久化、容量预算与 React 订阅。
+ * 每个方向的上传知识库：存储契约、容量预算与 React 订阅。
  *
- * 数据的形状与切块都在 knowledge.ts（纯函数）；这里只负责存取。
+ * 数据的形状与切块都在 knowledge.ts（纯函数）；这里只负责校验、预算与状态。
  * 落库的是抽取后的正文与片段，不保存原始 PDF / 文件：20MB 的上传不会占库，
- * 也避免版权原文件留在浏览器里。上传资料只在本浏览器可见，不随方向同步。
+ * 也避免版权原文件留在浏览器里。未登录时只在本浏览器可见；登录后经
+ * kbRemote.ts 的复合存储同步到账号（本地仍是主副本，远端失败只告警）。
  *
  * 写入必须是一次事务：docs 与 chunks 要么全部进库，要么一条都不进。
  * 事务外先把所有行准备好，事务内不 await——IndexedDB 事务在事件循环让出后会失效。
  * 因此 KbStorage 的实现（尤其是 IndexedDB）必须自己保证 putDocWithChunks 的原子性，
  * 上层 importDocument 只负责校验、容量与错误翻译。
+ *
+ * IndexedDB 适配器在 kbLocal.ts；账号同步在 kbRemote.ts。这里重新导出它们，
+ * 既有 import { getDefaultKbStorage } from "@/lib/kbStore" 的调用点无需改动。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 
 import {
   MAX_DIRECTION_CHARS,
@@ -22,12 +26,36 @@ import {
   type UploadChunk,
   type UploadDoc,
 } from "@/lib/knowledge";
+import {
+  getKbStorageForUser,
+  isKbConflictError,
+  kbSyncWarningOf,
+  vectorsById,
+  type KbVectorField,
+} from "@/lib/kbRemote";
 
 // ── 存储契约 ──────────────────────────────────────────────────────
 
-export const KB_DB_NAME = "alp-kb-v1";
-export const KB_DOC_STORE = "docs";
-export const KB_CHUNK_STORE = "chunks";
+export {
+  KB_CHUNK_STORE,
+  KB_DB_NAME,
+  KB_DOC_STORE,
+  clearKbDatabase,
+  closeKbDb,
+  createIndexedDbStorage,
+  getDefaultKbStorage,
+  openDatabase,
+} from "@/lib/kbLocal";
+
+export {
+  KbConflictError,
+  KB_CONFLICT_MESSAGE,
+  __resetKbStorageCacheForTests,
+  getKbStorageForUser,
+  isKbConflictError,
+  kbSyncWarningOf,
+} from "@/lib/kbRemote";
+export type { KbSyncedStorage, KbVectorField } from "@/lib/kbRemote";
 
 /** 浏览器容量预算：只用到配额的 80%，给 localStorage / 缓存留余量。 */
 export const KB_STORAGE_BUDGET_RATIO = 0.8;
@@ -35,6 +63,16 @@ export const KB_STORAGE_BUDGET_RATIO = 0.8;
 export interface KbStorageEstimate {
   readonly usage?: number;
   readonly quota?: number;
+}
+
+/**
+ * 写入选项。
+ *
+ * baseUpdatedAt 是远端 CAS 的前置条件：undefined 表示按 doc.updatedAt 推导，
+ * null 表示本机新建（服务端应不存在同名文档）。本地存储忽略这个字段。
+ */
+export interface KbWriteOptions {
+  readonly baseUpdatedAt?: number | null;
 }
 
 /**
@@ -47,7 +85,11 @@ export interface KbStorage {
   listDocs(directionId: string): Promise<readonly UploadDoc[]>;
   listChunks(directionId: string): Promise<readonly UploadChunk[]>;
   getDoc(docId: string): Promise<UploadDoc | null>;
-  putDocWithChunks(doc: UploadDoc, chunks: readonly UploadChunk[]): Promise<void>;
+  putDocWithChunks(
+    doc: UploadDoc,
+    chunks: readonly UploadChunk[],
+    opts?: KbWriteOptions,
+  ): Promise<void>;
   /** 删除文档并级联删除它的 chunks。 */
   removeDoc(docId: string): Promise<void>;
   /** 可选：浏览器不支持 StorageManager 时不提供，容量预算按「未知」跳过。 */
@@ -265,6 +307,11 @@ export async function importDocument(
   try {
     await storage.putDocWithChunks(doc, chunks);
   } catch (err) {
+    /*
+     * 409 不是「没写入」：本地已经落库，只是远端版本更新。
+     * 不能报「已导入 0/N 段」，否则用户会以为可以原样重试。
+     */
+    if (isKbConflictError(err)) return failure(messageOf(err));
     if (isQuotaError(err)) {
       return failure(
         `浏览器存储空间不足：已导入 0/${chunks.length} 段，未写入任何内容。请删除部分上传资料后重试。`,
@@ -334,6 +381,8 @@ export async function updateDocKcIds(
   try {
     await storage.putDocWithChunks(updated, chunks);
   } catch (err) {
+    // 冲突时本地片段没变，界面只需提示刷新；不把技术细节拼进文案
+    if (isKbConflictError(err)) return { ok: false, error: messageOf(err) };
     return { ok: false, error: `保存绑定失败：${messageOf(err)}` };
   }
   return { ok: true, doc: updated };
@@ -366,220 +415,245 @@ export async function loadDirectionKb(storage: KbStorage, directionId: string): 
   return { docs, chunks };
 }
 
-// ── IndexedDB 适配器 ─────────────────────────────────────────────
-
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function openDatabase(): Promise<IDBDatabase> {
-  if (typeof indexedDB === "undefined") {
-    return Promise.reject(new Error("当前环境不支持 IndexedDB"));
-  }
-  if (dbPromise !== null) return dbPromise;
-
-  const opening = new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(KB_DB_NAME, 1);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(KB_DOC_STORE)) {
-        const docs = db.createObjectStore(KB_DOC_STORE, { keyPath: "id" });
-        docs.createIndex("directionId", "directionId", { unique: false });
-      }
-      if (!db.objectStoreNames.contains(KB_CHUNK_STORE)) {
-        const chunks = db.createObjectStore(KB_CHUNK_STORE, { keyPath: "id" });
-        chunks.createIndex("directionId", "directionId", { unique: false });
-        chunks.createIndex("docId", "docId", { unique: false });
-      }
-    };
-    request.onsuccess = () => {
-      const db = request.result;
-      // 另一个标签页升级数据库时主动让路，否则会一直 blocked
-      db.onversionchange = () => {
-        db.close();
-        dbPromise = null;
-      };
-      resolve(db);
-    };
-    request.onerror = () => reject(request.error ?? new Error("无法打开 IndexedDB"));
-    request.onblocked = () => reject(new Error("IndexedDB 被其它标签页占用，请关闭其它页面后重试"));
-  });
-
-  dbPromise = opening;
-  // 失败后不要缓存 rejected promise，下一次操作还能重试
-  opening.catch(() => {
-    if (dbPromise === opening) dbPromise = null;
-  });
-  return opening;
-}
-
-function readAll<T>(storeName: string, indexName: string, key: string): Promise<T[]> {
-  return openDatabase().then(
-    (db) =>
-      new Promise<T[]>((resolve, reject) => {
-        const transaction = db.transaction(storeName, "readonly");
-        const request = transaction.objectStore(storeName).index(indexName).getAll(key);
-        request.onsuccess = () => resolve(request.result as T[]);
-        request.onerror = () => reject(request.error ?? new Error("读取 IndexedDB 失败"));
-        transaction.onabort = () => reject(transaction.error ?? new Error("读取 IndexedDB 被中止"));
-      }),
-  );
-}
-
-function getDocRow(docId: string): Promise<UploadDoc | null> {
-  return openDatabase().then(
-    (db) =>
-      new Promise<UploadDoc | null>((resolve, reject) => {
-        const transaction = db.transaction(KB_DOC_STORE, "readonly");
-        const request = transaction.objectStore(KB_DOC_STORE).get(docId);
-        request.onsuccess = () => resolve((request.result as UploadDoc | undefined) ?? null);
-        request.onerror = () => reject(request.error ?? new Error("读取 IndexedDB 失败"));
-        transaction.onabort = () => reject(transaction.error ?? new Error("读取 IndexedDB 被中止"));
-      }),
-  );
-}
-
-async function putRows(doc: UploadDoc, chunks: readonly UploadChunk[]): Promise<void> {
-  const db = await openDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction([KB_DOC_STORE, KB_CHUNK_STORE], "readwrite");
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("写入 IndexedDB 失败"));
-    transaction.onabort = () => reject(transaction.error ?? new Error("写入 IndexedDB 被回滚"));
-
-    try {
-      transaction.objectStore(KB_DOC_STORE).put(doc);
-      const chunkStore = transaction.objectStore(KB_CHUNK_STORE);
-      // 事务内不 await：所有 put 同步排进同一个事务，失败由事务整体回滚
-      for (const chunk of chunks) chunkStore.put(chunk);
-    } catch (err) {
-      transaction.abort();
-      reject(err);
-    }
-  });
-}
-
-async function removeRows(docId: string): Promise<void> {
-  const db = await openDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction([KB_DOC_STORE, KB_CHUNK_STORE], "readwrite");
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("删除 IndexedDB 失败"));
-    transaction.onabort = () => reject(transaction.error ?? new Error("删除 IndexedDB 被回滚"));
-
-    const chunkStore = transaction.objectStore(KB_CHUNK_STORE);
-    const keys = chunkStore.index("docId").getAllKeys(docId);
-    keys.onsuccess = () => {
-      for (const key of keys.result) chunkStore.delete(key);
-      transaction.objectStore(KB_DOC_STORE).delete(docId);
-    };
-    keys.onerror = () => {
-      transaction.abort();
-      reject(keys.error ?? new Error("读取待删除片段失败"));
-    };
-  });
-}
-
-export function createIndexedDbStorage(): KbStorage {
-  return {
-    listDocs: (directionId) => readAll<UploadDoc>(KB_DOC_STORE, "directionId", directionId),
-    listChunks: (directionId) => readAll<UploadChunk>(KB_CHUNK_STORE, "directionId", directionId),
-    getDoc: getDocRow,
-    putDocWithChunks: putRows,
-    removeDoc: removeRows,
-    async estimate(): Promise<KbStorageEstimate> {
-      if (typeof navigator === "undefined" || typeof navigator.storage?.estimate !== "function") {
-        return {};
-      }
-      try {
-        const { usage, quota } = await navigator.storage.estimate();
-        return { usage, quota };
-      } catch {
-        return {};
-      }
-    },
-  };
-}
-
-/** 当前浏览器可用的存储；Node / SSR 返回 null，调用方据此显示「不支持」。 */
-export function getDefaultKbStorage(): KbStorage | null {
-  if (typeof indexedDB === "undefined") return null;
-  return createIndexedDbStorage();
-}
-
-// ── React hook ───────────────────────────────────────────────────
+// ── 视图状态（纯函数，可在没有渲染器的 Node 单测里断言） ──────────
 
 export interface KnowledgeBaseState {
   readonly docs: readonly UploadDoc[];
   readonly chunks: readonly UploadChunk[];
   readonly loading: boolean;
   readonly error: string | null;
+  /** 最近一次远端同步失败的说明；本机模式下恒为 null。 */
+  readonly syncWarning: string | null;
+  /** chunk.id → 向量；调用过 ensureVectors 且存储支持向量时才非空。 */
+  readonly vectors: ReadonlyMap<string, KbVectorField>;
+  readonly vectorsLoading: boolean;
+  /** 首次需要向量时调用；重复调用不会重复请求。 */
+  readonly ensureVectors: () => void;
   /** 导入 / 删除 / 绑定变更后调用，重新读取当前方向。 */
   readonly reload: () => void;
+}
+
+export interface KbViewState {
+  readonly docs: readonly UploadDoc[];
+  readonly chunks: readonly UploadChunk[];
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly syncWarning: string | null;
+  readonly vectors: ReadonlyMap<string, KbVectorField>;
+  readonly vectorsLoading: boolean;
+}
+
+export type KbViewAction =
+  | { readonly type: "reset" }
+  | { readonly type: "loading" }
+  | {
+      readonly type: "loaded";
+      readonly docs: readonly UploadDoc[];
+      readonly chunks: readonly UploadChunk[];
+      readonly syncWarning: string | null;
+    }
+  | { readonly type: "failed"; readonly error: string; readonly syncWarning: string | null }
+  | { readonly type: "vectorsLoading" }
+  | {
+      readonly type: "vectorsLoaded";
+      readonly vectors: ReadonlyMap<string, KbVectorField>;
+      readonly syncWarning: string | null;
+    }
+  | { readonly type: "vectorsFailed"; readonly syncWarning: string | null };
+
+const EMPTY_VECTORS: ReadonlyMap<string, KbVectorField> = new Map();
+
+export function initialKbViewState(): KbViewState {
+  return {
+    docs: [],
+    chunks: [],
+    loading: true,
+    error: null,
+    syncWarning: null,
+    vectors: EMPTY_VECTORS,
+    vectorsLoading: false,
+  };
+}
+
+/**
+ * 知识库视图状态机。
+ *
+ * reset 是方向 / 账号切换的唯一入口：它一次性清空上一个方向的 docs、chunks 与向量，
+ * 并进入 loading。旧实现只置 loading，读到新方向前界面会短暂显示上一个方向的资料。
+ */
+export function kbViewReducer(state: KbViewState, action: KbViewAction): KbViewState {
+  switch (action.type) {
+    case "reset":
+      return { ...initialKbViewState(), loading: true };
+    case "loading":
+      return { ...state, loading: true, error: null };
+    case "loaded":
+      return {
+        ...state,
+        loading: false,
+        error: null,
+        docs: action.docs,
+        chunks: action.chunks,
+        syncWarning: action.syncWarning,
+      };
+    case "failed":
+      return {
+        ...state,
+        loading: false,
+        docs: [],
+        chunks: [],
+        error: action.error,
+        syncWarning: action.syncWarning,
+      };
+    case "vectorsLoading":
+      return { ...state, vectorsLoading: true };
+    case "vectorsLoaded":
+      return {
+        ...state,
+        vectorsLoading: false,
+        vectors: action.vectors,
+        syncWarning: action.syncWarning,
+      };
+    case "vectorsFailed":
+      return { ...state, vectorsLoading: false, syncWarning: action.syncWarning };
+  }
 }
 
 /**
  * 读取某个方向的知识库。
  *
- * 首屏先给空数组再在 effect 里读 IndexedDB：服务端渲染没有 indexedDB，
+ * 首屏先给空数组再在 effect 里读 IndexedDB / 远端：服务端渲染没有 indexedDB，
  * 直接在 render 里读会造成 hydration 不一致。
+ * 存储由 getKbStorageForUser(userId) 统一解析：未登录只有本机，登录后本地 + 账号。
  * 页面把 docs / chunks 交给纯函数 uploadsToPack(docs, chunks)，hook 本身不做切块或检索。
  */
-export function useKnowledgeBase(directionId: string): KnowledgeBaseState {
-  const [docs, setDocs] = useState<readonly UploadDoc[]>([]);
-  const [chunks, setChunks] = useState<readonly UploadChunk[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function useKnowledgeBase(
+  directionId: string,
+  userId?: string | null,
+): KnowledgeBaseState {
+  const [view, dispatch] = useReducer(kbViewReducer, undefined, initialKbViewState);
   const [version, setVersion] = useState(0);
+  const [vectorsWanted, setVectorsWanted] = useState(0);
 
   const reload = useCallback(() => setVersion((value) => value + 1), []);
+  const ensureVectors = useCallback(() => {
+    setVectorsWanted((value) => (value === 0 ? 1 : value));
+  }, []);
+
+  // 方向 / 账号变化：先清空旧视图再进入 loading
+  useEffect(() => {
+    dispatch({ type: "reset" });
+    setVectorsWanted(0);
+  }, [directionId, userId]);
 
   useEffect(() => {
     let alive = true;
+    const direction = directionId.trim();
 
-    if (directionId.trim() === "") {
-      setDocs([]);
-      setChunks([]);
-      setError(null);
-      setLoading(false);
+    if (direction === "") {
+      dispatch({ type: "loaded", docs: [], chunks: [], syncWarning: null });
       return () => {
         alive = false;
       };
     }
 
-    const storage = getDefaultKbStorage();
+    const storage = getKbStorageForUser(userId);
     if (storage === null) {
-      setDocs([]);
-      setChunks([]);
-      setError("当前浏览器不支持 IndexedDB，上传资料无法保存。");
-      setLoading(false);
+      dispatch({
+        type: "failed",
+        error: "当前浏览器不支持 IndexedDB，上传资料无法保存。",
+        syncWarning: null,
+      });
       return () => {
         alive = false;
       };
     }
 
-    setLoading(true);
-    setError(null);
+    dispatch({ type: "loading" });
 
-    loadDirectionKb(storage, directionId).then(
+    loadDirectionKb(storage, direction).then(
       (result) => {
         if (!alive) return;
-        setDocs(result.docs);
-        setChunks(result.chunks);
-        setLoading(false);
+        dispatch({
+          type: "loaded",
+          docs: result.docs,
+          chunks: result.chunks,
+          syncWarning: kbSyncWarningOf(storage),
+        });
       },
       (err: unknown) => {
         if (!alive) return;
-        setDocs([]);
-        setChunks([]);
-        setError(`读取本地知识库失败：${messageOf(err)}`);
-        setLoading(false);
+        dispatch({
+          type: "failed",
+          error: `读取知识库失败：${messageOf(err)}`,
+          syncWarning: kbSyncWarningOf(storage),
+        });
       },
     );
 
     return () => {
       alive = false;
     };
-  }, [directionId, version]);
+  }, [directionId, userId, version]);
 
-  return { docs, chunks, loading, error, reload };
+  useEffect(() => {
+    if (vectorsWanted === 0) return;
+    let alive = true;
+    const direction = directionId.trim();
+    if (direction === "") {
+      return () => {
+        alive = false;
+      };
+    }
+
+    const storage = getKbStorageForUser(userId);
+    const loader = storage === null ? null : (storage as { loadVectors?: unknown }).loadVectors;
+    if (storage === null || typeof loader !== "function") {
+      // 未登录 / 本地存储没有向量：给空表，检索自然退化为 BM25
+      dispatch({
+        type: "vectorsLoaded",
+        vectors: EMPTY_VECTORS,
+        syncWarning: kbSyncWarningOf(storage),
+      });
+      return () => {
+        alive = false;
+      };
+    }
+
+    dispatch({ type: "vectorsLoading" });
+    (loader as (id: string) => Promise<readonly KbVectorField[]>).call(storage, direction).then(
+      (rows) => {
+        if (!alive) return;
+        dispatch({
+          type: "vectorsLoaded",
+          vectors: vectorsById(rows),
+          syncWarning: kbSyncWarningOf(storage),
+        });
+      },
+      (err: unknown) => {
+        if (!alive) return;
+        dispatch({
+          type: "vectorsFailed",
+          syncWarning:
+            kbSyncWarningOf(storage) ?? `读取向量失败：${messageOf(err)}。检索退化为 BM25。`,
+        });
+      },
+    );
+
+    return () => {
+      alive = false;
+    };
+  }, [directionId, userId, version, vectorsWanted]);
+
+  return {
+    docs: view.docs,
+    chunks: view.chunks,
+    loading: view.loading,
+    error: view.error,
+    syncWarning: view.syncWarning,
+    vectors: view.vectors,
+    vectorsLoading: view.vectorsLoading,
+    ensureVectors,
+    reload,
+  };
 }

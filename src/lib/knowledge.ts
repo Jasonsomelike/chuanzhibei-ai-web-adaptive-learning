@@ -68,6 +68,11 @@ export interface UploadDoc {
   /** 可选绑定；空数组表示只在导师问答里检索，不进出题与依据核对。 */
   readonly kcIds: readonly string[];
   readonly createdAt: string;
+  /**
+   * 同步版本号（Unix 毫秒），由服务端在写入时赋值；本机新建的文档没有这个字段。
+   * 用数字而不是 ISO 串：同步的 CAS 要比较相等，不能依赖时间戳的格式化方式。
+   */
+  readonly updatedAt?: number;
 }
 
 /** 一段上传正文。页码只在 PDF 上出现，md / txt 不编页码。 */
@@ -82,6 +87,13 @@ export interface UploadChunk {
   readonly pageTo?: number;
   readonly text: string;
   readonly index: number;
+  /**
+   * 片段向量。三个字段要么都没有（检索退化为纯 BM25），
+   * 要么同时有：模型名与维度用于判断不同来源的向量能不能放在一起比较。
+   */
+  readonly embedding?: readonly number[];
+  readonly embeddingModel?: string;
+  readonly embeddingDim?: number;
 }
 
 /** 导入结果。失败时 written 恒为 0：单事务要么全写，要么一条都不写。 */

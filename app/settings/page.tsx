@@ -11,6 +11,8 @@ import {
   testConnection,
   checkBaseUrl,
   isLocalAddress,
+  // chat.ts 按 ProviderConfig.mode 选直连或服务端代发；切模式时必须同步写回
+  hydrateProviderFromServer as hydrateProviderConfigFromServer,
   type ProviderConfig,
   type ProviderKind,
   type TestResult,
@@ -20,20 +22,31 @@ import { probeThinking } from "@/lib/chat";
 import type { ThinkingStrength } from "@/lib/reasoning";
 import { THEMES, MODES } from "@/lib/themes";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/useAuth";
+import {
+  DEFAULT_CALL_MODE,
+  hydrateProviderFromServer,
+  loadCallMode,
+  saveCallMode,
+  type CallMode,
+  type ServerProviderState,
+} from "@/lib/serverConfig";
 import { MaterialSourcePanel } from "@/components/material-source-panel";
 import { ThinkingSettings, type ProbeState } from "@/components/thinking-settings";
 import { TtsSettings } from "@/components/tts-settings";
 import { SearchSettings } from "@/components/search-settings";
+import { SecretConfigForm, type SecretField } from "@/components/secret-config-form";
 
 /**
- * 设置页：模型供应商 + 思考强度/依据核对 + 语音朗读 + 联网搜索 + 知识口径 + 外观。
+ * 设置页：调用模式 + 模型供应商 + 思考强度/依据核对 + 语音朗读 + 联网搜索 + 知识口径 + 外观。
  *
- * 供应商配置的设计参考主流 agent 工具（Cursor / Continue / Open WebUI）：
- * 地址、密钥、模型名全部用户自填，两种协议分别支持。
+ * 两种调用模式必须同时讲清楚，界面上不能只写其中一种：
+ * - 服务端模式（默认）：密钥用 AES-GCM 加密存进账号，对话 / 搜索 / 语音由本项目代发；
+ * - 本机模式：地址、密钥、模型名全部用户自填，密钥只存 localStorage，浏览器直连。
  *
  * 关键的安全与成本说明必须写在界面上，不能只写在文档里：
- * - 三类密钥（聊天 / 搜索 / 语音）只存在本浏览器，各存各的键
- * - 请求由浏览器直连供应商，不经过本项目服务器
+ * - 三类密钥（聊天 / 搜索 / 语音）位置不同，各有各的存储键与清除入口
+ * - 服务端模式需要登录；未登录时界面按本机模式工作，不假装保存成功
  * - 思考档会抬高 max_tokens，费用显著增加；关档不增加预算
  * - HTTPS 页面不能请求 HTTP 地址（混合内容），这是浏览器硬限制
  */
@@ -49,8 +62,96 @@ const THINKING_LABEL: Record<ThinkingStrength, string> = {
   deep: "深入",
 };
 
+/**
+ * 账号里的 llm 行字段。
+ *
+ * 字段列表必须是模块常量：SecretConfigForm 用它的引用作为「只加载一次」的依据，
+ * 在组件里每次渲染新建数组会导致反复请求 /api/config。
+ */
+const LLM_FIELDS: readonly SecretField[] = [
+  { name: "label", label: "显示名", hint: "只用于界面标识", placeholder: "我的 DeepSeek" },
+  {
+    name: "kind",
+    label: "协议",
+    type: "select",
+    options: [
+      { value: "openai-compatible", label: "OpenAI 兼容：/chat/completions" },
+      { value: "anthropic", label: "Anthropic Messages：/messages" },
+    ],
+  },
+  {
+    name: "baseUrl",
+    label: "API 地址（Base URL）",
+    type: "url",
+    required: true,
+    hint: "填到 /v1 为止；服务端会做 SSRF 校验，只接受公网 https，内网地址会被拒绝",
+    placeholder: "https://api.deepseek.com/v1",
+  },
+  {
+    name: "apiKey",
+    label: "API Key",
+    type: "password",
+    required: true,
+    hint: "加密存在账号里，浏览器只看到掩码；已保存后留空表示不修改",
+    placeholder: "sk-…",
+  },
+  { name: "model", label: "模型名", required: true, placeholder: "deepseek-chat" },
+  {
+    name: "extraHeaders",
+    label: "额外请求头（可选）",
+    hint: 'JSON 字符串，例如 {"X-Org":"xxx"}，加密保存',
+    placeholder: '{"X-Custom":"value"}',
+  },
+  {
+    name: "thinking",
+    label: "思考强度",
+    type: "select",
+    options: [
+      { value: "off", label: "关" },
+      { value: "standard", label: "标准" },
+      { value: "deep", label: "深入" },
+    ],
+  },
+  {
+    name: "verification",
+    label: "依据核对",
+    type: "select",
+    options: [
+      { value: "true", label: "开" },
+      { value: "false", label: "关" },
+    ],
+  },
+  {
+    name: "embeddingBaseUrl",
+    label: "向量模型地址（可选）",
+    type: "url",
+    hint: "留空表示不做向量检索，只走 BM25",
+    placeholder: "https://api.siliconflow.cn/v1",
+  },
+  {
+    name: "embeddingModel",
+    label: "向量模型名（可选）",
+    placeholder: "BAAI/bge-m3",
+  },
+  {
+    name: "embeddingApiKey",
+    label: "向量模型 Key（可选）",
+    type: "password",
+    hint: "留空复用上面的聊天密钥；只有向量服务是另一个账号时才需要填",
+    placeholder: "sk-…",
+  },
+];
+
 export default function SettingsPage() {
   const { theme, mode, setTheme, setMode } = useTheme();
+  const { user, loading: authLoading } = useAuth();
+
+  // 调用模式与账号配置；未登录时按本机模式工作（服务端模式按钮禁用）
+  const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
+  const [serverState, setServerState] = useState<ServerProviderState | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [hydrating, setHydrating] = useState(false);
+  const [hydrateTick, setHydrateTick] = useState(0);
 
   const [presetId, setPresetId] = useState<string>("deepseek");
   const [label, setLabel] = useState("DeepSeek");
@@ -97,6 +198,81 @@ export default function SettingsPage() {
     return () => probeController.current?.abort();
   }, []);
 
+  // 回显上次选择的调用模式；服务端默认值在 serverConfig 里
+  useEffect(() => {
+    setCallMode(loadCallMode());
+  }, []);
+
+  /**
+   * 生效模式：未登录时服务端模式没有意义（保存不了、代理也会 401），
+   * 界面与调用链一律按本机模式工作，但不改写用户存下的选择。
+   */
+  const effectiveMode: CallMode = user === null ? "local" : callMode;
+
+  // 登录后（以及表单保存后）把账号里的 llm 行读回来；未登录时清空，不显示假状态
+  useEffect(() => {
+    if (authLoading) return;
+    if (user === null) {
+      setServerState(null);
+      setServerError(null);
+      setHydrating(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setHydrating(true);
+    void (async () => {
+      const result = await hydrateProviderFromServer(effectiveMode, controller.signal);
+      if (controller.signal.aborted) return;
+      setHydrating(false);
+      setServerState(result.state);
+      setServerError(result.ok ? null : result.error.message);
+
+      /*
+       * 对话链路读的是 provider.ts 的 ProviderConfig.mode（alp.provider.v1），
+       * 这里把模式对齐，界面选择才真正影响调用：
+       * - server：从 /api/config 水合（无 llm 行时记成「服务端未配置」）；
+       * - local：登录后 provider.ts 可能已自动水合成服务端配置。此时界面跟随实际
+       *   调用链切到服务端，而不是显示「本机」却由服务端代发；用户手动点「本机」
+       *   才会显式降级（见 chooseMode）。
+       */
+      if (effectiveMode === "server") {
+        void hydrateProviderConfigFromServer();
+      } else {
+        const local = loadProvider();
+        if (local !== null && local.mode === "server") {
+          setCallMode("server");
+          saveCallMode("server");
+          setExisting(null);
+        } else {
+          setExisting(local);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [authLoading, user, effectiveMode, hydrateTick]);
+
+  function chooseMode(next: CallMode) {
+    if (next === "server" && user === null) return;
+    setCallMode(next);
+    saveCallMode(next);
+
+    // 只改 alp.callmode.v1 不够：真正发请求的 chat.ts 读的是 ProviderConfig.mode。
+    if (next === "server") {
+      void hydrateProviderConfigFromServer();
+    } else {
+      const current = loadProvider();
+      if (current !== null) saveProvider({ ...current, mode: "local" });
+      setExisting(loadProvider());
+    }
+  }
+
+  function refreshServerState() {
+    void hydrateProviderConfigFromServer();
+    setHydrateTick((value) => value + 1);
+  }
+
   /**
    * 换了预设、协议、地址或模型后，上一个端点的探测结论不再成立。
    * 不重置的话，unsupported 会一直把新端点的思考档锁在置灰状态。
@@ -122,6 +298,8 @@ export default function SettingsPage() {
 
   const currentConfig = (): ProviderConfig => ({
     label: label.trim() || "自定义",
+    // 本机表单保存的永远是直连配置；不写 mode 会被旧存档的 server 值带偏
+    mode: "local",
     kind,
     baseUrl: baseUrl.trim().replace(/\/+$/, ""),
     apiKey: apiKey.trim(),
@@ -184,7 +362,7 @@ export default function SettingsPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            配置自己的模型供应商、思考强度、依据核对、语音朗读、联网搜索与界面外观。
+            选择调用模式，再配置模型供应商、思考强度、依据核对、语音朗读、联网搜索与界面外观。
           </p>
         </div>
 
@@ -192,9 +370,30 @@ export default function SettingsPage() {
         <Card className="mb-5">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-[var(--ink-soft)]">当前状态</span>
-            {existing ? (
+            {effectiveMode === "server" ? (
+              serverState?.serverConfigured ? (
+                <>
+                  <Pill tone="good">已配置（账号）</Pill>
+                  <span className="text-xs text-[var(--ink-faint)]">
+                    {serverState.label} · {serverState.model} ·{" "}
+                    {serverState.api === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} ·
+                    密钥加密存服务端 · 思考 {THINKING_LABEL[serverState.options.thinking]} · 依据核对{" "}
+                    {serverState.options.verification ? "开" : "关"}
+                  </span>
+                </>
+              ) : hydrating ? (
+                <span className="text-xs text-[var(--ink-faint)]">正在读取账号配置…</span>
+              ) : (
+                <>
+                  <Pill tone="warn">未配置（账号）</Pill>
+                  <span className="text-xs text-[var(--ink-faint)]">
+                    在下面的表单保存一次模型配置；在此之前导师页使用知识库检索模式
+                  </span>
+                </>
+              )
+            ) : existing ? (
               <>
-                <Pill tone="good">已配置</Pill>
+                <Pill tone="good">已配置（本机）</Pill>
                 <span className="text-xs text-[var(--ink-faint)]">
                   {existing.label} · {existing.model} ·{" "}
                   {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
@@ -204,21 +403,103 @@ export default function SettingsPage() {
               </>
             ) : (
               <>
-                <Pill tone="warn">未配置</Pill>
+                <Pill tone="warn">未配置（本机）</Pill>
                 <span className="text-xs text-[var(--ink-faint)]">
                   导师页将使用知识库检索模式，路径功能不受影响
                 </span>
               </>
             )}
           </div>
+          {effectiveMode === "server" && serverError !== null ? (
+            <p className="mt-2 text-xs text-[var(--warn)]">{serverError}</p>
+          ) : null}
         </Card>
+
+        {/* ── 调用模式 ── */}
+        <section className="mb-8">
+          <SectionTitle hint="两种模式随时切换；服务端模式需要登录，密钥加密存在账号里。">
+            调用模式
+          </SectionTitle>
+          <Card>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => chooseMode("server")}
+                disabled={user === null}
+                aria-pressed={effectiveMode === "server"}
+                className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  effectiveMode === "server"
+                    ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                    : "border-[var(--line-strong)] hover:bg-[var(--line)]"
+                }`}
+              >
+                <span className="block font-medium">服务端（默认）</span>
+                <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
+                  密钥 AES-GCM 加密存进账号，换设备也能用；对话 / 搜索 / 语音由本项目代发
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => chooseMode("local")}
+                aria-pressed={effectiveMode === "local"}
+                className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                  effectiveMode === "local"
+                    ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                    : "border-[var(--line-strong)] hover:bg-[var(--line)]"
+                }`}
+              >
+                <span className="block font-medium">本机</span>
+                <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
+                  密钥只存这个浏览器，请求由浏览器直连供应商；无需登录
+                </span>
+              </button>
+            </div>
+
+            {user === null ? (
+              <p className="mt-3 text-xs text-[var(--ink-soft)]">
+                {authLoading
+                  ? "正在确认登录状态…"
+                  : "未登录：服务端模式需要先登录，登录后可保存到账号；当前按本机模式工作。"}
+                {authLoading ? null : (
+                  <>
+                    {" "}
+                    <a href="/login" className="underline">
+                      去登录
+                    </a>
+                  </>
+                )}
+              </p>
+            ) : (
+              <p className="mt-3 text-xs text-[var(--ink-faint)]">
+                已登录 {user.email}。切换只影响这台设备的调用链，账号里的配置不会因切换被删除。
+              </p>
+            )}
+          </Card>
+        </section>
 
         {/* ── 供应商 ── */}
         <section className="mb-8">
-          <SectionTitle hint="选一个预设，或填任何兼容端点。">
+          <SectionTitle
+            hint={
+              effectiveMode === "server"
+                ? "服务端模式：配置加密存在账号里，浏览器不保存密钥。"
+                : "选一个预设，或填任何兼容端点。"
+            }
+          >
             模型供应商
           </SectionTitle>
 
+          {effectiveMode === "server" ? (
+            <SecretConfigForm
+              kind="llm"
+              title="账号里的模型配置"
+              description="保存后对话与出题由本项目代发（POST /api/llm/chat）；密钥只在服务端解密，浏览器只看到掩码。"
+              fields={LLM_FIELDS}
+              statusHint="删除这份配置后，服务端代发会明确报「还没有保存模型配置」，不会静默换成知识库回答。"
+              onChanged={refreshServerState}
+            />
+          ) : (
+            <>
           <Card className="mb-4">
             <p className="mb-2 text-sm font-medium">预设</p>
             <div className="flex flex-wrap gap-1.5">
@@ -325,7 +606,10 @@ export default function SettingsPage() {
                 </p>
               ) : null}
 
-              <Field label="API Key" hint="只保存在本浏览器，不上传到任何服务器">
+              <Field
+                label="API Key"
+                hint="本机模式：只保存在本浏览器，不上传到任何服务器；服务端模式的密钥在账号里加密保存"
+              >
                 <div className="flex gap-2">
                   <input
                     value={apiKey}
@@ -438,6 +722,8 @@ export default function SettingsPage() {
               </div>
             </div>
           </Card>
+            </>
+          )}
         </section>
 
         {/* ── 思考强度与依据核对 ── */}
@@ -445,11 +731,17 @@ export default function SettingsPage() {
           <SectionTitle hint="思考强度只影响导师回答；出题、批解与方向生成始终走非思考，避免 JSON 被思考 token 吃光。">
             思考强度与依据核对
           </SectionTitle>
+          {effectiveMode === "server" ? (
+            <p className="mb-3 text-xs text-[var(--ink-faint)]">
+              服务端模式下思考档随账号配置保存；「探测端点是否接受思考参数」需要浏览器直连，
+              请切到本机模式后再探测。探测结论不影响服务端代发。
+            </p>
+          ) : null}
           <ThinkingSettings
             thinking={thinking}
             thinkingStatus={thinkingStatus}
             verification={verification}
-            providerReady={canTest}
+            providerReady={effectiveMode === "local" && canTest}
             probe={probe}
             onThinkingChange={setThinking}
             onVerificationChange={setVerification}
@@ -459,10 +751,10 @@ export default function SettingsPage() {
 
         {/* ── 语音朗读 ── */}
         <section className="mb-8">
-          <SectionTitle hint="把导师回答念出来。浏览器语音免费，在线语音需要端点允许浏览器直连。">
+          <SectionTitle hint="把导师回答念出来。浏览器语音免费；在线语音在本机模式直连、服务端模式由本项目代发。">
             语音朗读
           </SectionTitle>
-          <TtsSettings />
+          <TtsSettings mode={effectiveMode} loggedIn={user !== null} />
         </section>
 
         {/* ── 联网搜索 ── */}
@@ -470,7 +762,7 @@ export default function SettingsPage() {
           <SectionTitle hint="导师提问时可补充外部网页；结果会标为「未核对」，与教材/上传资料分开显示。">
             联网搜索
           </SectionTitle>
-          <SearchSettings />
+          <SearchSettings mode={effectiveMode} loggedIn={user !== null} />
         </section>
 
         {/* ── 知识口径 ── */}
@@ -487,8 +779,9 @@ export default function SettingsPage() {
               </li>
               <li>
                 <strong className="text-[var(--ink)]">出题与讲解会把摘录发给模型供应商。</strong>
-                命中的教材 / 讲义 / 上传段落会随请求直接发到你配置的供应商（浏览器直连，不经过本项目）；
-                这是让模型按你的口径作答的前提，不配置模型时不外发。
+                命中的教材 / 讲义 / 上传段落会随请求发到你配置的供应商：本机模式由浏览器直连，
+                服务端模式由本项目转发到你保存在账号里的端点。这是让模型按你的口径作答的前提，
+                不配置模型时不外发。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">公开方向会带上解析与出处。</strong>
@@ -571,14 +864,20 @@ export default function SettingsPage() {
           <Card>
             <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
               <li>
-                <strong className="text-[var(--ink)]">密钥只存在本浏览器。</strong>
-                聊天供应商、Tavily 搜索与在线语音各有自己的 localStorage 键，互不覆盖；
-                都不上传本项目服务器，也不写入任何日志。
+                <strong className="text-[var(--ink)]">两种模式，密钥位置不同。</strong>
+                服务端模式：密钥用 AES-GCM 加密存进账号数据库，浏览器只看到掩码，对话 / 搜索 / 语音由本项目代发；
+                本机模式：密钥只存这个浏览器的 localStorage，请求由浏览器直连供应商，本项目不经手。
               </li>
               <li>
-                <strong className="text-[var(--ink)]">请求由浏览器直连供应商。</strong>
-                对话、搜索与朗读的调用链都是「浏览器 → 你填的地址」，本项目后端不参与转发，
-                因此部署在公网也无需保管任何密钥。
+                <strong className="text-[var(--ink)]">服务端模式需要登录。</strong>
+                未登录界面按本机模式工作；登录后可在上方切换并保存到账号。服务端缺少主密钥（ALP_SECRET_KEY）
+                时会拒绝保存并明确报错，不会明文落库。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">清除位置。</strong>
+                本机模式：模型供应商的「清除」删除 alp.provider.v1；搜索区块的「清除搜索配置」删除
+                alp.search.v1 与 alp.websearch.v1:*；语音区块的「清除语音配置」删除 alp.tts.v1 并停止播放。
+                服务端模式：各账号表单里的「删除账号配置」删除服务端那一行。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">上传资料不随请求整份外发。</strong>
@@ -586,15 +885,17 @@ export default function SettingsPage() {
               </li>
               <li>
                 <strong className="text-[var(--ink)]">费用由填 key 的人承担。</strong>
-                调用直接计入你的账户额度；思考档会抬高 max_tokens，开思考前先看成本说明。
+                调用计入你的账户额度；思考档会抬高 max_tokens，开思考前先看成本说明。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">HTTPS 站点不能请求 HTTP 地址。</strong>
-                这是浏览器的混合内容策略，无法在页面内绕过。内网服务需要配 HTTPS 或在本地运行本项目。
+                这是本机模式下的浏览器混合内容策略，无法在页面内绕过；服务端模式由本项目代发，
+                端点只需通过服务端的 SSRF 校验（公网 https）。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">公共电脑上用完请点「清除」。</strong>
-                localStorage 在同一浏览器内共享；搜索与语音密钥需在上面的区块单独清除。
+                localStorage 在同一浏览器内共享；搜索与语音密钥需在上面的区块单独清除，
+                账号里的配置请在登录状态下用各表单的删除按钮。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">路径功能不依赖任何密钥。</strong>

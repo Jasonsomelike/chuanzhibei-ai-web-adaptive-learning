@@ -8,20 +8,40 @@ import { useSubject } from "@/lib/subject";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { loadLearner, progressOf, type LearnerState } from "@/lib/learner";
 import type { MasteryState } from "@/lib/mastery";
-import { loadProvider, maskKey, saveProvider, type ProviderConfig } from "@/lib/provider";
+import {
+  hydrateProviderFromServer,
+  isProviderReady,
+  loadProvider,
+  maskKey,
+  saveProvider,
+  type ProviderConfig,
+} from "@/lib/provider";
 import { callChatStream } from "@/lib/chat";
+import { embedResultOf, embedTexts } from "@/lib/embeddingClient";
+import {
+  createRetriever,
+  hybridDocsFromChunks,
+  retrieveUploadsHybrid,
+  type EmbedQuery,
+} from "@/lib/hybridSearchClient";
+import {
+  createMemoryVectorStore,
+  ensureVectors,
+  getDefaultVectorStore,
+  type VectorStore,
+} from "@/lib/vectorCache";
+import { isValidVector } from "@/lib/vector";
 import { buildIndex, search, type Bm25Index } from "@/lib/rag";
 import { useMaterialPack } from "@/lib/materialStore";
 import type { KnowledgeConcept } from "@/lib/graph";
 import {
-  buildUploadIndex,
   formatUploadContext,
   parseUploadCitations,
-  retrieveUploads,
   uploadCitationLabel,
   type UploadHit,
 } from "@/lib/knowledge";
 import { useKnowledgeBase } from "@/lib/kbStore";
+import { useAuth } from "@/lib/useAuth";
 import {
   DEFAULT_SEARCH_CONFIG,
   loadSearchConfig,
@@ -34,6 +54,7 @@ import {
   formatWebContext,
   parseWebCitations,
   webHits as toWebHits,
+  webProviderLabel,
   type WebHit,
 } from "@/lib/websearch";
 import { extractClaims, type Claim, type ClaimVerdict } from "@/lib/verify";
@@ -64,12 +85,16 @@ import {
  * 导师对话。
  *
  * 两条路径，界面上必须如实区分：
- *   1. 配置了供应商 → 浏览器直连该供应商的流式接口，检索结果作为上下文
- *   2. 未配置 → 知识库检索 + 题库解析的结构化拼装
+ *   1. 模型可用 → 调用模型（server 模式经 /api/llm/chat 由服务端代发；
+ *      local 模式浏览器直连用户填的 baseUrl），检索结果作为上下文
+ *   2. 模型不可用（未配置 / 服务端没有 llm 行）→ 知识库检索 + 题库解析的结构化拼装
  *
- * 为什么在浏览器直连而不是走本项目后端：
- * 用户的 key 不该经过我们的服务器。这样部署在 Vercel 上也不需要保管任何密钥。
- * 代价是受 CORS 约束——所以设置页里明确提示了这一点。
+ * 就绪判断只看 isProviderReady：server 模式的 apiKey 恒为空，
+ * 用 `provider !== null` 或 key 是否为空判就绪会让新设备一直走「未配置」分支。
+ *
+ * 上传资料的检索是混合检索（BM25 + 向量 + RRF）：向量来自本方向已同步的
+ * kb.vectors 与 vectorCache 的本地缓存，缺失的用 embeddingClient 补算并写回。
+ * 没有 embedding 能力时只走 BM25，note 里如实说明「本次未使用语义检索」。
  *
  * 流式回答的正文与思考内容分开存放、分开渲染：推理永远不会拼进 text，
  * 一次失败也不会用检索拼装覆盖已经输出的半截内容。
@@ -163,6 +188,7 @@ function emptyMessage(id: string, role: Message["role"]): Message {
 
 export default function TutorPage() {
   const { target, targetId, setTargetId, ready, loadingTarget } = useSubject();
+  const { user } = useAuth();
   const [learner, setLearner] = useState<LearnerState | null>(null);
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -174,6 +200,8 @@ export default function TutorPage() {
   const endRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sequence = useRef(0);
+  /** 向量缓存懒加载：浏览器用 IndexedDB，不支持时退到内存（只活在本标签页）。 */
+  const vectorStoreRef = useRef<VectorStore | null>(null);
 
   // 按学科建检索索引（学科切换时重建）
   const [index, setIndex] = useState<Bm25Index | null>(null);
@@ -188,7 +216,7 @@ export default function TutorPage() {
   );
 
   /* 上传资料只在本浏览器；没有绑定知识点的文档同样参与导师检索。 */
-  const kb = useKnowledgeBase(targetId);
+  const kb = useKnowledgeBase(targetId, user?.id);
   /*
    * 切方向时 hook 会先保留上一方向的数组直到 IndexedDB 读完。
    * 按 directionId 再过滤一次，避免这一小段时间里用错方向的资料答题。
@@ -201,10 +229,13 @@ export default function TutorPage() {
     () => kb.chunks.filter((chunk) => chunk.directionId === targetId),
     [kb.chunks, targetId],
   );
-  const uploadIndex = useMemo(
-    () => (kbChunks.length > 0 ? buildUploadIndex(kbChunks) : null),
-    [kbChunks],
-  );
+
+  /*
+   * server 模式下 apiKey 为空，serverConfigured=false 时配置对象存在但不可用。
+   * 渲染与 send 都只认这一个变量，避免两处对「就绪」的判断漂移。
+   */
+  const activeProvider: ProviderConfig | null =
+    provider !== null && isProviderReady(provider) ? provider : null;
 
   const nextId = (): string => {
     sequence.current += 1;
@@ -218,6 +249,21 @@ export default function TutorPage() {
     setSearchConfig(stored);
     setWebOn(stored.defaultOn);
   }, []);
+
+  /*
+   * 挂载与登录态变化时，用服务端保存的 llm 配置水合本地状态。
+   * 401 / 网络错误返回 null：保持本地（可能是 BYOK）配置不动。
+   * 新设备登录后这一步是「能直接提问」的关键——本地没有 apiKey 也不影响。
+   */
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      const hydrated = await hydrateProviderFromServer(controller.signal);
+      if (controller.signal.aborted || hydrated === null) return;
+      setProvider(hydrated);
+    })();
+    return () => controller.abort();
+  }, [user?.id]);
 
   useEffect(() => {
     if (!target) return;
@@ -286,6 +332,14 @@ export default function TutorPage() {
     setBusy(false);
   };
 
+  /** 懒建向量存储：浏览器用 IndexedDB，Node / 隐私模式退到内存（只活在本标签页）。 */
+  const getVectorStore = (): VectorStore => {
+    if (vectorStoreRef.current === null) {
+      vectorStoreRef.current = getDefaultVectorStore() ?? createMemoryVectorStore();
+    }
+    return vectorStoreRef.current;
+  };
+
   const send = async (text: string): Promise<void> => {
     const question = text.trim();
     if (question.length === 0 || busy || !index || !target) return;
@@ -304,23 +358,120 @@ export default function TutorPage() {
       .filter((concept): concept is KnowledgeConcept => concept !== undefined);
     const material = materialForAnswer(materialPack, materialSelection, concepts);
     const conflicts = material.conflicts.map((conflict) => describeConflict(materialPack, conflict));
-    const uploads = uploadIndex !== null ? retrieveUploads(uploadIndex, kbChunks, question, 3) : [];
-    const uploadContext = formatUploadContext(uploads);
 
     const controller = new AbortController();
     // 上一条回答的核对如果还在跑，随下一次提问一起取消
     abortRef.current?.abort();
     abortRef.current = controller;
 
-    const userId = nextId();
-    const assistantId = nextId();
+    // 向量化要发网络请求，先把按钮置忙，避免同一句话被连点两次
     setError(null);
     setBusy(true);
     setInput("");
 
+    // ── 上传资料的混合检索 ──────────────────────────────────────
+    const embeddingModel = activeProvider?.embeddingModel?.trim() ?? "";
+
+    /* KB 层从服务端同步来的向量；模型/维度不符的一律不用。 */
+    const syncedVectors = new Map<string, Float32Array>();
+    for (const [id, field] of kb.vectors) {
+      if (field.embeddingModel !== embeddingModel) continue;
+      const vector = Float32Array.from(field.embedding);
+      if (isValidVector(vector, field.embeddingDim)) syncedVectors.set(id, vector);
+    }
+
+    /* 只有 404/503 这类明确拒绝才记为 unsupported；一次网络抖动不改结论。 */
+    const markEmbeddingUnsupported = (): void => {
+      if (activeProvider === null || activeProvider.embeddingStatus === "unsupported") return;
+      const next: ProviderConfig = { ...activeProvider, embeddingStatus: "unsupported" };
+      saveProvider(next);
+      setProvider(next);
+    };
+
+    const embed: EmbedQuery = async (texts) => {
+      const outcome = await embedTexts(texts, {
+        model: embeddingModel,
+        signal: controller.signal,
+      });
+      if (!outcome.ok) {
+        if (outcome.code === "unavailable") markEmbeddingUnsupported();
+        return null;
+      }
+      return embedResultOf(outcome);
+    };
+
+    /*
+     * 让 KB 层去读已同步的向量（异步；本轮先用当前渲染里的 kb.vectors），
+     * 再用 vectorCache 把缺的补齐并写回。embedding 不可用时整段跳过，
+     * 检索自然退化为 BM25，并在 note 里说明。
+     */
+    kb.ensureVectors();
+    const embeddingUsable =
+      embeddingModel !== "" &&
+      activeProvider?.embeddingStatus !== "unsupported" &&
+      kbChunks.length > 0;
+
+    let uploads: UploadHit[] = [];
+    let uploadNotice: string | null = null;
+    try {
+      const localVectors = embeddingUsable
+        ? await ensureVectors(
+            kbChunks.map((chunk) => ({ id: chunk.id, text: chunk.text })),
+            embeddingModel,
+            embed,
+            getVectorStore(),
+          )
+        : new Map<string, Float32Array>();
+
+      if (controller.signal.aborted) {
+        setBusy(false);
+        return;
+      }
+
+      const vectors = new Map(syncedVectors);
+      for (const [id, vector] of localVectors) {
+        if (!vectors.has(id)) vectors.set(id, vector);
+      }
+
+      const retriever = createRetriever({
+        docs: hybridDocsFromChunks(kbChunks),
+        vectors,
+        model: embeddingUsable ? embeddingModel : "",
+        embed,
+        dedupeAdjacent: true,
+      });
+      const uploadResult = await retrieveUploadsHybrid(retriever, kbChunks, question, 3);
+      // Message.uploadHits 是可变的展示数组；检索结果是只读的，拷一份
+      uploads = [...uploadResult.hits];
+      /*
+       * 没有任何上传片段时不说「未配置 embedding 模型」——那句话会让人以为
+       * 是配置缺失，而真实原因是本方向没有可检索的资料。
+       */
+      uploadNotice = kbChunks.length > 0 ? uploadResult.notice : null;
+    } catch (err) {
+      // 检索失败不阻塞回答：没有上传依据也比整次提问失败好
+      uploads = [];
+      uploadNotice = `上传资料检索失败（${err instanceof Error ? err.message : String(err)}），本次未注入上传资料`;
+    }
+
+    /*
+     * 两路皆空时 uploads 为空，uploadContext 也是空串：不注入任何依据。
+     * notice 只写进 message.note，不额外占一块界面。
+     */
+    const uploadContext = formatUploadContext(uploads);
+
+    if (controller.signal.aborted) {
+      setBusy(false);
+      return;
+    }
+
+    const userId = nextId();
+    const assistantId = nextId();
+
     const assistant = emptyMessage(assistantId, "assistant");
     assistant.streaming = true;
-    assistant.thinkingRequested = provider !== null && thinkingEnabledFor(provider);
+    assistant.thinkingRequested =
+      activeProvider !== null && thinkingEnabledFor(activeProvider);
     assistant.uploadHits = [...uploads];
     setMessages((prev) => [
       ...prev,
@@ -364,8 +515,8 @@ export default function TutorPage() {
     // 核对用实际注入的完整原文（多片段），不是每 KC 第一条摘录
     const verificationContext = buildVerificationContext(material.promptContext, uploads);
 
-    // 未配置供应商：直接走结构化拼装
-    if (!provider) {
+    // 未配置 / 服务端没有 llm 行：直接走结构化拼装
+    if (activeProvider === null) {
       const composed = composeDeterministic({
         question,
         docs,
@@ -381,6 +532,7 @@ export default function TutorPage() {
         note: [
           "未配置模型供应商，本次由知识库检索拼装",
           webError !== null ? `联网检索失败（${webError}），未使用网络结果` : null,
+          uploadNotice,
         ]
           .filter((part): part is string => part !== null)
           .join("；"),
@@ -405,19 +557,19 @@ export default function TutorPage() {
       return;
     }
 
-    const thinkingRequested = thinkingEnabledFor(provider);
+    const thinkingRequested = thinkingEnabledFor(activeProvider);
     const partial = { text: "", reasoning: "" };
 
     try {
       const result = await callChatStream(
-        provider,
+        activeProvider,
         {
           system: SYSTEM_PROMPT,
           user: userPrompt,
           maxTokens: TUTOR_MAX_TOKENS,
           temperature: 0.3,
           timeoutMs: TUTOR_TIMEOUT_MS,
-          thinking: effectiveThinking(provider),
+          thinking: effectiveThinking(activeProvider),
           signal: controller.signal,
         },
         {
@@ -444,18 +596,23 @@ export default function TutorPage() {
        */
       const citations = extractCitedKcIds(reply, docs);
       const claims = extractClaims(reply, docs.map((doc) => doc.kcId));
-      const canVerify = shouldVerifyClaims(provider, claims.length, verificationContext);
+      const canVerify = shouldVerifyClaims(activeProvider, claims.length, verificationContext);
 
-      if (result.thinkingDowngraded) {
+      /*
+       * 只有确认是思考字段被拒才写 unsupported。
+       * 模型名错、上下文超长这类 400 去掉思考参数也不会好，
+       * 把端点标成「不支持思考」会让设置页给出错误的修复建议。
+       */
+      if (result.downgradeReason === "thinking") {
         // 写回 unsupported：下一条回答直接按普通模式发，不再先吃一次 400
-        const next: ProviderConfig = { ...provider, thinkingStatus: "unsupported" };
+        const next: ProviderConfig = { ...activeProvider, thinkingStatus: "unsupported" };
         saveProvider(next);
         setProvider(next);
       }
 
-      const notes = [`${provider.label} · ${provider.model}`];
+      const notes = [`${activeProvider.label} · ${activeProvider.model}`];
       if (citations.length === 0) notes.push("本次回复未包含可核对的 [知识点ID] 引用");
-      if (result.thinkingDowngraded) {
+      if (result.downgradeReason === "thinking") {
         notes.push("该端点不支持思考参数，已按普通模式工作，本次没有思考内容");
       }
       if (result.finishReason === "length" || result.finishReason === "max_tokens") {
@@ -467,9 +624,10 @@ export default function TutorPage() {
       if (reply.trim() === "" && result.reasoning.trim() !== "") {
         notes.push("模型只返回了思考内容，没有正文；思考过程不代表结论");
       }
+      if (uploadNotice !== null) notes.push(uploadNotice);
 
       let verificationSkipped: string | null = null;
-      if (claims.length > 0 && provider.verification === false) {
+      if (claims.length > 0 && activeProvider.verification === false) {
         verificationSkipped = "设置中已关闭引用核对，本条回答未核对。";
       } else if (claims.length > 0 && !hasUsableEvidence(verificationContext)) {
         verificationSkipped = "本次没有注入可核对的教材 / 上传原文，引用无从核对。";
@@ -515,7 +673,7 @@ export default function TutorPage() {
         void (async () => {
           try {
             const verdicts = await verifyTutorClaims(
-              provider,
+              activeProvider,
               claims,
               verificationContext,
               controller.signal,
@@ -561,7 +719,9 @@ export default function TutorPage() {
         patchMessage(assistantId, () => ({
           streaming: false,
           thinkingRequested: partial.reasoning.trim() !== "",
-          note: `生成中断（${reason}）；以下是已生成的部分内容，未完成。`,
+          note:
+            `生成中断（${reason}）；以下是已生成的部分内容，未完成。` +
+            (uploadNotice !== null ? `；${uploadNotice}` : ""),
           webHits: webResults,
           webUsed: [...parseWebCitations(partial.text, webResults.length)],
           webError,
@@ -586,7 +746,9 @@ export default function TutorPage() {
           text: composed.text,
           citations: docs.map((doc) => ({ kcId: doc.kcId, title: doc.title })),
           generatedByLlm: false,
-          note: `模型调用失败（${reason}），已退回检索拼装`,
+          note:
+            `模型调用失败（${reason}），已退回检索拼装` +
+            (uploadNotice !== null ? `；${uploadNotice}` : ""),
           sources: composed.sources,
           conflicts,
           streaming: false,
@@ -662,11 +824,14 @@ export default function TutorPage() {
         <Card className="mb-5">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-[var(--ink-soft)]">当前模式</span>
-            {provider ? (
+            {activeProvider ? (
               <>
                 <Pill tone="good">大模型 + 检索</Pill>
                 <span className="text-xs text-[var(--ink-faint)]">
-                  {provider.label} · {provider.model} · key {maskKey(provider.apiKey)}
+                  {activeProvider.label} · {activeProvider.model} ·{" "}
+                  {activeProvider.mode === "server"
+                    ? "服务端代发"
+                    : `key ${maskKey(activeProvider.apiKey)}`}
                 </span>
               </>
             ) : (
@@ -681,13 +846,21 @@ export default function TutorPage() {
               </>
             )}
           </div>
-          {provider ? (
+          {activeProvider ? (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--ink-faint)]">
-              <span>思考档：{thinkingStrengthLabel(provider.thinking ?? "off")}</span>
-              {provider.thinkingStatus === "unsupported" ? (
+              <span>思考档：{thinkingStrengthLabel(activeProvider.thinking ?? "off")}</span>
+              {activeProvider.thinkingStatus === "unsupported" ? (
                 <Pill tone="warn">端点不支持思考参数，已按普通模式</Pill>
               ) : null}
-              <span>引用核对：{provider.verification === false ? "关" : "开"}</span>
+              <span>引用核对：{activeProvider.verification === false ? "关" : "开"}</span>
+              {activeProvider.embeddingModel !== undefined ? (
+                <span>
+                  语义检索：{activeProvider.embeddingModel}
+                  {activeProvider.embeddingStatus === "unsupported" ? "（服务端不可用，已退回 BM25）" : ""}
+                </span>
+              ) : (
+                <span>语义检索：未配置（仅 BM25）</span>
+              )}
               <Link href="/settings" className="underline">
                 调整设置
               </Link>
@@ -902,7 +1075,7 @@ export default function TutorPage() {
             联网补充（外部网页，未核对）
           </label>
           <span className="text-[var(--ink-faint)]">
-            当前：{searchProvider.provider === "tavily" ? "Tavily" : "维基百科"} · 搜索失败不阻塞回答
+            当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答
           </span>
           {webOn && searchProvider.notice !== null ? (
             <span className="text-[var(--warn)]">{searchProvider.notice}</span>

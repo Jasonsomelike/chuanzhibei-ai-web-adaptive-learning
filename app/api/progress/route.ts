@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
+import { assertMutationOrigin } from "@/lib/routeAuth";
 import { getDb } from "@/lib/db";
 import type { LearnerState } from "@/lib/learner";
 
@@ -46,6 +47,9 @@ export async function GET() {
 
 /** POST：保存某学科的进度。 */
 export async function POST(request: Request) {
+  const origin = assertMutationOrigin(request);
+  if (origin !== null) return origin;
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
@@ -84,7 +88,10 @@ export async function POST(request: Request) {
 }
 
 /** DELETE：清空当前用户的全部进度。 */
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  const origin = assertMutationOrigin(request);
+  if (origin !== null) return origin;
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 

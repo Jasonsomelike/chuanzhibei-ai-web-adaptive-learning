@@ -283,6 +283,12 @@ export function calibrationDetail(report: CalibrationReport): string {
   ) {
     lines.push("还没有有效样本：至少需要一条带预测值的作答记录。");
   } else {
+    // n<30 的 O/E、Brier 只是算出来的数，不能当结论读；提示必须紧挨在这两行之前。
+    if (report.n < CALIBRATION_LEVEL_MIN.preliminary) {
+      lines.push(
+        `n=${report.n}<${CALIBRATION_LEVEL_MIN.preliminary}，样本少，不作解读；以下仅为计算口径`,
+      );
+    }
     lines.push(
       `O/E = ${oeRatio.toFixed(2)}；Brier = ${brier.toFixed(3)}（仅同目标内参考，不跨目标比较）`,
     );

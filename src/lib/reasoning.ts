@@ -250,20 +250,27 @@ function anthropicUsage(raw: unknown): ChatUsage | undefined {
   );
 }
 
-/** Anthropic 正文只认 type=text；thinking / redacted_thinking / tool_use 一律不进正文。 */
+/**
+ * Anthropic 正文只认 type=text；thinking / redacted_thinking / tool_use 一律不进正文。
+ * 少数兼容端点省略块上的 type、只留 text 字符串，这类块按正文处理。
+ */
 function anthropicText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const block of content) {
     if (!isRecord(block)) continue;
-    if (block.type === "text" && typeof block.text === "string") {
+    if (
+      (block.type === "text" || block.type === undefined) &&
+      typeof block.text === "string"
+    ) {
       parts.push(block.text);
     }
   }
   return parts.join("");
 }
 
+/** 推理只认 type=thinking：即使块里带 thinking 字段，type 缺失也不当推理读。 */
 function anthropicReasoning(content: unknown): string {
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
@@ -310,7 +317,12 @@ function parseAnthropicEvent(eventName: string, json: Record<string, unknown>): 
     const delta = isRecord(json.delta) ? json.delta : {};
     const deltaType = asString(delta.type);
 
-    if (deltaType === "text_delta") {
+    // 兼容端点会省略 delta.type；此时只有 text 是字符串才按正文处理，
+    // 避免把别的 delta 形状误判成正文。
+    if (
+      deltaType === "text_delta" ||
+      (deltaType === "" && typeof delta.text === "string")
+    ) {
       const text = asString(delta.text);
       return text === "" ? null : { text, reasoning: "", finishReason: null };
     }
@@ -376,7 +388,8 @@ export function parseStreamPayload(kind: ProviderKind, event: SseEvent): StreamD
 
 /**
  * 取正文。Anthropic 的 content 数组按 type 分流：
- * 只有 `type="text"` 的块算正文，thinking 块在前也不会让正文变空。
+ * 只认 `type="text"` 或省略 type 但带 text 字符串的块，
+ * thinking 块在前也不会让正文变空。
  */
 export function extractNonStreamingText(kind: ProviderKind, json: unknown): string {
   if (!isRecord(json)) return "";

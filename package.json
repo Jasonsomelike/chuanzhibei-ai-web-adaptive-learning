@@ -17,6 +17,9 @@
     "bench": "node bench/bench-path.mjs",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:mcp": "tsx scripts/mcp-smoke.ts",
+    "smoke:auth": "tsx scripts/auth-smoke.ts",
+    "probe:external": "tsx scripts/probe-external.ts",
+    "eval:rag": "tsx scripts/eval-rag.ts",
     "verify": "npm run typecheck && npm run test && npm run kg:validate && npm run check:secrets",
     "path:hash": "tsx scripts/path-hash.ts"
   },

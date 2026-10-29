@@ -1,21 +1,25 @@
 /**
- * 浏览器直连模型供应商的统一客户端。
+ * 模型调用的统一客户端。
+ *
+ * 一条代码路径服务两种运行模式（provider.ts 的 ProviderConfig.mode）：
+ * - local：浏览器直连用户填的 baseURL，key 只在 localStorage；
+ * - server：请求发往本项目的 /api/llm/chat，由服务端用加密保存的 key 代发，
+ *   请求体里不出现 baseUrl / apiKey / model（契约见 apiContracts.llmChat）。
  *
  * 为什么统一：方向页与导师页原先各有一份几乎相同的 callProvider，
  * 两份都在处理「OpenAI 兼容 vs Anthropic」「超时」「空返回」，
  * 任何一处漏改都会让某条路径的行为和另一条不一致。
  *
- * 为什么仍然在浏览器直连：用户的 key 不该经过我们的服务器。
- * 代价是受 CORS 与混合内容约束（见 provider.ts 的说明）。
- *
- * 非流式与流式共用同一套请求体/请求头构造（provider.ts 的 buildChatBody、
- * buildProviderHeaders），差别只在响应怎么读：结构化 JSON 调用必须走 callChat，
+ * 非流式与流式共用同一套响应解析（extractNonStreamingText /
+ * extractNonStreamingReasoning / createSseDecoder / parseStreamPayload），
+ * 差别只在响应怎么读：结构化 JSON 调用必须走 callChat，
  * 否则半截 JSON 会打穿 extractJson 与 callChatWithRepair。
  */
 
 import {
   buildChatBody,
   buildProviderHeaders,
+  effectiveProviderMode,
   type ChatBodyRequest,
   type ProviderConfig,
   type ThinkingStatus,
@@ -29,6 +33,7 @@ import {
   type SseEvent,
   type ThinkingStrength,
 } from "@/lib/reasoning";
+import { classifyThinkingRejection } from "@/lib/thinking";
 
 export interface ChatRequest extends ChatBodyRequest {
   /**
@@ -78,18 +83,42 @@ export interface ChatStreamResult {
    * 调用方应把 provider.thinkingStatus 写回 "unsupported"。
    */
   readonly thinkingDowngraded: boolean;
+  /**
+   * 400 的归因结论。只有 "thinking" 允许把 thinkingStatus 写成 unsupported；
+   * "other" 说明 400 与思考字段无关（模型名错、上下文超长），重发也不会好，
+   * 因此它只会出现在 ChatError 上，不会以成功结果返回。
+   */
+  readonly downgradeReason: DowngradeReason;
 }
+
+/** 400 的归因：thinking=思考字段被拒；other=其它原因；null=不是 400。 */
+export type DowngradeReason = "thinking" | "other" | null;
 
 /** 调用失败。区分「被截断」与其它错误，因为前者重试更可能成功。 */
 export class ChatError extends Error {
   readonly kind: "truncated" | "empty" | "http" | "timeout" | "network" | "aborted";
   /** HTTP 状态码；只有 kind === "http" 时才有值。 */
   readonly status?: number;
-  constructor(kind: ChatError["kind"], message: string, status?: number) {
+  /**
+   * 上游/服务端返回的原始错误体（未截断）。
+   * 400 归因要靠它判断「是不是思考参数被拒」，界面只展示截断后的片段。
+   */
+  readonly responseBody?: string;
+  /** HTTP 错误的归因；非 400 与本地错误为 null。 */
+  readonly downgradeReason?: DowngradeReason;
+  constructor(
+    kind: ChatError["kind"],
+    message: string,
+    status?: number,
+    responseBody?: string,
+    downgradeReason?: DowngradeReason,
+  ) {
     super(message);
     this.name = "ChatError";
     this.kind = kind;
     this.status = status;
+    this.responseBody = responseBody;
+    this.downgradeReason = downgradeReason;
   }
 }
 
@@ -133,10 +162,73 @@ function toChatError(err: unknown, external: AbortSignal | undefined, timeoutMs:
   return new ChatError("network", err instanceof Error ? err.message : String(err));
 }
 
+/** 服务端代发端点。密钥、baseUrl、model 全部来自服务端保存的配置。 */
+const SERVER_CHAT_ENDPOINT = "/api/llm/chat";
+
+/**
+ * 服务端代发的请求头只有 Content-Type。
+ * 不能带 Authorization / x-api-key：服务端只认自己的密文，带上反而会泄露或干扰。
+ */
+const SERVER_CHAT_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
+
+function isServerProvider(provider: ProviderConfig): boolean {
+  return effectiveProviderMode(provider) === "server";
+}
+
 function endpointOf(provider: ProviderConfig): string {
+  if (isServerProvider(provider)) return SERVER_CHAT_ENDPOINT;
   return provider.kind === "anthropic"
     ? `${provider.baseUrl}/messages`
     : `${provider.baseUrl}/chat/completions`;
+}
+
+function headersOf(provider: ProviderConfig): Record<string, string> {
+  return isServerProvider(provider) ? SERVER_CHAT_HEADERS : buildProviderHeaders(provider);
+}
+
+/**
+ * /api/llm/chat 的请求体。
+ *
+ * 刻意不出现 baseUrl / apiKey / model：apiContracts.llmChat 是 strictObject，
+ * 多一个字段就 400。jsonMode 同样没有位置——服务端按自己的配置决定结构，
+ * 需要 JSON 的调用方靠提示词约束，再用 extractJson 兜底。
+ * 思考档也不在请求体里：服务端读它保存的 options.thinking，客户端无法降级。
+ */
+function buildServerChatBody(
+  provider: ProviderConfig,
+  req: ChatRequest,
+  stream: boolean,
+): Record<string, unknown> {
+  const system = req.system?.trim() ?? "";
+  return {
+    kind: provider.kind,
+    messages: [
+      ...(system !== "" ? [{ role: "system", content: req.system }] : []),
+      { role: "user", content: req.user },
+    ],
+    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+    stream,
+  };
+}
+
+interface PreparedChatBody {
+  readonly body: Record<string, unknown>;
+  /** 是否写入了思考字段；server 模式恒为 false（思考由服务端配置决定）。 */
+  readonly thinkingFields: boolean;
+}
+
+function prepareChatBody(
+  provider: ProviderConfig,
+  req: ChatRequest,
+  strength: ThinkingStrength,
+  stream: boolean,
+): PreparedChatBody {
+  if (isServerProvider(provider)) {
+    return { body: buildServerChatBody(provider, req, stream), thinkingFields: false };
+  }
+  const built = buildChatBody(provider.kind, provider, req, strength);
+  return { body: { ...built.body, stream }, thinkingFields: built.thinkingFields };
 }
 
 function finishReasonOf(json: Record<string, unknown>): string | null {
@@ -208,24 +300,26 @@ export async function callChat(
   req: ChatRequest,
 ): Promise<ChatResult> {
   // 只认请求里的档位：配置里的 thinking 留给 callChatStream（导师问答）。
-  const built = buildChatBody(provider.kind, provider, req, req.thinking ?? "off");
+  const prepared = prepareChatBody(provider, req, req.thinking ?? "off", false);
   const timeoutMs = req.timeoutMs ?? 60000;
   const { signal, cleanup } = createRequestSignal(timeoutMs, req.signal);
 
   try {
     const res = await fetch(endpointOf(provider), {
       method: "POST",
-      headers: buildProviderHeaders(provider),
-      body: JSON.stringify(built.body),
+      headers: headersOf(provider),
+      body: JSON.stringify(prepared.body),
       signal,
     });
 
     if (!res.ok) {
-      const t = await res.text().catch(() => "");
+      const body = await res.text().catch(() => "");
       throw new ChatError(
         "http",
-        `HTTP ${res.status}${t ? ` · ${t.slice(0, 120)}` : ""}`,
+        `HTTP ${res.status}${body ? ` · ${body.slice(0, 120)}` : ""}`,
         res.status,
+        body,
+        res.status === 400 ? classifyThinkingRejection(res.status, body) : null,
       );
     }
 
@@ -420,53 +514,73 @@ export async function callChatStream(
   const timeoutMs = req.timeoutMs ?? 60000;
   const { signal, cleanup } = createRequestSignal(timeoutMs, req.signal);
   const endpoint = endpointOf(provider);
+  const headers = headersOf(provider);
 
   try {
-    let built = buildChatBody(provider.kind, provider, req, strength);
+    let prepared = prepareChatBody(provider, req, strength, true);
     let res = await fetch(endpoint, {
       method: "POST",
-      headers: buildProviderHeaders(provider),
-      body: JSON.stringify({ ...built.body, stream: true }),
+      headers,
+      body: JSON.stringify(prepared.body),
       signal,
     });
     let downgraded = false;
+    let downgradeReason: DowngradeReason = null;
 
-    if (!res.ok && res.status === 400 && built.thinkingFields) {
-      // 读掉错误体释放连接，真正的结论以第二次请求为准
-      await res.text().catch(() => "");
+    if (!res.ok && res.status === 400 && prepared.thinkingFields) {
+      const errorBody = await res.text().catch(() => "");
+      const reason = classifyThinkingRejection(res.status, errorBody);
+      if (reason !== "thinking") {
+        /*
+         * 400 但不是思考字段的问题（模型名错、上下文超长等）：
+         * 去掉思考参数重发一次也不会好，直接失败，并保留原始错误体给界面。
+         */
+        throw new ChatError(
+          "http",
+          `HTTP ${res.status}${errorBody ? ` · ${errorBody.slice(0, 120)}` : ""}`,
+          res.status,
+          errorBody,
+          "other",
+        );
+      }
 
       /*
        * 只降级一次：去掉思考字段、恢复 temperature。预算回到调用方原值或 2048
        * 的较大者，不保留思考档抬高的预算——重发的是「最小可用请求」。
        */
       downgraded = true;
-      built = buildChatBody(
-        provider.kind,
+      downgradeReason = "thinking";
+      prepared = prepareChatBody(
         provider,
         { ...req, maxTokens: Math.max(req.maxTokens ?? 600, 2048) },
         "off",
+        true,
       );
       res = await fetch(endpoint, {
         method: "POST",
-        headers: buildProviderHeaders(provider),
-        body: JSON.stringify({ ...built.body, stream: true }),
+        headers,
+        body: JSON.stringify(prepared.body),
         signal,
       });
 
       if (!res.ok) {
-        const t = await res.text().catch(() => "");
+        const body = await res.text().catch(() => "");
         throw new ChatError(
           "http",
-          `HTTP ${res.status}（思考参数被拒绝，降级后仍失败）${t ? ` · ${t.slice(0, 120)}` : ""}`,
+          `HTTP ${res.status}（思考参数被拒绝，降级后仍失败）${body ? ` · ${body.slice(0, 120)}` : ""}`,
           res.status,
+          body,
+          "thinking",
         );
       }
     } else if (!res.ok) {
-      const t = await res.text().catch(() => "");
+      const errorBody = await res.text().catch(() => "");
       throw new ChatError(
         "http",
-        `HTTP ${res.status}${t ? ` · ${t.slice(0, 120)}` : ""}`,
+        `HTTP ${res.status}${errorBody ? ` · ${errorBody.slice(0, 120)}` : ""}`,
         res.status,
+        errorBody,
+        res.status === 400 ? classifyThinkingRejection(res.status, errorBody) : null,
       );
     }
 
@@ -492,11 +606,12 @@ export async function callChatStream(
         reasoning: fallbackReasoning,
         finishReason: null,
         thinkingDowngraded: downgraded,
+        downgradeReason,
       };
     }
 
     const streamed = await readStream(provider.kind, res, handlers, signal);
-    return { ...streamed, thinkingDowngraded: downgraded };
+    return { ...streamed, thinkingDowngraded: downgraded, downgradeReason };
   } catch (err) {
     throw toChatError(err, req.signal, timeoutMs);
   } finally {
@@ -519,8 +634,9 @@ export interface ThinkingProbeResult {
  * 探测端点是否接受当前思考档。
  *
  * 只返回结论，不写 localStorage——写回由设置页决定，避免探测函数产生副作用。
- * HTTP 400 才判 unsupported；超时/网络错误判 unknown，不能把「网抖了一下」
- * 写死成「不支持思考」，否则用户会以为端点坏了。
+ * 400 要用 classifyThinkingRejection 判因：只有确实拒绝思考字段才判 unsupported；
+ * 模型名错、上下文超长这类 400 判 unknown 并把截断后的错误体展示出来。
+ * 超时/网络错误同样判 unknown，不能把「网抖了一下」写死成「不支持思考」。
  */
 export async function probeThinking(
   provider: ProviderConfig,
@@ -558,6 +674,20 @@ export async function probeThinking(
         detail: "端点接受了思考参数，并返回了思考内容",
       };
     }
+    if (result.text.trim() === "") {
+      /*
+       * 200 但正文与思考都为空：说明请求通了，却拿不到任何能证明
+       * 「思考参数被接受」的输出。判 unknown 而不是 verified-empty，
+       * 否则设置页会把一个坏端点标成「已支持」。
+       */
+      return {
+        ok: false,
+        status: "unknown",
+        strength: configured,
+        reasoning: "",
+        detail: "端点返回 200，但正文与思考内容都为空，无法判断思考参数是否被接受",
+      };
+    }
     return {
       ok: true,
       status: "verified-empty",
@@ -568,12 +698,25 @@ export async function probeThinking(
   } catch (err) {
     if (err instanceof ChatError) {
       if (err.kind === "http" && err.status === 400) {
+        const reason = classifyThinkingRejection(err.status, err.responseBody);
+        if (reason === "thinking") {
+          return {
+            ok: false,
+            status: "unsupported",
+            strength: configured,
+            reasoning: "",
+            detail: "端点拒绝思考参数（HTTP 400）",
+          };
+        }
+        const snippet = (err.responseBody ?? "").trim();
         return {
           ok: false,
-          status: "unsupported",
+          status: "unknown",
           strength: configured,
           reasoning: "",
-          detail: "端点拒绝思考参数（HTTP 400）",
+          detail:
+            "端点拒绝了请求，但不是思考参数的问题（HTTP 400）" +
+            (snippet !== "" ? `：${snippet.slice(0, 120)}` : ""),
         };
       }
       if (err.kind === "timeout" || err.kind === "network") {

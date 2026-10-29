@@ -70,6 +70,139 @@ function createPostgresDb(url: string): Db {
 
 // ── 内存实现（本地开发 / 测试） ────────────────────────────────────
 
+interface InsertShape {
+  readonly table: string;
+  readonly columns: readonly string[];
+  /** ON CONFLICT 的冲突列；null 表示语句没写 ON CONFLICT。 */
+  readonly conflict: readonly string[] | null;
+  /** ON CONFLICT ... DO NOTHING：重复时不写、返回 0。 */
+  readonly doNothing: boolean;
+  /** DO UPDATE SET 的「列名 → 取值函数」。 */
+  readonly assignments: ReadonlyMap<string, () => unknown>;
+}
+
+/**
+ * 解析本文件用到的 INSERT ... ON CONFLICT 形状。
+ *
+ * 只认一种写法：列名列表与 $n 参数一一对应（参数 i 就是 columns[i]），
+ * 冲突赋值只允许 `EXCLUDED.列名` 或 `$n`。这不是通用 SQL 解析器：
+ * 遇到不认识的表达式宁可抛错，也不静默写错值——写错一个字段比报错难查得多。
+ */
+function parseInsert(q: string, params: unknown[]): InsertShape {
+  const head = /^insert into ([a-z_]+)\s*\((.+?)\)\s*values/.exec(q);
+  if (!head) {
+    throw new Error(`内存实现无法解析 INSERT：${q.slice(0, 100)}`);
+  }
+
+  const table = head[1];
+  const columns = head[2].split(",").map((part) => part.trim());
+  if (columns.length !== params.length) {
+    throw new Error(
+      `INSERT 列数与参数数不一致：${table} 有 ${columns.length} 列、${params.length} 个参数`,
+    );
+  }
+  const valueOf = (column: string): unknown => params[columns.indexOf(column)];
+
+  const update = /on conflict \((.+?)\) do update set (.+)$/.exec(q);
+  if (update) {
+    const conflict = update[1].split(",").map((part) => part.trim());
+    const assignments = new Map<string, () => unknown>();
+
+    for (const part of update[2].split(",")) {
+      const eq = part.indexOf("=");
+      if (eq < 0) {
+        throw new Error(`内存实现无法解析 ON CONFLICT 赋值：${part.trim()}`);
+      }
+      const column = part.slice(0, eq).trim();
+      const source = part.slice(eq + 1).trim();
+
+      const excluded = /^excluded\.([a-z_]+)$/.exec(source);
+      if (excluded) {
+        const from = excluded[1];
+        if (!columns.includes(from)) {
+          throw new Error(`ON CONFLICT 引用了 INSERT 列表里没有的列：EXCLUDED.${from}`);
+        }
+        assignments.set(column, () => valueOf(from));
+        continue;
+      }
+
+      const numbered = /^\$(\d+)$/.exec(source);
+      if (numbered) {
+        const index = Number(numbered[1]) - 1;
+        if (index < 0 || index >= params.length) {
+          throw new Error(`ON CONFLICT 引用了越界参数：${source}`);
+        }
+        assignments.set(column, () => params[index]);
+        continue;
+      }
+
+      throw new Error(`内存实现不支持 ON CONFLICT 赋值表达式：${column} = ${source}`);
+    }
+
+    return { table, columns, conflict, doNothing: false, assignments };
+  }
+
+  const nothing = /on conflict \((.+?)\) do nothing/.exec(q);
+  if (nothing) {
+    const conflict = nothing[1].split(",").map((part) => part.trim());
+    return { table, columns, conflict, doNothing: true, assignments: new Map() };
+  }
+
+  return { table, columns, conflict: null, doNothing: false, assignments: new Map() };
+}
+
+/**
+ * 四张新表共用的 upsert。
+ *
+ * 冲突列必须与 Postgres 的主键完全一致：对不上说明两条 SQL 已经分叉，
+ * 直接抛错，避免内存里悄悄多出一行「看起来写成功」的重复数据。
+ * 返回值与 Postgres 的 rowCount 同义：插入 1、更新 1、DO NOTHING 命中 0。
+ */
+function upsertRow(
+  map: Map<string, Record<string, unknown>>,
+  q: string,
+  params: unknown[],
+  table: string,
+  conflictColumns: readonly string[],
+  keyOf: (row: Record<string, unknown>) => string,
+): number {
+  const shape = parseInsert(q, params);
+  if (shape.table !== table) {
+    throw new Error(`内存实现期望写入 ${table}，收到 ${shape.table}`);
+  }
+
+  const row: Record<string, unknown> = {};
+  shape.columns.forEach((column, i) => {
+    row[column] = params[i];
+  });
+
+  const key = keyOf(row);
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, row);
+    return 1;
+  }
+
+  if (shape.conflict === null) {
+    // 与 Postgres 的 23505 对齐：没写 ON CONFLICT 的重复插入是错误，不是静默忽略
+    throw new Error(`duplicate key in ${table}: ${key}`);
+  }
+
+  const expected = [...conflictColumns].sort().join(",");
+  const actual = [...shape.conflict].sort().join(",");
+  if (actual !== expected) {
+    throw new Error(`${table} 的 ON CONFLICT 列与主键不一致：期望 ${expected}，收到 ${actual}`);
+  }
+  if (shape.doNothing) return 0;
+
+  const next = { ...existing };
+  for (const [column, read] of shape.assignments) {
+    next[column] = read();
+  }
+  map.set(key, next);
+  return 1;
+}
+
 /**
  * 内存实现只支持本项目实际用到的查询模式，不是通用 SQL 引擎。
  *
@@ -86,6 +219,11 @@ function createMemoryDb(): Db {
   const directions = new Map<string, Record<string, unknown>>();
   /** key = `${direction_id}|${content_hash}`，对应 Postgres 的唯一约束。 */
   const directionItems = new Map<string, Record<string, unknown>>();
+  /** 以下四张表的 key 都对应 Postgres 的复合主键，用 `|` 拼接。 */
+  const userSecrets = new Map<string, Record<string, unknown>>();
+  const kbDocs = new Map<string, Record<string, unknown>>();
+  const kbChunks = new Map<string, Record<string, unknown>>();
+  const memories = new Map<string, Record<string, unknown>>();
 
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -249,11 +387,230 @@ function createMemoryDb(): Db {
         return 0;
       }
 
+      if (q.startsWith("insert into user_secrets")) {
+        return upsertRow(userSecrets, q, params, "user_secrets", ["user_id", "kind"], (row) =>
+          `${row.user_id}|${row.kind}`,
+        );
+      }
+
+      if (q.startsWith("insert into kb_docs")) {
+        return upsertRow(kbDocs, q, params, "kb_docs", ["user_id", "doc_id"], (row) =>
+          `${row.user_id}|${row.doc_id}`,
+        );
+      }
+
+      if (q.startsWith("insert into kb_chunks")) {
+        return upsertRow(kbChunks, q, params, "kb_chunks", ["user_id", "chunk_id"], (row) =>
+          `${row.user_id}|${row.chunk_id}`,
+        );
+      }
+
+      if (q.startsWith("insert into memories")) {
+        return upsertRow(memories, q, params, "memories", ["user_id", "mem_id"], (row) =>
+          `${row.user_id}|${row.mem_id}`,
+        );
+      }
+
+      /*
+       * user_secrets 的唯一删除形状是 (user_id, kind)。
+       * 返回真实删除数：调用方（删除配置）据此区分「删掉了」与「本来就没有」。
+       */
+      if (q.startsWith("delete from user_secrets")) {
+        const [user_id, kind] = params as string[];
+        return userSecrets.delete(`${user_id}|${kind}`) ? 1 : 0;
+      }
+
+      /*
+       * kb_docs 的两种删除形状：
+       *   - (user_id, doc_id)：删一篇文档，并级联删它的全部片段；
+       *   - (user_id, direction_id)：删一个方向的全部文档与片段。
+       * 先判 doc_id：`direction_id =` 不含 `doc_id =`，但反过来判定顺序错会把
+       * 「删一篇」误当成「删整个方向」——多删比少删更难恢复。
+       * 级联在 Postgres 侧由 kb_chunks 的复合外键 ON DELETE CASCADE 完成，这里手动模拟。
+       */
+      if (q.startsWith("delete from kb_docs")) {
+        const user_id = params[0] as string;
+        let n = 0;
+
+        if (q.includes("doc_id =")) {
+          const doc_id = params[1] as string;
+          if (kbDocs.delete(`${user_id}|${doc_id}`)) n += 1;
+          for (const [key, row] of kbChunks) {
+            if (row.user_id === user_id && row.doc_id === doc_id) kbChunks.delete(key);
+          }
+          return n;
+        }
+
+        if (q.includes("direction_id =")) {
+          const direction_id = params[1] as string;
+          for (const [key, row] of kbDocs) {
+            if (row.user_id === user_id && row.direction_id === direction_id) {
+              kbDocs.delete(key);
+              n += 1;
+            }
+          }
+          for (const [key, row] of kbChunks) {
+            if (row.user_id === user_id && row.direction_id === direction_id) {
+              kbChunks.delete(key);
+            }
+          }
+          return n;
+        }
+
+        return 0;
+      }
+
+      /*
+       * kb_chunks 的三种删除形状：(user_id, doc_id)、(user_id, chunk_id)、(user_id, direction_id)。
+       * chunk_id 必须先判：三种键都含 `id =`，顺序错了会把「删一段」当成「删整篇」。
+       * 三种都不命中时落到文件末尾的 return 0——这正是「漏一种即静默成功」的来源，
+       * 因此每一种形状在 db.test.ts 里都有独立断言。
+       */
+      if (q.startsWith("delete from kb_chunks")) {
+        const user_id = params[0] as string;
+        let n = 0;
+
+        if (q.includes("chunk_id =")) {
+          return kbChunks.delete(`${user_id}|${params[1]}`) ? 1 : 0;
+        }
+
+        if (q.includes("doc_id =")) {
+          const doc_id = params[1] as string;
+          for (const [key, row] of kbChunks) {
+            if (row.user_id === user_id && row.doc_id === doc_id) {
+              kbChunks.delete(key);
+              n += 1;
+            }
+          }
+          return n;
+        }
+
+        if (q.includes("direction_id =")) {
+          const direction_id = params[1] as string;
+          for (const [key, row] of kbChunks) {
+            if (row.user_id === user_id && row.direction_id === direction_id) {
+              kbChunks.delete(key);
+              n += 1;
+            }
+          }
+          return n;
+        }
+
+        return 0;
+      }
+
+      /*
+       * memories 的两种删除形状：(user_id, subject_id) 清空学科快照，
+       * (user_id, mem_id) 删单张。先判 mem_id，理由同上：键的包含关系不成立，
+       * 但少判一层就多一条静默 return 0 的路径。
+       */
+      if (q.startsWith("delete from memories")) {
+        const user_id = params[0] as string;
+
+        if (q.includes("mem_id =")) {
+          return memories.delete(`${user_id}|${params[1]}`) ? 1 : 0;
+        }
+
+        if (q.includes("subject_id =")) {
+          const subject_id = params[1] as string;
+          let n = 0;
+          for (const [key, row] of memories) {
+            if (row.user_id === user_id && row.subject_id === subject_id) {
+              memories.delete(key);
+              n += 1;
+            }
+          }
+          return n;
+        }
+
+        return 0;
+      }
+
       return 0;
     },
 
     async all<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
+
+      if (q.includes("from user_secrets")) {
+        const rows = [...userSecrets.values()]
+          .filter((r) => r.user_id === params[0])
+          .filter((r) => !q.includes("kind =") || r.kind === params[1])
+          .sort((a, b) => String(a.kind).localeCompare(String(b.kind)));
+        return rows as T[];
+      }
+
+      if (q.includes("from kb_docs")) {
+        let rows = [...kbDocs.values()].filter((r) => r.user_id === params[0]);
+        if (q.includes("direction_id =")) {
+          rows = rows.filter((r) => r.direction_id === params[1]);
+        }
+        if (q.includes("doc_id =")) {
+          rows = rows.filter((r) => r.doc_id === params[1]);
+        }
+        rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        return rows as T[];
+      }
+
+      /*
+       * kb_chunks 的游标分页必须先判 `chunk_id >`。
+       * 分页 SQL 同时含 `direction_id = $2` 与 `chunk_id > $3`：
+       * 若先命中方向过滤就 return，会把整方向的向量一次返回，
+       * 游标永远推不动，调用方还会以为「这已经是全部」。
+       *
+       * 分页分支的参数顺序固定：user_id, direction_id, after(chunk_id), limit。
+       */
+      if (q.includes("from kb_chunks")) {
+        let rows = [...kbChunks.values()].filter((r) => r.user_id === params[0]);
+
+        if (q.includes("chunk_id >")) {
+          const after = String(params[2]);
+          const limit = Number(params[3]);
+          rows = rows
+            .filter((r) => r.direction_id === params[1] && String(r.chunk_id) > after)
+            .sort((a, b) => String(a.chunk_id).localeCompare(String(b.chunk_id)));
+          return (Number.isFinite(limit) ? rows.slice(0, limit) : rows) as T[];
+        }
+
+        if (q.includes("direction_id =")) {
+          rows = rows.filter((r) => r.direction_id === params[1]);
+        }
+        /*
+         * 按文档列片段（putKbDocument 用它找「本次没提交的旧片段」）。
+         * 少了这一层过滤会返回该用户所有文档的片段，调用方会把别的文档也删掉。
+         */
+        if (q.includes("doc_id =")) {
+          rows = rows.filter((r) => r.doc_id === params[1]);
+        }
+        if (q.includes("order by chunk_id")) {
+          rows.sort((a, b) => String(a.chunk_id).localeCompare(String(b.chunk_id)));
+        } else {
+          rows.sort(
+            (a, b) =>
+              String(a.doc_id).localeCompare(String(b.doc_id)) ||
+              Number(a.idx) - Number(b.idx),
+          );
+        }
+        return rows as T[];
+      }
+
+      if (q.includes("from memories")) {
+        let rows = [...memories.values()].filter((r) => r.user_id === params[0]);
+        if (q.includes("subject_id =")) {
+          rows = rows.filter((r) => r.subject_id === params[1]);
+        }
+        if (q.includes("status =")) {
+          // 规范查询的参数顺序是 user_id, subject_id, status；没有 subject_id 时 status 是 $2
+          const index = q.includes("subject_id =") ? 2 : 1;
+          rows = rows.filter((r) => r.status === params[index]);
+        }
+        rows.sort(
+          (a, b) =>
+            String(a.created_at).localeCompare(String(b.created_at)) ||
+            String(a.mem_id).localeCompare(String(b.mem_id)),
+        );
+        return rows as T[];
+      }
 
       if (q.includes("from direction_items")) {
         let rows = [...directionItems.values()];
@@ -318,6 +675,17 @@ function createMemoryDb(): Db {
     async one<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
 
+      // 必须放在 from users 之前：`from user_secrets` 也含 `user` 前缀
+      if (q.includes("from user_secrets") && q.includes("kind =")) {
+        const found = userSecrets.get(`${params[0]}|${params[1]}`);
+        return (found ?? null) as T | null;
+      }
+
+      if (q.includes("from kb_docs") && q.includes("doc_id =")) {
+        const found = kbDocs.get(`${params[0]}|${params[1]}`);
+        return (found ?? null) as T | null;
+      }
+
       if (q.includes("from users") && q.includes("email =")) {
         const email = params[0] as string;
         const found = [...users.values()].find((u) => u.email === email);
@@ -372,14 +740,33 @@ function createMemoryDb(): Db {
 
 // ── 单例与建表 ─────────────────────────────────────────────────────
 
+export type DbBackend = "postgres" | "memory";
+
 let cached: Db | null = null;
 let initialized = false;
+let backendOverride: DbBackend | null = null;
+
+/**
+ * 当前数据库后端。
+ *
+ * /api/config 用它决定是否允许写密钥：内存后端重启即丢、多实例各存各的，
+ * 把加密后的密钥存进去等于没存。判定只看 DATABASE_URL 是否以 postgres 开头，
+ * 与 getDb 的连接选择保持一致。
+ */
+export function dbBackend(): DbBackend {
+  if (backendOverride !== null) return backendOverride;
+  const url = process.env.DATABASE_URL;
+  return url !== undefined && url.startsWith("postgres") ? "postgres" : "memory";
+}
 
 /** 取数据库实例。首次调用时执行建表（幂等）。 */
 export async function getDb(): Promise<Db> {
   if (!cached) {
     const url = process.env.DATABASE_URL;
-    cached = url && url.startsWith("postgres") ? createPostgresDb(url) : createMemoryDb();
+    cached =
+      dbBackend() === "postgres" && url !== undefined && url.startsWith("postgres")
+        ? createPostgresDb(url)
+        : createMemoryDb();
   }
 
   if (!initialized) {
@@ -454,6 +841,98 @@ const SCHEMA = [
     UNIQUE (direction_id, content_hash)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_direction_items_kc ON direction_items(direction_id, kc_id)`,
+  /*
+   * 用户自配的供应商密钥。
+   *
+   * 只存密文：secret_ct / secret_iv / secret_tag 是 AES-256-GCM 的三个部分，
+   * secret_kid 记录加密时的密钥版本，secret_hint 是给界面看的掩码（不还原明文）。
+   * options_json 只放白名单里的非敏感字段；apiKey / extraHeaders 一律进密文。
+   *
+   * secret_ct 允许空串：TTS 的浏览器语音模式没有密钥，此时三个密文字段都为空，
+   * 表示「这一行没有需要加密的内容」，而不是「加密失败」。
+   */
+  `CREATE TABLE IF NOT EXISTS user_secrets (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    api TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    model TEXT NOT NULL,
+    options_json TEXT NOT NULL DEFAULT '{}',
+    secret_ct TEXT NOT NULL DEFAULT '',
+    secret_iv TEXT NOT NULL DEFAULT '',
+    secret_tag TEXT NOT NULL DEFAULT '',
+    secret_kid TEXT NOT NULL,
+    secret_hint TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, kind)
+  )`,
+  /*
+   * 知识库文档与片段（服务端同步副本）。
+   *
+   * 片段用复合外键指向文档：Postgres 侧删文档会自动删片段，
+   * 内存实现必须在 kb_docs 的 DELETE 分支里手动做同样的事。
+   * embedding 存 JSON 数组文本而不是 vector 类型：本项目不引入 pgvector 扩展，
+   * 向量检索在应用层做（vector.ts），维度由 embedding_dim 校验。
+   */
+  `CREATE TABLE IF NOT EXISTS kb_docs (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_id TEXT NOT NULL,
+    direction_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    page_count INTEGER NOT NULL,
+    char_count INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    kc_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, doc_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_kb_docs_direction ON kb_docs(user_id, direction_id)`,
+  `CREATE TABLE IF NOT EXISTS kb_chunks (
+    user_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    direction_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    section TEXT NOT NULL,
+    page_from INTEGER,
+    page_to INTEGER,
+    text TEXT NOT NULL,
+    embedding TEXT,
+    embedding_model TEXT,
+    embedding_dim INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, chunk_id),
+    FOREIGN KEY (user_id, doc_id) REFERENCES kb_docs(user_id, doc_id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_kb_chunks_direction ON kb_chunks(user_id, direction_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_kb_chunks_direction_chunk ON kb_chunks(user_id, direction_id, chunk_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(user_id, doc_id)`,
+  /*
+   * 记忆卡。payload 是整张卡的 JSON：错题与易混字段差异较大，
+   * 但读取时统一走 memory.ts 的 parseMemories 清洗，列只保留查询与容量需要的维度。
+   */
+  `CREATE TABLE IF NOT EXISTS memories (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mem_id TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    kc_id TEXT NOT NULL,
+    with_kc_id TEXT,
+    question_id TEXT,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, mem_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(user_id, subject_id)`,
 ];
 
 async function ensureSchema(db: Db): Promise<void> {
@@ -471,10 +950,20 @@ async function ensureSchema(db: Db): Promise<void> {
   }
 }
 
-/** 测试用：重置内存库。 */
+/** 测试用：重置内存库。不清 backendOverride——它是后端选择，不是库内容。 */
 export function __resetMemoryDbForTests(): void {
   cached = null;
   initialized = false;
+}
+
+/**
+ * 测试用：强制 dbBackend() 的返回值，传 null 恢复按 DATABASE_URL 判定。
+ *
+ * 路由测试常用「内存 Db + dbBackend() 报 postgres」的组合验证写密钥的放行路径，
+ * 因此它只影响 dbBackend()，真正返回哪个 Db 由 __setDbForTests 决定。
+ */
+export function __setDbBackendForTests(backend: DbBackend | null): void {
+  backendOverride = backend;
 }
 
 /**

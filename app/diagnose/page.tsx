@@ -125,6 +125,9 @@ export default function DiagnosePage() {
     resetSubject,
   } = useLearner(targetId, target?.graph);
 
+  /** 上传知识库的存储解析需要账号：登录后读「本地 + 账号」，未登录只读本机。 */
+  const { user } = useAuth();
+
   /*
    * 方向 id 在这里先算出来：知识库 hook 必须无条件调用，
    * 不能等到下面 target 判空之后再取。内置学科没有上传知识库，传空串。
@@ -177,17 +180,27 @@ export default function DiagnosePage() {
     unresolved,
   } = useMaterialPack(targetId, graph);
   /*
-   * 上传资料只存在本浏览器的 IndexedDB，按方向隔离。
+   * 上传资料：本机 IndexedDB + 账号同步（登录时）。按方向隔离。
    * 解包成 MaterialPack 后交给 materialForConcept 与教材包合并；
    * 没有绑定知识点的文档不会进这个包，只服务导师检索。
+   *
+   * uploadsToPack 之前再按 directionId 过滤：复合存储是本地 + 远端并集，
+   * 任何一个越界片段都会让出题引用到别的方向的资料。
    */
   const {
     docs: kbDocs,
     chunks: kbChunks,
     loading: kbLoading,
     error: kbError,
-  } = useKnowledgeBase(directionId);
-  const uploadedPack = useMemo(() => uploadsToPack(kbDocs, kbChunks), [kbDocs, kbChunks]);
+  } = useKnowledgeBase(directionId, user?.id);
+  const uploadedPack = useMemo(
+    () =>
+      uploadsToPack(
+        kbDocs.filter((doc) => doc.directionId === directionId),
+        kbChunks.filter((chunk) => chunk.directionId === directionId),
+      ),
+    [kbDocs, kbChunks, directionId],
+  );
   const depths = useMemo(
     () => (graph ? computeDepths(graph) : new Map<string, number>()),
     [graph],
@@ -419,6 +432,12 @@ export default function DiagnosePage() {
   const generateFor = useCallback(
     async (kcId: string, kcNameText: string) => {
       if (!target || target.kind !== "direction") return;
+      /*
+       * 知识库还在读时绝不调用 ensureItems：
+       * 此时 uploadedPack 还是空包，生成出来的题会永久缺少上传资料依据，
+       * 而题目一旦落库就按缓存复用，不会自动补。
+       */
+      if (kbLoading) return;
       const concept = target.graph.concepts.find((c) => c.id === kcId);
       if (!concept) return;
 
@@ -482,7 +501,7 @@ export default function DiagnosePage() {
       setDirectionItems((prev) => [...prev.filter((i) => i.kcId !== kcId), ...fresh]);
       setGen({ kind: "idle" });
     },
-    [target, provider, directionItems, materialPack, materialSelection, uploadedPack],
+    [target, provider, directionItems, materialPack, materialSelection, uploadedPack, kbLoading],
   );
 
   // 出题：没有 current 且还没答满上限时，先看要不要生成，再选题
@@ -496,7 +515,7 @@ export default function DiagnosePage() {
     }
 
     // 方向目标：没有可出的题时，尝试为下一个 KC 懒生成
-    if (target.kind === "direction" && gen.kind === "idle" && !itemsLoading) {
+    if (target.kind === "direction" && gen.kind === "idle" && !itemsLoading && !kbLoading) {
       const need = kcNeedingItems(learner);
       if (need) void generateFor(need.id, need.name);
     }
@@ -509,6 +528,7 @@ export default function DiagnosePage() {
     pickNext,
     gen.kind,
     itemsLoading,
+    kbLoading,
     kcNeedingItems,
     generateFor,
   ]);

@@ -1,13 +1,19 @@
 /**
- * 认证与方向市场的端到端测试。
+ * 认证、账号配置与方向市场的端到端测试。
  *
  * 验证真实的服务端行为，不是界面渲染：
  *   - 注册 → 会话生效 → 取当前用户
  *   - 重复注册被拒
  *   - 登录 / 错误密码 / 登出
  *   - 进度按用户隔离
+ *   - 未登录时读配置、服务端代发、写知识库与记忆卡一律 401
+ *   - 登录后 PUT /api/config 加密保存（缺主密钥时 503）→ GET 只回掩码 → DELETE
+ *   - PUT / GET / DELETE /api/kb 往返
+ *   - 记忆卡 LWW：旧卡不会覆盖新卡
  *   - 创建方向 → 公开 → 出现在市场 → 另一个用户复制
  *   - 未登录不能创建、不能看私有方向
+ *
+ * 运行：BASE_URL=http://127.0.0.1:3218 npx tsx scripts/auth-smoke.ts
  */
 
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3218";
@@ -35,6 +41,11 @@ function client() {
     async fetch(path: string, init: RequestInit = {}) {
       const headers = new Headers(init.headers);
       if (cookie) headers.set("Cookie", cookie);
+      /*
+       * 服务端对写请求做同源校验（origin.ts）：不带 Origin 的写请求一律 403。
+       * 脚本没有浏览器上下文，用 BASE 自己当来源，等价于同源页面发起的请求。
+       */
+      headers.set("Origin", BASE);
       if (init.body && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }
@@ -322,7 +333,298 @@ const afterLogout = await freshClient.fetch("/api/auth");
 const afterLogoutData = (await afterLogout.json()) as { user: unknown };
 check("登出后会话失效", afterLogoutData.user === null, `user=${JSON.stringify(afterLogoutData.user)}`);
 
-// ── 22. 清理：删掉测试创建的方向 ──
+// ── 22. 未登录：读配置 / 服务端代发 / 写知识库与记忆卡一律 401 ──
+const smokeDirectionId = `smoke-${stamp}`;
+const smokeDocId = `smoke-doc-${stamp}`;
+const smokeChunkId = `smoke-chunk-${stamp}`;
+const nowIso = new Date(stamp).toISOString();
+const smokeDoc = {
+  id: smokeDocId,
+  directionId: smokeDirectionId,
+  title: "冒烟文档",
+  fileName: "smoke.md",
+  kind: "md" as const,
+  size: 8,
+  charCount: 8,
+  chunkCount: 1,
+  kcIds: [] as string[],
+  createdAt: nowIso,
+};
+const smokeChunk = {
+  id: smokeChunkId,
+  docId: smokeDocId,
+  directionId: smokeDirectionId,
+  title: "冒烟",
+  section: "",
+  text: "栈是后进先出。",
+  index: 0,
+};
+
+async function errorCodeOf(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: unknown; code?: unknown };
+    if (typeof body.error === "object" && body.error !== null) {
+      const nested = (body.error as { code?: unknown }).code;
+      if (typeof nested === "string") return nested;
+    }
+    return typeof body.code === "string" ? body.code : "";
+  } catch {
+    return "";
+  }
+}
+
+const anonConfig = await anon.fetch("/api/config");
+check(
+  "未登录 GET /api/config 返回 401",
+  anonConfig.status === 401,
+  `HTTP ${anonConfig.status} · ${await errorCodeOf(anonConfig)}`,
+);
+
+const anonChat = await anon.fetch("/api/llm/chat", {
+  method: "POST",
+  body: JSON.stringify({ messages: [{ role: "user", content: "你好" }], stream: false }),
+});
+check(
+  "未登录 POST /api/llm/chat 返回 401（不代发）",
+  anonChat.status === 401,
+  `HTTP ${anonChat.status} · ${await errorCodeOf(anonChat)}`,
+);
+
+const anonKb = await anon.fetch("/api/kb", {
+  method: "PUT",
+  body: JSON.stringify({ doc: smokeDoc, chunks: [smokeChunk], baseUpdatedAt: null }),
+});
+check(
+  "未登录 PUT /api/kb 返回 401",
+  anonKb.status === 401,
+  `HTTP ${anonKb.status} · ${await errorCodeOf(anonKb)}`,
+);
+
+const anonMemories = await anon.fetch("/api/memories", {
+  method: "PUT",
+  body: JSON.stringify({ subjectId: "data-structures", memories: [] }),
+});
+check(
+  "未登录 PUT /api/memories 返回 401",
+  anonMemories.status === 401,
+  `HTTP ${anonMemories.status} · ${await errorCodeOf(anonMemories)}`,
+);
+
+// ── 23. 登录后 PUT /api/config：有主密钥则 200 + 掩码 + 删除，否则 503 ──
+interface ConfigProbe {
+  readonly res: Response;
+  readonly text: string;
+  readonly data: {
+    config?: { configured?: boolean; hint?: string; baseUrl?: string; model?: string };
+    error?: { code?: string; message?: string };
+  } | null;
+}
+
+const smokeKey = `sk-smoke-${stamp}-0123456789abcdef`;
+
+async function putLlmConfig(baseUrl: string): Promise<ConfigProbe> {
+  const res = await a.fetch("/api/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      provider: "llm",
+      label: "Smoke account config",
+      kind: "openai-compatible",
+      baseUrl,
+      apiKey: smokeKey,
+      model: "deepseek-chat",
+    }),
+  });
+  const text = await res.text();
+  return {
+    res,
+    text,
+    data: JSON.parse(text || "null") as ConfigProbe["data"],
+  };
+}
+
+let putConfig = await putLlmConfig("https://api.deepseek.com/v1");
+let dnsNote = "";
+
+/*
+ * 部分 CI / 代理网络会把所有域名解析到 198.18/15（基准测试保留段），
+ * 服务端的 SSRF 校验会据此拒绝真实域名。这不是配置保存逻辑的问题，
+ * 用公网字面量地址再试一次，确保 200 / 503 分支真的被执行到。
+ * 该地址只写入再删除，不会发任何请求。
+ */
+if (
+  putConfig.res.status === 400 &&
+  (putConfig.data?.error?.message ?? "").includes("上游地址不允许")
+) {
+  dnsNote = "（api.deepseek.com 在当前网络被解析到内网段，改用公网字面量地址复测）";
+  console.log(`NOTE  ${dnsNote}`);
+  putConfig = await putLlmConfig("https://1.1.1.1/v1");
+}
+
+const putConfigData = putConfig.data;
+const putConfigCode = putConfigData?.error?.code ?? "";
+
+if (putConfig.res.ok) {
+  check(
+    "登录后 PUT /api/config 加密保存成功",
+    putConfigData?.config?.configured === true && putConfigData.config.model === "deepseek-chat",
+    `HTTP ${putConfig.res.status} · hint=${putConfigData?.config?.hint ?? ""}${dnsNote}`,
+  );
+
+  const getConfig = await a.fetch("/api/config");
+  const getConfigText = await getConfig.text();
+  const getConfigData = JSON.parse(getConfigText || "null") as {
+    config?: { llm?: { configured?: boolean; hint?: string } };
+  } | null;
+  check(
+    "GET /api/config 只回掩码，响应里没有明文密钥",
+    getConfig.ok &&
+      getConfigData?.config?.llm?.configured === true &&
+      (getConfigData.config.llm.hint ?? "") !== "" &&
+      !getConfigText.includes(smokeKey),
+    `hint=${getConfigData?.config?.llm?.hint ?? ""}`,
+  );
+
+  const delConfig = await a.fetch("/api/config?kind=llm", { method: "DELETE" });
+  const delConfigData = (await delConfig.json().catch(() => null)) as {
+    deleted?: boolean;
+  } | null;
+  const afterDel = await a.fetch("/api/config");
+  const afterDelData = (await afterDel.json().catch(() => null)) as {
+    config?: { llm?: { configured?: boolean } };
+  } | null;
+  check(
+    "DELETE /api/config 后 llm 行回到未配置",
+    delConfig.ok &&
+      delConfigData?.deleted === true &&
+      afterDelData?.config?.llm?.configured === false,
+    `HTTP ${delConfig.status} · deleted=${String(delConfigData?.deleted)}`,
+  );
+} else {
+  check(
+    "未配置主密钥 / 持久化时拒绝写密钥（503）",
+    putConfig.res.status === 503 &&
+      (putConfigCode === "KEY_ENC_UNAVAILABLE" || putConfigCode === "PERSISTENCE_UNAVAILABLE"),
+    `HTTP ${putConfig.res.status} · ${putConfigCode}${
+      putConfigCode === "PERSISTENCE_UNAVAILABLE" ? "（内存后端，符合预期）" : ""
+    }${dnsNote}${putConfigData?.error?.message ? ` · ${putConfigData.error.message}` : ""}`,
+  );
+}
+
+// ── 24. PUT / GET / DELETE /api/kb 往返 ──
+const putKb = await a.fetch("/api/kb", {
+  method: "PUT",
+  body: JSON.stringify({ doc: smokeDoc, chunks: [smokeChunk], baseUpdatedAt: null }),
+});
+check("PUT /api/kb 写入文档与片段", putKb.ok, `HTTP ${putKb.status} · ${await errorCodeOf(putKb)}`);
+
+const getKb = await a.fetch(`/api/kb?directionId=${encodeURIComponent(smokeDirectionId)}`);
+const getKbData = (await getKb.json().catch(() => null)) as {
+  docs?: { id: string }[];
+  chunks?: { id: string }[];
+} | null;
+check(
+  "GET /api/kb 读回刚写的文档与片段",
+  getKb.ok &&
+    (getKbData?.docs ?? []).some((doc) => doc.id === smokeDocId) &&
+    (getKbData?.chunks ?? []).some((chunk) => chunk.id === smokeChunkId),
+  `docs=${getKbData?.docs?.length ?? 0} · chunks=${getKbData?.chunks?.length ?? 0}`,
+);
+
+const delKb = await a.fetch(`/api/kb?directionId=${encodeURIComponent(smokeDirectionId)}`, {
+  method: "DELETE",
+});
+const delKbData = (await delKb.json().catch(() => null)) as {
+  deletedDocs?: number;
+  deletedChunks?: number;
+} | null;
+const getKbAfter = await a.fetch(`/api/kb?directionId=${encodeURIComponent(smokeDirectionId)}`);
+const getKbAfterData = (await getKbAfter.json().catch(() => null)) as {
+  docs?: unknown[];
+  chunks?: unknown[];
+} | null;
+check(
+  "DELETE /api/kb 按方向清空",
+  delKb.ok &&
+    (delKbData?.deletedDocs ?? 0) >= 1 &&
+    (getKbAfterData?.docs?.length ?? -1) === 0,
+  `deletedDocs=${delKbData?.deletedDocs ?? 0} · deletedChunks=${delKbData?.deletedChunks ?? 0}`,
+);
+
+// ── 25. 记忆卡 LWW：旧卡不会覆盖新卡 ──
+const smokeMemId = `smoke-mem-${stamp}`;
+const t0 = new Date(stamp - 60_000).toISOString();
+const t1 = new Date(stamp - 30_000).toISOString();
+const t2 = new Date(stamp).toISOString();
+const oldCard = {
+  id: smokeMemId,
+  kind: "error" as const,
+  kcId: "c01",
+  questionId: "q-smoke",
+  prompt: "旧卡",
+  correction: "",
+  createdAt: t0,
+  lastSeenAt: t1,
+  status: "open" as const,
+  streak: 0,
+  reviewCount: 1,
+};
+const newCard = { ...oldCard, prompt: "新卡", lastSeenAt: t2, reviewCount: 2 };
+
+async function putMemories(card: typeof oldCard): Promise<Response> {
+  return a.fetch("/api/memories", {
+    method: "PUT",
+    body: JSON.stringify({ subjectId: "data-structures", memories: [card] }),
+  });
+}
+
+const putOld = await putMemories(oldCard);
+const putOldData = (await putOld.json().catch(() => null)) as {
+  stored?: number;
+  skippedStale?: number;
+} | null;
+const putNew = await putMemories(newCard);
+const putNewData = (await putNew.json().catch(() => null)) as {
+  stored?: number;
+  skippedStale?: number;
+} | null;
+const putStale = await putMemories(oldCard);
+const putStaleData = (await putStale.json().catch(() => null)) as {
+  stored?: number;
+  skippedStale?: number;
+} | null;
+
+check(
+  "PUT /api/memories 先写入旧卡再写入新卡",
+  putOld.ok && putOldData?.stored === 1 && putNew.ok && putNewData?.stored === 1,
+  `old stored=${putOldData?.stored ?? "?"} · new stored=${putNewData?.stored ?? "?"}`,
+);
+check(
+  "旧卡不会覆盖新卡（skippedStale=1，且没有写入）",
+  putStale.ok && putStaleData?.stored === 0 && putStaleData?.skippedStale === 1,
+  `stored=${putStaleData?.stored ?? "?"} · skippedStale=${putStaleData?.skippedStale ?? "?"}`,
+);
+
+const getMemories = await a.fetch("/api/memories?subjectId=data-structures");
+const getMemoriesData = (await getMemories.json().catch(() => null)) as {
+  memories?: { id: string; prompt: string }[];
+} | null;
+check(
+  "GET /api/memories 读回的是新卡",
+  getMemories.ok && (getMemoriesData?.memories ?? []).some((item) => item.id === smokeMemId && item.prompt === "新卡"),
+  `卡片数=${getMemoriesData?.memories?.length ?? 0}`,
+);
+
+const delMemories = await a.fetch("/api/memories?subjectId=data-structures", { method: "DELETE" });
+const delMemoriesData = (await delMemories.json().catch(() => null)) as {
+  deleted?: number;
+} | null;
+check(
+  "DELETE /api/memories 清空该学科",
+  delMemories.ok && (delMemoriesData?.deleted ?? 0) >= 1,
+  `deleted=${delMemoriesData?.deleted ?? 0}`,
+);
+
+// ── 26. 清理：删掉测试创建的方向 ──
 await a.fetch(`/api/directions?id=${encodeURIComponent(directionId)}`, { method: "DELETE" });
 await b.fetch(`/api/directions?id=${encodeURIComponent(copyData.id ?? "")}`, { method: "DELETE" });
 

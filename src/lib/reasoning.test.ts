@@ -238,6 +238,33 @@ describe("parseStreamPayload / Anthropic", () => {
     ).toEqual({ text: "", reasoning: "想", finishReason: null });
   });
 
+  it("delta.type 为空且 delta.text 是字符串时按 text_delta 处理", () => {
+    expect(
+      parseAnthropic({
+        type: "content_block_delta",
+        index: 0,
+        delta: { text: "无 type 正文" },
+      }),
+    ).toEqual({ text: "无 type 正文", reasoning: "", finishReason: null });
+  });
+
+  it("delta.type 为空且没有 text 字符串时不产出内容，thinking 字段也不进思考", () => {
+    expect(
+      parseAnthropic({
+        type: "content_block_delta",
+        index: 0,
+        delta: { thinking: "只有 thinking 字段" },
+      }),
+    ).toBeNull();
+    expect(
+      parseAnthropic({
+        type: "content_block_delta",
+        index: 1,
+        delta: { text: 42 },
+      }),
+    ).toBeNull();
+  });
+
   it("signature_delta 与 input_json_delta 不产出任何内容", () => {
     expect(
       parseAnthropic({
@@ -375,6 +402,43 @@ describe("流式累加后正文与思考不串味", () => {
     expect(text).not.toContain("先想");
     expect(reasoning).not.toContain("再答");
   });
+
+  it("Anthropic：delta.type 缺失的流式事件仍能出字，thinking_delta 不混入正文", () => {
+    const decoder = createSseDecoder();
+    const events = decoder.push(
+      [
+        anthropicSse("content_block_delta", {
+          type: "content_block_delta",
+          index: 0,
+          delta: { text: "无 type 也" },
+        }),
+        anthropicSse("content_block_delta", {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "thinking_delta", thinking: "思考" },
+        }),
+        anthropicSse("content_block_delta", {
+          type: "content_block_delta",
+          index: 2,
+          delta: { text: "要出字" },
+        }),
+      ].join(""),
+    );
+
+    let text = "";
+    let reasoning = "";
+    for (const event of events) {
+      const delta = parseStreamPayload("anthropic", event);
+      if (!delta) continue;
+      text += delta.text;
+      reasoning += delta.reasoning;
+    }
+
+    expect(text).toBe("无 type 也要出字");
+    expect(reasoning).toBe("思考");
+    expect(text).not.toContain("思考");
+    expect(reasoning).not.toContain("要出字");
+  });
 });
 
 describe("非流式解析", () => {
@@ -464,6 +528,28 @@ describe("非流式解析", () => {
     const json = { content: [{ type: "thinking", thinking: "思考" }] };
     expect(extractNonStreamingText("anthropic", json)).toBe("");
     expect(extractNonStreamingReasoning("anthropic", json)).toBe("思考");
+  });
+
+  it("Anthropic：没有 type 的块只要 text 是字符串就算正文", () => {
+    const json = {
+      content: [
+        { text: "无 type 第一段" },
+        { type: "thinking", thinking: "思考不应进正文" },
+        { text: "无 type 第二段" },
+      ],
+    };
+    const text = extractNonStreamingText("anthropic", json);
+    expect(text).toBe("无 type 第一段无 type 第二段");
+    expect(text).not.toContain("思考不应进正文");
+    // 推理仍只认 type=thinking，无 type 的块不进推理
+    expect(extractNonStreamingReasoning("anthropic", json)).toBe("思考不应进正文");
+  });
+
+  it("Anthropic：没有 type 且 text 不是字符串的块被跳过", () => {
+    const json = {
+      content: [{ text: 123 }, { text: null }, { type: "text", text: "正常" }],
+    };
+    expect(extractNonStreamingText("anthropic", json)).toBe("正常");
   });
 
   it("非对象输入一律返回空串", () => {

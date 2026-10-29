@@ -3,6 +3,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { readAloudLabel } from "@/components/tutor-logic";
+import { loadCallMode, type CallMode } from "@/lib/serverConfig";
 import {
   loadTtsConfig,
   prepareSpeechText,
@@ -52,11 +53,14 @@ export function ReadAloud({
   id,
   text,
   disabled = false,
+  mode,
 }: {
   readonly id: string;
   readonly text: string;
   /** 流式生成中不允许朗读半截内容。 */
   readonly disabled?: boolean;
+  /** 调用模式；缺省读设置页存下的选择。 */
+  readonly mode?: CallMode;
 }) {
   const active = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const [busy, setBusy] = useState(false);
@@ -105,7 +109,8 @@ export function ReadAloud({
 
     try {
       if (config.engine === "openai-compatible") {
-        const result = await speakRemote(text, config);
+        // 调用模式在点击时才读：设置页刚切完模式，下一条回答立即生效。
+        const result = await speakRemote(text, config, { mode: mode ?? loadCallMode() });
         if (result.fallbackReason !== undefined && result.fallbackReason !== "") {
           setFallback(result.fallbackReason);
         }

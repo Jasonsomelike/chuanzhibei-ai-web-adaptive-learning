@@ -6,14 +6,17 @@ import {
   SEARCH_CONFIG_KEY,
   SEARCH_TIMEOUT_MS,
   SearchError,
+  clearSearchConfig,
   loadSearchConfig,
   resolveSearchProvider,
   saveSearchConfig,
   searchCacheKey,
   searchTavily,
+  searchViaServer,
   searchWeb,
   searchWikipedia,
   type SearchConfig,
+  type SearchRuntime,
 } from "@/lib/searchClient";
 
 class MemoryStorage implements Storage {
@@ -619,3 +622,265 @@ describe("30 分钟会话缓存", () => {
     expect(outcome.results).toHaveLength(2);
   });
 });
+
+// ── 供应商解析：穷尽与显式回退 ────────────────────────────────────
+
+function runtime(overrides: Partial<SearchRuntime> = {}): SearchRuntime {
+  return { mode: "server", loggedIn: true, ...overrides };
+}
+
+describe("resolveSearchProvider：穷尽 switch 与显式回退", () => {
+  it("deepseek 未登录：明确回退维基百科并提示，不掉进 Tavily 分支", () => {
+    const resolved = resolveSearchProvider(
+      config({ provider: "deepseek" }),
+      runtime({ loggedIn: false }),
+    );
+
+    expect(resolved.provider).toBe("wikipedia");
+    expect(resolved.notice).toContain("DeepSeek");
+    expect(resolved.notice).toContain("登录");
+    expect(resolved.notice).not.toContain("Tavily");
+  });
+
+  it("deepseek 登录后恒为 deepseek，与 local/server 无关（只能走代理）", () => {
+    expect(resolveSearchProvider(config({ provider: "deepseek" }), runtime()).provider).toBe(
+      "deepseek",
+    );
+    expect(
+      resolveSearchProvider(config({ provider: "deepseek" }), runtime({ mode: "local" })).provider,
+    ).toBe("deepseek");
+  });
+
+  it("tavily 在 server 模式不看本机密钥；未登录则回退并提示", () => {
+    expect(resolveSearchProvider(config({ provider: "tavily" }), runtime())).toEqual({
+      provider: "tavily",
+      notice: null,
+    });
+
+    const anon = resolveSearchProvider(
+      config({ provider: "tavily", tavilyApiKey: "tvly-k" }),
+      runtime({ loggedIn: false }),
+    );
+    expect(anon.provider).toBe("wikipedia");
+    expect(anon.notice).toContain("登录");
+  });
+
+  it("tavily 在 local 模式仍要求本机密钥", () => {
+    expect(
+      resolveSearchProvider(
+        config({ provider: "tavily", tavilyApiKey: "  " }),
+        runtime({ mode: "local" }),
+      ).provider,
+    ).toBe("wikipedia");
+    expect(
+      resolveSearchProvider(
+        config({ provider: "tavily", tavilyApiKey: "tvly-k" }),
+        runtime({ mode: "local" }),
+      ),
+    ).toEqual({ provider: "tavily", notice: null });
+  });
+
+  it("wikipedia 永不回退，任何模式与登录态都一样", () => {
+    for (const mode of ["server", "local"] as const) {
+      for (const loggedIn of [true, false]) {
+        expect(
+          resolveSearchProvider(config({ provider: "wikipedia" }), { mode, loggedIn }),
+        ).toEqual({ provider: "wikipedia", notice: null });
+      }
+    }
+  });
+});
+
+describe("服务端搜索代理", () => {
+  it("deepseek 登录后 POST /api/search，请求体只带 provider 与 query", async () => {
+    const { calls } = stubFetch(() =>
+      jsonResponse({
+        provider: "deepseek",
+        results: [
+          { title: "栈", url: "https://example.com/stack", snippet: "后进先出" },
+          { title: "队列", url: "https://example.com/queue", snippet: "先进先出" },
+        ],
+      }),
+    );
+
+    const outcome = await searchWeb("  栈  ", config({ provider: "deepseek" }), undefined, runtime());
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/search");
+    expect(calls[0].init.method).toBe("POST");
+    const headers = calls[0].init.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(headers.Authorization).toBeUndefined();
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      provider: "deepseek",
+      query: "栈",
+    });
+
+    expect(outcome.provider).toBe("deepseek");
+    expect(outcome.notice).toBeNull();
+    expect(outcome.error).toBeNull();
+    expect(outcome.results.map((r) => r.provider)).toEqual(["deepseek", "deepseek"]);
+    expect(outcome.results[0]).toMatchObject({ title: "栈", snippet: "后进先出" });
+  });
+
+  it("tavily 在 server 模式走代理，且绝不把本机密钥发出去", async () => {
+    const { calls } = stubFetch(() =>
+      jsonResponse({
+        provider: "tavily",
+        results: [{ title: "栈", url: "https://example.com/stack", snippet: "后进先出" }],
+      }),
+    );
+
+    const outcome = await searchWeb(
+      "栈",
+      config({ provider: "tavily", tavilyApiKey: "tvly-should-not-leave-browser" }),
+      undefined,
+      runtime(),
+    );
+
+    expect(calls[0].url).toBe("/api/search");
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect(String(calls[0].init.body)).not.toContain("tvly-should-not-leave-browser");
+    expect(outcome.provider).toBe("tavily");
+  });
+
+  it("未登录选 deepseek 时直连维基百科，并在 notice 里说明是回退", async () => {
+    const { calls } = stubFetch(() => jsonResponse(wikiPayload));
+
+    const outcome = await searchWeb(
+      "栈",
+      config({ provider: "deepseek" }),
+      undefined,
+      runtime({ loggedIn: false }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.startsWith("https://zh.wikipedia.org/w/api.php?")).toBe(true);
+    expect(outcome.provider).toBe("wikipedia");
+    expect(outcome.error).toBeNull();
+    expect(outcome.notice).toContain("DeepSeek");
+    expect(outcome.notice).toContain("维基百科");
+  });
+
+  it("代理 404 provider_not_configured → not-configured，且供应商仍是 deepseek", async () => {
+    stubFetch(() =>
+      jsonResponse(
+        { error: "DeepSeek 搜索未配置，请到设置页填写搜索密钥", code: "provider_not_configured" },
+        404,
+      ),
+    );
+
+    const outcome = await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime());
+
+    expect(outcome.provider).toBe("deepseek");
+    expect(outcome.errorKind).toBe("not-configured");
+    expect(outcome.error).toContain("设置页");
+    expect(outcome.results).toEqual([]);
+  });
+
+  it("代理 401 → unauthorized，提示登录而不是「没有结果」", async () => {
+    stubFetch(() => jsonResponse({ error: "请先登录", code: "unauthorized" }, 401));
+
+    const outcome = await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime());
+
+    expect(outcome.errorKind).toBe("unauthorized");
+    expect(outcome.error).toContain("登录");
+  });
+
+  it("代理 429 / 504 / 502 分别归为限流、超时、服务不可用", async () => {
+    stubFetch(() => jsonResponse({ error: "限流", code: "rate_limited" }, 429));
+    expect((await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime())).errorKind).toBe(
+      "rate-limit",
+    );
+
+    stubFetch(() => jsonResponse({ error: "上游超时", code: "provider_timeout" }, 504));
+    expect((await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime())).errorKind).toBe(
+      "timeout",
+    );
+
+    stubFetch(() => jsonResponse({ error: "上游失败", code: "provider_error" }, 502));
+    const http = await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime());
+    expect(http.errorKind).toBe("http");
+    expect(http.error).toContain("上游失败");
+  });
+
+  it("200 但 results 形状不对 → parse；空 results → empty", async () => {
+    stubFetch(() => jsonResponse({ provider: "deepseek", results: "nope" }));
+    expect((await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime())).errorKind).toBe(
+      "parse",
+    );
+
+    stubFetch(() => jsonResponse({ provider: "deepseek", results: [] }));
+    expect((await searchWeb("栈", config({ provider: "deepseek" }), undefined, runtime())).errorKind).toBe(
+      "empty",
+    );
+  });
+
+  it("searchViaServer 拒绝空检索词，不发请求", async () => {
+    const { mock } = stubFetch(() => jsonResponse({ results: [] }));
+
+    const err = await searchErrorOf(searchViaServer("deepseek", "   "));
+
+    expect(err.kind).toBe("empty");
+    expect(mock).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearSearchConfig", () => {
+  it("清 alp.search.v1 与全部 alp.websearch.v1:*，不碰其他键", () => {
+    const { localStorage, sessionStorage } = stubBrowser();
+    saveSearchConfig(config({ provider: "deepseek", defaultOn: true }));
+    sessionStorage.setItem(searchCacheKey("deepseek", "栈"), "{}");
+    sessionStorage.setItem(searchCacheKey("wikipedia", "栈"), "{}");
+    sessionStorage.setItem("alp.other", "keep");
+    localStorage.setItem("alp.other", "keep");
+
+    clearSearchConfig();
+
+    expect(localStorage.getItem(SEARCH_CONFIG_KEY)).toBeNull();
+    expect(localStorage.getItem("alp.other")).toBe("keep");
+    expect(sessionStorage.getItem(searchCacheKey("deepseek", "栈"))).toBeNull();
+    expect(sessionStorage.getItem(searchCacheKey("wikipedia", "栈"))).toBeNull();
+    expect(sessionStorage.getItem("alp.other")).toBe("keep");
+  });
+
+  it("SSR 或存储抛错时不冒泡", () => {
+    vi.stubGlobal("window", undefined);
+    expect(() => clearSearchConfig()).not.toThrow();
+
+    const broken = {
+      length: 0,
+      clear() {
+        throw new Error("denied");
+      },
+      getItem() {
+        throw new Error("denied");
+      },
+      key() {
+        throw new Error("denied");
+      },
+      removeItem() {
+        throw new Error("denied");
+      },
+      setItem() {
+        throw new Error("denied");
+      },
+    } as Storage;
+    vi.stubGlobal("window", { localStorage: broken, sessionStorage: broken });
+    expect(() => clearSearchConfig()).not.toThrow();
+  });
+
+  it("deepseek 能原样存进 alp.search.v1（旧实现会把它压成 wikipedia）", () => {
+    const { localStorage } = stubBrowser();
+
+    saveSearchConfig(config({ provider: "deepseek", defaultOn: true }));
+
+    expect(loadSearchConfig().provider).toBe("deepseek");
+    const raw = JSON.parse(localStorage.getItem(SEARCH_CONFIG_KEY) ?? "null") as Record<
+      string,
+      unknown
+    >;
+    expect(raw.provider).toBe("deepseek");
+  });
+});
+

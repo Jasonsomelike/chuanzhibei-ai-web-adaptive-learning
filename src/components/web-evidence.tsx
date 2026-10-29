@@ -1,7 +1,7 @@
 "use client";
 
 import { Pill } from "@/components/ui";
-import type { WebHit } from "@/lib/websearch";
+import { webProviderLabel, type WebHit } from "@/lib/websearch";
 import { webUsageNote } from "@/components/tutor-logic";
 
 /**
@@ -22,7 +22,7 @@ export function WebEvidence({
   /** 回答里实际出现的 [网络n] 序号（1 起）。 */
   readonly used: readonly number[];
   readonly error: string | null;
-  /** 不是失败：例如 Tavily 没填 key，已回退维基百科。 */
+  /** 不是失败：例如未登录 / 未填 key，已明确回退维基百科。 */
   readonly notice: string | null;
   readonly fromCache: boolean;
 }) {
@@ -73,7 +73,9 @@ export function WebEvidence({
                     {hit.label}
                   </a>
                   <Pill tone="neutral">
-                    {hit.provider === "wikipedia" ? "维基百科 · CC BY-SA 4.0" : "Tavily 摘要"}
+                    {hit.provider === "wikipedia"
+                      ? `${webProviderLabel(hit.provider)} · CC BY-SA 4.0`
+                      : webProviderLabel(hit.provider)}
                   </Pill>
                   {usedSet.has(hit.ref) ? <Pill tone="accent">已引用</Pill> : null}
                 </div>

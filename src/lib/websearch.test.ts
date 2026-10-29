@@ -6,11 +6,14 @@ import {
   MAX_WEB_RESULTS,
   buildSearchQuery,
   formatWebContext,
+  normalizeDeepSeek,
   normalizeTavily,
   normalizeWikipedia,
   parseWebCitations,
   webCitationLabel,
   webHits,
+  webProviderLabel,
+  type WebProvider,
   type WebResult,
 } from "@/lib/websearch";
 
@@ -132,6 +135,130 @@ describe("normalizeTavily", () => {
     expect(normalizeTavily(null)).toEqual([]);
     expect(normalizeTavily({})).toEqual([]);
     expect(normalizeTavily({ results: "不是数组" })).toEqual([]);
+  });
+});
+
+describe("normalizeDeepSeek", () => {
+  it("按 summary → snippet → content 的顺序取第一个非空摘要", () => {
+    const results = normalizeDeepSeek({
+      results: [
+        { title: "一", url: "https://example.com/a", summary: " summary 优先 ", snippet: "snippet", content: "content" },
+        { title: "二", url: "https://example.com/b", summary: "   ", snippet: " 只用 snippet ", content: "content" },
+        { title: "三", url: "https://example.com/c", content: " 只剩 content " },
+      ],
+    });
+
+    expect(results.map((r) => r.snippet)).toEqual(["summary 优先", "只用 snippet", "只剩 content"]);
+    expect(results.every((r) => r.provider === "deepseek")).toBe(true);
+  });
+
+  it("按 rerank_score 降序排列，字符串分数也能比较", () => {
+    const results = normalizeDeepSeek({
+      results: [
+        { title: "低", url: "https://example.com/low", summary: "1", rerank_score: 0.2 },
+        { title: "高", url: "https://example.com/high", summary: "3", rerank_score: "0.9" },
+        { title: "中", url: "https://example.com/mid", summary: "2", rerank_score: 0.5 },
+      ],
+    });
+
+    expect(results.map((r) => r.title)).toEqual(["高", "中", "低"]);
+  });
+
+  it("缺分数的条目排在最后，并保持原始相对顺序", () => {
+    const results = normalizeDeepSeek({
+      results: [
+        { title: "无分一", url: "https://example.com/n1", summary: "a" },
+        { title: "有分", url: "https://example.com/s", summary: "b", rerank_score: -1 },
+        { title: "无分二", url: "https://example.com/n2", summary: "c", rerank_score: "abc" },
+      ],
+    });
+
+    expect(results.map((r) => r.title)).toEqual(["有分", "无分一", "无分二"]);
+  });
+
+  it("摘要按 300 个码点截断", () => {
+    const [result] = normalizeDeepSeek({
+      results: [{ title: "长", url: "https://example.com/long", summary: "甲".repeat(MAX_SNIPPET_CHARS + 40) }],
+    });
+
+    expect(points(result.snippet)).toBe(MAX_SNIPPET_CHARS);
+  });
+
+  it("丢弃非 http(s) 链接、非对象条目与空 URL", () => {
+    const results = normalizeDeepSeek({
+      results: [
+        { title: "脚本", url: "javascript:alert(1)" },
+        { title: "相对", url: "/wiki/Stack" },
+        { title: "空", url: "  " },
+        null,
+        "文本",
+        42,
+        { title: "正常", url: "https://ok.example/a", summary: "ok" },
+      ],
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe("https://ok.example/a");
+  });
+
+  it("按 URL 去重，留下相关度最高的一条", () => {
+    const results = normalizeDeepSeek({
+      results: [
+        { title: "低分重复", url: "https://example.com/a", summary: "低", rerank_score: 0.1 },
+        { title: "高分重复", url: "https://example.com/a", summary: "高", rerank_score: 0.8 },
+        { title: "另一条", url: "https://example.com/b", summary: "b", rerank_score: 0.5 },
+      ],
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results[0].title).toBe("高分重复");
+    expect(results[0].snippet).toBe("高");
+  });
+
+  it("最多保留 4 条", () => {
+    const results = normalizeDeepSeek({
+      results: Array.from({ length: MAX_WEB_RESULTS + 3 }, (_, i) => ({
+        title: `结果${i}`,
+        url: `https://example.com/${i}`,
+        summary: "x",
+        rerank_score: 1 - i / 10,
+      })),
+    });
+
+    expect(results).toHaveLength(MAX_WEB_RESULTS);
+    expect(results.map((r) => r.title)).toEqual(["结果0", "结果1", "结果2", "结果3"]);
+  });
+
+  it("标题为空时用域名兜底", () => {
+    const [result] = normalizeDeepSeek({
+      results: [{ title: " ", url: "https://www.example.org/queue", summary: "先进先出" }],
+    });
+
+    expect(result.title).toBe("example.org");
+  });
+
+  it("坏响应返回空数组", () => {
+    expect(normalizeDeepSeek(null)).toEqual([]);
+    expect(normalizeDeepSeek({})).toEqual([]);
+    expect(normalizeDeepSeek({ results: "不是数组" })).toEqual([]);
+    expect(normalizeDeepSeek([])).toEqual([]);
+  });
+});
+
+describe("webProviderLabel", () => {
+  it("每个供应商都有唯一的中文展示名，deepseek 不会被标成 Tavily", () => {
+    expect(webProviderLabel("wikipedia")).toBe("维基百科");
+    expect(webProviderLabel("tavily")).toBe("Tavily 摘要");
+    expect(webProviderLabel("deepseek")).toBe("DeepSeek 搜索摘要");
+
+    const labels = new Set(
+      (["wikipedia", "tavily", "deepseek"] as const).map((provider) => webProviderLabel(provider)),
+    );
+    expect(labels.size).toBe(3);
+  });
+
+  it("传给未处理的供应商时立刻抛错，而不是静默回落", () => {
+    expect(() => webProviderLabel("brave" as WebProvider)).toThrow(/未处理的搜索供应商/);
   });
 });
 
