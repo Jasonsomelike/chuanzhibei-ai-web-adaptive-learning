@@ -4,20 +4,40 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
+import { CalibrationCard } from "@/components/calibration-card";
+import { MemoryReview } from "@/components/memory-review";
 import { useSubject } from "@/lib/subject";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
-import { ensureItems, fetchItems } from "@/lib/directionItems";
+import {
+  ensureItems,
+  fetchItems,
+  materialForConcept,
+  type ItemTraceStep,
+  type ItemVerificationSummary,
+} from "@/lib/directionItems";
 import { useAuth } from "@/lib/useAuth";
 import { loadProvider, type ProviderConfig } from "@/lib/provider";
 import type { Question } from "@/data/questions";
-import { recordAttempt, attemptedQuestionIds, progressOf } from "@/lib/learner";
+import {
+  attemptedQuestionIds,
+  progressOf,
+  recordAttempt,
+  updateMemories,
+  type AttemptSource,
+} from "@/lib/learner";
 import { useLearner } from "@/lib/useLearner";
 import { useMaterialPack } from "@/lib/materialStore";
+import { MATERIAL_CHECK_PREFIX } from "@/lib/materials";
+import { uploadsToPack } from "@/lib/knowledge";
+import { useKnowledgeBase } from "@/lib/kbStore";
 import {
-  MATERIAL_CHECK_PREFIX,
-  buildMaterialContext,
-  materialCheckLabel,
-} from "@/lib/materials";
+  addConfusionMemory,
+  errorMemoryId,
+  resolveMemory,
+  reviewMemory,
+  upsertErrorMemory,
+} from "@/lib/memory";
+import { EVIDENCE_CHECK, isPassingCheck } from "@/lib/verify";
 import {
   masteryMean,
   masterySd,
@@ -59,8 +79,13 @@ interface PickedQuestion {
   readonly origin?: DirectionItem["source"];
   /** 只练习、不计证据（L4 未过或手动录入）。 */
   readonly practiceOnly: boolean;
-  /** 通过了几项校验，用于「已通过 N 项校验」标记。不含「提示：」与「依据：」。 */
+  /**
+   * 通过了几项校验，用于「已通过 N 项校验」标记。
+   * 只认 isPassingCheck：提示、依据出处、以及「依据核对：未通过/未完成」都不算通过项。
+   */
   readonly checkCount: number;
+  /** 依据核对有明确未通过或未完成结论。与 checkCount 分开显示。 */
+  readonly evidenceFailed: boolean;
   /** 未拒绝但值得提示的问题（L5 难度理由不匹配等）。 */
   readonly checkNotes: readonly string[];
   /** 题目的资料出处（checks 里的「依据：…」行）；内置题没有。 */
@@ -75,6 +100,10 @@ interface AnsweredRow {
   before: number;
   after: number;
   practiceOnly: boolean;
+  /** 作答前的预测正确率；旧数据没有。 */
+  predicted?: number;
+  /** 学生选中的选项下标，用于回看「你选了…」。 */
+  selectedIndex: number;
 }
 
 /** 生成状态机：只对当前 KC 有效。 */
@@ -96,6 +125,12 @@ export default function DiagnosePage() {
     resetSubject,
   } = useLearner(targetId, target?.graph);
 
+  /*
+   * 方向 id 在这里先算出来：知识库 hook 必须无条件调用，
+   * 不能等到下面 target 判空之后再取。内置学科没有上传知识库，传空串。
+   */
+  const directionId = target?.kind === "direction" ? target.id : "";
+
   const [answered, setAnswered] = useState<AnsweredRow[]>([]);
   const [current, setCurrent] = useState<PickedQuestion | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
@@ -108,6 +143,17 @@ export default function DiagnosePage() {
   /** 非阻塞提示：生成成功但题不够、或双解校验没跑完。 */
   const [genNotice, setGenNotice] = useState<string | null>(null);
   const [showNewDirection, setShowNewDirection] = useState(false);
+
+  /** 上一次生成的流程轨迹（L1–L6）与依据核对汇总；只存在于内存。 */
+  const [genTrace, setGenTrace] = useState<readonly ItemTraceStep[]>([]);
+  const [genVerification, setGenVerification] = useState<ItemVerificationSummary | null>(null);
+
+  /** 记忆卡到期判断用的“当前时间”。首屏客户端才需要，服务端不渲染这块。 */
+  const [nowIso, setNowIso] = useState(() => new Date().toISOString());
+  /** 容量拒绝等写入失败的原因；必须显示出来，不能只返回不展示。 */
+  const [memoryWarning, setMemoryWarning] = useState<string | null>(null);
+  const [confusionWith, setConfusionWith] = useState("");
+  const [confusionSaved, setConfusionSaved] = useState(false);
 
   const genAbort = useRef<AbortController | null>(null);
   /** 本次会话里已经尝试过生成的 KC，防止「生成成功但题不够」反复计费。 */
@@ -130,6 +176,18 @@ export default function DiagnosePage() {
     selection: materialSelection,
     unresolved,
   } = useMaterialPack(targetId, graph);
+  /*
+   * 上传资料只存在本浏览器的 IndexedDB，按方向隔离。
+   * 解包成 MaterialPack 后交给 materialForConcept 与教材包合并；
+   * 没有绑定知识点的文档不会进这个包，只服务导师检索。
+   */
+  const {
+    docs: kbDocs,
+    chunks: kbChunks,
+    loading: kbLoading,
+    error: kbError,
+  } = useKnowledgeBase(directionId);
+  const uploadedPack = useMemo(() => uploadsToPack(kbDocs, kbChunks), [kbDocs, kbChunks]);
   const depths = useMemo(
     () => (graph ? computeDepths(graph) : new Map<string, number>()),
     [graph],
@@ -138,6 +196,25 @@ export default function DiagnosePage() {
     () => new Map((graph?.concepts ?? []).map((c) => [c.id, c.name])),
     [graph],
   );
+
+  /**
+   * 「记入易混」的候选知识点：当前 KC 之外的全部知识点。
+   * 同章的排前面（更容易混淆），其余按名称排序，保证选项顺序稳定。
+   */
+  const confusionOptions = useMemo(() => {
+    if (!graph || !current) return [];
+    const selfId = current.question.kcId;
+    const selfChapter =
+      graph.concepts.find((c) => c.id === selfId)?.chapter ?? "";
+    return graph.concepts
+      .filter((c) => c.id !== selfId)
+      .sort((a, b) => {
+        const ca = a.chapter === selfChapter ? 0 : 1;
+        const cb = b.chapter === selfChapter ? 0 : 1;
+        if (ca !== cb) return ca - cb;
+        return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+      });
+  }, [graph, current]);
 
   /** 当前目标可用的题：内置题库或方向已落库的题。 */
   const availableQuestions = useMemo<readonly Question[]>(() => {
@@ -166,6 +243,11 @@ export default function DiagnosePage() {
     setGen({ kind: "idle" });
     setSkippedKcs(new Set());
     setGenNotice(null);
+    setGenTrace([]);
+    setGenVerification(null);
+    setConfusionWith("");
+    setConfusionSaved(false);
+    setMemoryWarning(null);
     genAbort.current?.abort();
     genAbort.current = null;
     attemptedGenKcs.current = new Set();
@@ -273,12 +355,14 @@ export default function DiagnosePage() {
         origin: item?.source,
         practiceOnly: item ? item.status === "practice" : false,
         /*
-         * 「提示：」开头的是未通过但值得提示的问题，「依据：」开头的是资料出处。
-         * 两者都不是通过项，不能计入 N——否则用户会看到「已通过 4 项」而实际只过了 3 项。
+         * 「提示：」是未通过但值得提示的问题，「依据：」是资料出处，
+         * 「依据核对：未通过/未完成」也不是通过项。全部交给 isPassingCheck 判定，
+         * 否则用户会看到「已通过 4 项」而实际只过了 3 项。
          */
-        checkCount: checks.filter(
-          (c) => !c.startsWith("提示：") && !c.startsWith(MATERIAL_CHECK_PREFIX),
-        ).length,
+        checkCount: checks.filter(isPassingCheck).length,
+        evidenceFailed: checks.some(
+          (c) => c.startsWith(EVIDENCE_CHECK) && c !== EVIDENCE_CHECK,
+        ),
         checkNotes: checks.filter((c) => c.startsWith("提示：")).map((c) => c.slice(3)),
         materialLabel: checks.find((c) => c.startsWith(MATERIAL_CHECK_PREFIX)) ?? null,
         chapter: chosen.concept.chapter,
@@ -346,20 +430,18 @@ export default function DiagnosePage() {
       const controller = new AbortController();
       genAbort.current = controller;
       setGen({ kind: "loading", kcId, kcName: kcNameText, done: 0, total: ITEMS_PER_KC });
+      setGenTrace([]);
+      setGenVerification(null);
 
-      const materialContext = buildMaterialContext(materialPack, [concept], materialSelection);
       /*
-       * 没有可引用的教材 / 讲义片段时（未内置资料、或只有模型说法）不传：
-       * 空上下文只会让提示词多一个空小节，题卡也会多一行没有定位点的「依据」。
-       * citations 只看真正摘录到的片段，所以「模型说法」天然被排除在外。
+       * 资料拼装只有一处实现：materialForConcept 会合并内置包、笔记与上传资料，
+       * 并把上传来源追加进选择（否则文档 id 永远不在用户选择里，命中不了）。
+       * citations 为空时返回 undefined，避免提示词里多一个空小节、题卡多一行假出处。
        */
-      const material =
-        materialContext.citations.length === 0
-          ? undefined
-          : {
-              context: materialContext.text,
-              checkLabel: materialCheckLabel(materialContext.citations),
-            };
+      const material = materialForConcept(
+        { pack: materialPack, selection: materialSelection, uploadedPack },
+        concept,
+      );
 
       const result = await ensureItems({
         directionId: target.id,
@@ -368,12 +450,18 @@ export default function DiagnosePage() {
         cached: directionItems.filter((i) => i.kcId === kcId),
         signal: controller.signal,
         material,
+        // 显式传：设置页关掉依据核对时不再多发一次模型调用
+        verification: provider.verification !== false,
       });
 
       if (controller.signal.aborted) {
         setGen({ kind: "idle" });
         return;
       }
+
+      // 轨迹与核对汇总无论成功失败都要显示，否则用户看不出是哪一层没过
+      setGenTrace(result.trace);
+      setGenVerification(result.verification);
 
       if (result.error && result.generated === 0) {
         setGen({ kind: "failed", kcId, kcName: kcNameText, error: result.error });
@@ -394,7 +482,7 @@ export default function DiagnosePage() {
       setDirectionItems((prev) => [...prev.filter((i) => i.kcId !== kcId), ...fresh]);
       setGen({ kind: "idle" });
     },
-    [target, provider, directionItems, materialPack, materialSelection],
+    [target, provider, directionItems, materialPack, materialSelection, uploadedPack],
   );
 
   // 出题：没有 current 且还没答满上限时，先看要不要生成，再选题
@@ -450,6 +538,14 @@ export default function DiagnosePage() {
     const correct = selected === current.question.answerIndex;
     const beforeState = progress?.mastery.find((m) => m.kcId === current.question.kcId);
     const before = beforeState ? masteryMean(beforeState) : 0;
+    const stamp = new Date().toISOString();
+    /*
+     * 预测必须用**作答前**的掌握度算，作答后再算就是对答案的复述。
+     * predictCorrect 已把结果夹在 (0.001, 0.999)，校准只统计 (0,1) 内的值。
+     */
+    const predicted = beforeState
+      ? predictCorrect(masteryMean(beforeState), current.question.difficulty)
+      : undefined;
 
     /*
      * 折扣按落库的 source 判断，不按 id 前缀猜：
@@ -460,31 +556,124 @@ export default function DiagnosePage() {
       : current.origin === "generated"
         ? GENERATED_WEIGHT_SCALE
         : 1;
+    const source: AttemptSource = current.origin ?? "builtin";
 
-    const next = recordAttempt(
-      learner,
+    const next = recordAttempt(learner, targetId, current.question, correct, stamp, {
+      graph,
+      weightScale,
+      predicted,
+      source,
+      selectedIndex: selected,
+    });
+
+    /*
+     * 记忆卡与作答记录必须组合成一次 setLearner。
+     * 分两次写会用同一个旧 state 覆盖掉刚写入的 attempts——
+     * 第二次拿到的 learner 里没有这次的作答。
+     */
+    let memoryWarningText: string | undefined;
+    const withMemory = updateMemories(
+      next,
       targetId,
-      current.question,
-      correct,
-      new Date().toISOString(),
-      { graph, weightScale },
+      (memories) => {
+        if (correct) {
+          // 重复答对同一题：直接毕业，不写 α/β（recordAttempt 已判 counted=false）
+          return resolveMemory(memories, errorMemoryId(current.question.id), stamp);
+        }
+        const chosen = current.question.options[selected] ?? "";
+        const answer = current.question.options[current.question.answerIndex] ?? "";
+        const result = upsertErrorMemory(memories, {
+          questionId: current.question.id,
+          kcId: current.question.kcId,
+          prompt: current.question.stem,
+          ...(chosen !== "" ? { chosen } : {}),
+          correction: `正确答案：${answer}。${current.question.explanation}`,
+          now: stamp,
+        });
+        memoryWarningText = result.warning;
+        return result.memories;
+      },
+      graph,
     );
-    const afterState = next.subjects[targetId]?.mastery.find(
+
+    const afterState = withMemory.subjects[targetId]?.mastery.find(
       (m) => m.kcId === current.question.kcId,
     );
     const after = afterState ? masteryMean(afterState) : 0;
 
-    setLearner(next);
+    setLearner(withMemory);
+    setMemoryWarning(memoryWarningText ?? null);
+    setNowIso(stamp);
     setAnswered((prev) => [
       ...prev,
-      { question: current.question, correct, before, after, practiceOnly: current.practiceOnly },
+      {
+        question: current.question,
+        correct,
+        before,
+        after,
+        practiceOnly: current.practiceOnly,
+        ...(predicted !== undefined ? { predicted } : {}),
+        selectedIndex: selected,
+      },
     ]);
     setRevealed(true);
+  };
+
+  /**
+   * 复习自评。只改记忆卡，不调用 recordAttempt——α/β 完全不变。
+   * 更新仍然走 updateMemories 单次写回，避免与其它写操作互相覆盖。
+   */
+  const reviewCard = (id: string, remembered: boolean) => {
+    if (!learner) return;
+    const stamp = new Date().toISOString();
+    const next = updateMemories(
+      learner,
+      targetId,
+      (memories) => reviewMemory(memories, id, remembered, stamp),
+      graph,
+    );
+    setLearner(next);
+    setNowIso(stamp);
+  };
+
+  /** 把当前知识点与用户选中的另一个知识点标成易混。只写记忆卡，不计证据。 */
+  const markConfusion = () => {
+    if (!learner || !current || confusionWith === "") return;
+    const withName = kcName.get(confusionWith) ?? confusionWith;
+    const stamp = new Date().toISOString();
+
+    let warning: string | undefined;
+    const next = updateMemories(
+      learner,
+      targetId,
+      (memories) => {
+        const result = addConfusionMemory(memories, {
+          kcId: current.question.kcId,
+          withKcId: confusionWith,
+          prompt: `把「${current.kcName}」与「${withName}」搞混`,
+          correction: "",
+          note: "在诊断测评中标记，尚未填写两者区别。",
+          now: stamp,
+        });
+        warning = result.warning;
+        return result.memories;
+      },
+      graph,
+    );
+
+    setLearner(next);
+    setMemoryWarning(warning ?? null);
+    setNowIso(stamp);
+    // 容量拒绝时 warning 非空、卡片没写进去，不能显示「已记入」
+    setConfusionSaved(warning === undefined);
+    setConfusionWith("");
   };
 
   const next = () => {
     setSelected(null);
     setRevealed(false);
+    setConfusionWith("");
+    setConfusionSaved(false);
     if (learner) setCurrent(pickNext(learner));
   };
 
@@ -501,11 +690,16 @@ export default function DiagnosePage() {
     attemptedGenKcs.current = new Set();
     setGen({ kind: "idle" });
     setGenNotice(null);
+    setGenTrace([]);
+    setGenVerification(null);
     setAnswered([]);
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
     setSkippedKcs(new Set());
+    setConfusionWith("");
+    setConfusionSaved(false);
+    setMemoryWarning(null);
   };
 
   /** 清空当前目标的全部掌握度与作答记录。不可撤销，必须二次确认。 */
@@ -562,6 +756,8 @@ export default function DiagnosePage() {
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
+    setConfusionWith("");
+    setConfusionSaved(false);
   };
 
   /*
@@ -645,7 +841,7 @@ export default function DiagnosePage() {
   }
 
   const correctCount = answered.filter((a) => a.correct).length;
-  const directionId = target.kind === "direction" ? target.id : null;
+  const lastAnswer = answered[answered.length - 1];
 
   /*
    * 未决口径分歧：只提示，不替用户裁定。
@@ -695,6 +891,18 @@ export default function DiagnosePage() {
             onNewDirection={() => setShowNewDirection((v) => !v)}
           />
           <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
+          {/*
+            上传资料只在本浏览器、按方向隔离；只有绑定了知识点的文档会进出题与核对。
+            kbLoading 时不显示「0 份」，避免把「还没读完」误报成「没有资料」。
+          */}
+          {directionId !== "" && (kbLoading || kbError !== null || kbDocs.length > 0) ? (
+            <p className="mt-1 text-xs text-[var(--ink-faint)]">
+              {kbError ??
+                (kbLoading
+                  ? "正在读取本浏览器的上传资料…"
+                  : `本方向上传资料 ${kbDocs.length} 份 · ${kbChunks.length} 段（仅本浏览器；绑定知识点的文档会进入出题与依据核对）`)}
+            </p>
+          ) : null}
           {targetError ? (
             <p className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]">
               {targetError}
@@ -743,6 +951,34 @@ export default function DiagnosePage() {
           </p>
         </Card>
 
+        {/* 预测校准：用历史作答（含本次）的预测值与对错做同目标内弱校准 */}
+        <CalibrationCard attempts={progress.attempts} className="mb-5" />
+
+        {/* 记忆复习：只显示到期卡片；自评不写 α/β */}
+        <MemoryReview
+          memories={progress.memories ?? []}
+          now={nowIso}
+          kcName={(id) => kcName.get(id) ?? id}
+          onReview={reviewCard}
+          className="mb-5"
+        />
+
+        {/* 记忆卡容量拒绝等写入警告必须可见，不能只返回不展示 */}
+        {memoryWarning !== null ? (
+          <Card className="mb-5 border-[var(--bad)] bg-[var(--bad-soft)]">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <p className="text-sm text-[var(--bad)]">{memoryWarning}</p>
+              <button
+                type="button"
+                onClick={() => setMemoryWarning(null)}
+                className="shrink-0 rounded border border-[var(--bad)] px-2 py-0.5 text-xs text-[var(--bad)]"
+              >
+                知道了
+              </button>
+            </div>
+          </Card>
+        ) : null}
+
         {/* 生成区上方的口径分歧提示 */}
         {!done && !current ? conflictLine : null}
 
@@ -772,7 +1008,7 @@ export default function DiagnosePage() {
               </button>
             </div>
             <p className="mt-2 text-xs text-[var(--ink-faint)]">
-              一次生成 4 题，再做两次独立批解校验（第二次反转选项顺序）。
+              一次生成 4 题，再做两次独立批解校验（第二次反转选项顺序），最后整批做一次依据核对。
               通过的题会落库，下次诊断不再重复生成。
             </p>
           </Card>
@@ -869,6 +1105,46 @@ export default function DiagnosePage() {
                 知道了
               </button>
             </div>
+          </Card>
+        ) : null}
+
+        {/*
+          生成轨迹：跑了哪几层、哪层没过、依据核对的结果。
+          这是可核对的过程记录，不是模型的原始思维链。
+        */}
+        {genTrace.length > 0 ? (
+          <Card className="mb-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <p className="text-sm font-medium">上一次生成过程</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setGenTrace([]);
+                  setGenVerification(null);
+                }}
+                className="shrink-0 rounded border border-[var(--line-strong)] px-2 py-0.5 text-xs text-[var(--ink-soft)]"
+              >
+                收起
+              </button>
+            </div>
+            <ol className="mt-2 space-y-1 text-xs">
+              {genTrace.map((step) => (
+                <li key={step.key} className="flex items-start gap-2">
+                  <Pill tone={traceTone(step.status)}>{traceStatusLabel(step.status)}</Pill>
+                  <span className="min-w-0 text-[var(--ink-soft)]">
+                    {step.label}
+                    {step.detail !== undefined && step.detail !== "" ? `：${step.detail}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ol>
+            {genVerification !== null ? (
+              <p className="mt-2 text-xs text-[var(--ink-soft)]">
+                {genVerification.attempted
+                  ? `依据核对：通过 ${genVerification.passed} 题、未通过 ${genVerification.failed} 题、未完成 ${genVerification.unverified} 题${genVerification.note !== null ? `（${genVerification.note}）` : ""}。未通过 / 未完成不计入「已通过 N 项校验」。`
+                  : `依据核对未执行：${genVerification.note ?? "未说明原因"}。`}
+              </p>
+            ) : null}
           </Card>
         ) : null}
 
@@ -991,6 +1267,10 @@ export default function DiagnosePage() {
               ) : current.origin === "borrowed" ? (
                 <Pill tone="warn">借用自内置题库</Pill>
               ) : null}
+              {/* 依据核对未过 / 未完成单列，不混进「已通过 N 项」 */}
+              {current.evidenceFailed ? (
+                <Pill tone="bad">依据核对未通过或未完成</Pill>
+              ) : null}
               {current.practiceOnly ? <Pill tone="warn">仅练习，不计入掌握度</Pill> : null}
             </div>
             <h2 className="text-base font-medium leading-relaxed">{current.question.stem}</h2>
@@ -1006,6 +1286,18 @@ export default function DiagnosePage() {
               <p className="mt-2 text-xs text-[var(--ink-faint)]">
                 {current.chapter} · 内置题库（无页级出处）
               </p>
+            ) : null}
+
+            {/* L5 难度理由不匹配这类「未拒绝但值得提示」的问题 */}
+            {current.checkNotes.length > 0 ? (
+              <details className="mt-2 text-xs text-[var(--ink-soft)]">
+                <summary className="cursor-pointer">查看校验提示（{current.checkNotes.length} 条）</summary>
+                <ul className="mt-1 space-y-0.5">
+                  {current.checkNotes.map((note, index) => (
+                    <li key={`${index}-${note}`}>· {note}</li>
+                  ))}
+                </ul>
+              </details>
             ) : null}
 
             <fieldset className="mt-4 space-y-2" disabled={revealed}>
@@ -1039,15 +1331,65 @@ export default function DiagnosePage() {
               })}
             </fieldset>
 
+            {/* 易混标记：只写记忆卡，不参与掌握度；同一对知识点幂等 */}
+            <details className="mt-3 rounded-lg border border-[var(--line)] px-3 py-2">
+              <summary className="cursor-pointer text-xs text-[var(--ink-soft)]">
+                记入易混（可选）
+              </summary>
+              <p className="mt-2 text-xs text-[var(--ink-faint)]">
+                把「{current.kcName}」和另一个知识点标成易混，会生成一张复习卡；不影响掌握度。
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  value={confusionWith}
+                  onChange={(e) => {
+                    setConfusionWith(e.target.value);
+                    setConfusionSaved(false);
+                  }}
+                  className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-2 py-1.5 text-sm"
+                >
+                  <option value="">选择另一个知识点</option>
+                  {confusionOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {c.chapter !== "" ? ` · ${c.chapter}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={markConfusion}
+                  disabled={confusionWith === ""}
+                  className="rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  记入易混
+                </button>
+                {confusionSaved ? (
+                  <span className="text-xs text-[var(--good)]">已记入易混卡</span>
+                ) : null}
+              </div>
+            </details>
+
             {revealed ? (
               <div className="mt-4 rounded-lg bg-[var(--canvas)] p-3 text-sm">
                 <p className="font-medium">
                   {selected === current.question.answerIndex ? "回答正确" : "回答错误"}
                 </p>
                 <p className="mt-1 text-[var(--ink-soft)]">{current.question.explanation}</p>
+                {/* 单题反馈：预测 vs 实际。预测在作答前算好并随记录落盘。 */}
+                {lastAnswer?.predicted !== undefined ? (
+                  <p className="mt-1 text-xs text-[var(--ink-soft)]">
+                    这题系统预测答对概率 {Math.round(lastAnswer.predicted * 100)}%，你
+                    {lastAnswer.correct ? "答对了" : "答错了"}。
+                  </p>
+                ) : null}
+                {/* 记忆卡写入失败（容量已满）时，在作答结果旁边就地提示 */}
+                {memoryWarning !== null ? (
+                  <p className="mt-1 text-xs text-[var(--bad)]">{memoryWarning}</p>
+                ) : null}
                 <p className="tabular mt-2 text-xs text-[var(--ink-faint)]">
-                  该知识点掌握度：{Math.round((answered[answered.length - 1]?.before ?? 0) * 100)}
-                  % → {Math.round((answered[answered.length - 1]?.after ?? 0) * 100)}%
+                  该知识点掌握度：{Math.round((lastAnswer?.before ?? 0) * 100)}
+                  % → {Math.round((lastAnswer?.after ?? 0) * 100)}%
                   {current.practiceOnly ? "（本题仅练习，掌握度未变）" : ""}
                 </p>
                 <button
@@ -1137,6 +1479,12 @@ export default function DiagnosePage() {
                       <p className="truncate text-sm">{a.question.stem}</p>
                       <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
                         {kcName.get(a.question.kcId)} · 难度 {a.question.difficulty}
+                        {a.predicted !== undefined
+                          ? ` · 预测 ${Math.round(a.predicted * 100)}%`
+                          : ""}
+                        {a.selectedIndex >= 0
+                          ? ` · 你选了 ${String.fromCharCode(65 + a.selectedIndex)}`
+                          : ""}
                         {a.practiceOnly ? " · 仅练习" : ""}
                       </p>
                     </div>
@@ -1150,6 +1498,33 @@ export default function DiagnosePage() {
       </main>
     </>
   );
+}
+
+/** 生成轨迹的状态 → Pill 色调。 */
+function traceTone(status: ItemTraceStep["status"]): "good" | "warn" | "bad" | "neutral" {
+  switch (status) {
+    case "ok":
+      return "good";
+    case "warn":
+      return "warn";
+    case "fail":
+      return "bad";
+    case "skip":
+      return "neutral";
+  }
+}
+
+function traceStatusLabel(status: ItemTraceStep["status"]): string {
+  switch (status) {
+    case "ok":
+      return "通过";
+    case "warn":
+      return "警告";
+    case "fail":
+      return "失败";
+    case "skip":
+      return "跳过";
+  }
 }
 
 /** 把作答汇总成每个知识点的最新状态。用传入的 progress，不读存储。 */
@@ -1315,7 +1690,27 @@ function NewDirectionPanel({
                 </span>
               </div>
 
-              <p className="font-medium">{draftState.draft.title}</p>
+              <label className="mt-3 block">
+                <span className="block text-sm font-medium">方向名（可修改）</span>
+                <input
+                  type="text"
+                  value={draftState.titleDraft}
+                  onChange={(e) => draftState.setTitleDraft(e.target.value)}
+                  maxLength={60}
+                  className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+                  placeholder={draftState.draft.title}
+                />
+                <span className="mt-1 flex items-center justify-between text-xs text-[var(--ink-faint)]">
+                  <span>{draftState.titleDraft.trim().length}/60 字</span>
+                  <button
+                    type="button"
+                    onClick={() => draftState.setTitleDraft(draftState.draft?.title ?? "")}
+                    className="underline"
+                  >
+                    恢复建议名
+                  </button>
+                </span>
+              </label>
               <p className="mt-1 text-sm text-[var(--ink-soft)]">
                 {draftState.draft.description}
               </p>

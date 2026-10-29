@@ -3,7 +3,9 @@ import {
   PRESETS,
   checkBaseUrl,
   isLocalAddress,
+  loadProvider,
   maskKey,
+  saveProvider,
   testConnection,
   type ProviderConfig,
 } from "@/lib/provider";
@@ -233,7 +235,7 @@ describe("testConnection 的请求构造", () => {
       vi.fn(async (url: string, init?: RequestInit) => {
         capturedUrl = url;
         capturedInit = init;
-        return new Response(JSON.stringify({ content: [{ text: "可用" }] }), {
+        return new Response(JSON.stringify({ content: [{ type: "text", text: "可用" }] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -380,5 +382,82 @@ describe("推理模型的连通性判定（回归）", () => {
     const result = await testConnection(base);
     expect(result.ok).toBe(false);
     expect(result.failure).toBe("response");
+  });
+});
+
+describe("ProviderConfig 持久化（thinking / thinkingStatus / verification）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function memoryStorage(): Storage {
+    const map = new Map<string, string>();
+    return {
+      get length() {
+        return map.size;
+      },
+      clear: () => map.clear(),
+      getItem: (key: string) => map.get(key) ?? null,
+      key: (index: number) => Array.from(map.keys())[index] ?? null,
+      removeItem: (key: string) => {
+        map.delete(key);
+      },
+      setItem: (key: string, value: string) => {
+        map.set(key, value);
+      },
+    };
+  }
+
+  const base: ProviderConfig = {
+    label: "持久化测试",
+    kind: "openai-compatible",
+    baseUrl: "https://api.example.com/v1",
+    apiKey: "secret",
+    model: "m",
+  };
+
+  it("保存后重新读取，thinking / thinkingStatus / verification 三项仍在", () => {
+    vi.stubGlobal("window", { localStorage: memoryStorage() });
+
+    saveProvider({ ...base, thinking: "deep", thinkingStatus: "unsupported", verification: false });
+    const loaded = loadProvider();
+
+    expect(loaded).not.toBeNull();
+    expect(loaded!.thinking).toBe("deep");
+    expect(loaded!.thinkingStatus).toBe("unsupported");
+    expect(loaded!.verification).toBe(false);
+  });
+
+  it("旧存档没有这三个字段时给默认值：off / unknown / true", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "alp.provider.v1",
+      JSON.stringify({
+        label: "旧存档",
+        kind: "openai-compatible",
+        baseUrl: "https://api.example.com/v1",
+        apiKey: "secret",
+        model: "m",
+      }),
+    );
+    vi.stubGlobal("window", { localStorage: storage });
+
+    const loaded = loadProvider();
+
+    expect(loaded!.thinking).toBe("off");
+    expect(loaded!.thinkingStatus).toBe("unknown");
+    expect(loaded!.verification).toBe(true);
+  });
+
+  it("保存时缺省字段也会显式落盘，避免「没存过」与「显式关闭」混淆", () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+
+    saveProvider({ ...base, thinkingStatus: "verified" });
+    const raw = JSON.parse(storage.getItem("alp.provider.v1") ?? "{}") as Record<string, unknown>;
+
+    expect(raw.thinking).toBe("off");
+    expect(raw.thinkingStatus).toBe("verified");
+    expect(raw.verification).toBe(true);
   });
 });

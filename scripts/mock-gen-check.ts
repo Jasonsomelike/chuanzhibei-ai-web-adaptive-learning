@@ -211,6 +211,12 @@ async function main(): Promise<number> {
       directionId: "mock-direction",
       concept,
       material: { context: context.text, checkLabel },
+      /*
+       * 集成检查只验证出题 + L4 + 落库；mock 不实现核对档，
+       * 开着 L6 会多打一次非批解请求并把「依据核对：未完成」写进 checks，
+       * 打穿现有的 19 项 PASS。L6 的行为由 directionItems.test 覆盖。
+       */
+      verification: false,
     };
 
     // ── 第一轮：shuffle，数组倒序但 index 正确 ──

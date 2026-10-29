@@ -47,13 +47,43 @@ export interface DirectionDraft {
 
 export const MIN_CONCEPTS = 5;
 export const MAX_CONCEPTS = 20;
+export const MAX_TITLE_LENGTH = 60;
+
+/**
+ * 用用户输入的标题覆盖草稿标题。纯函数，不修改原草稿。
+ *
+ * 空标题不在这里回退到 draft.title：用户明确清空输入时，
+ * 悄悄换回生成时的标题会让人误以为修改已生效。
+ * 空标题交给 validateTitle / validateDraft 拒绝。
+ */
+export function withTitle(draft: DirectionDraft, title: string): DirectionDraft {
+  return { ...draft, title: title.trim() };
+}
+
+/**
+ * 校验用户输入的方向名。返回问题列表，空数组表示合格。
+ *
+ * 按去首尾空白后的长度判断，与 withTitle 提交给服务端的值保持一致；
+ * 服务端 validateDraft 的 ≤60 字校验仍是最终防线。
+ */
+export function validateTitle(title: string): string[] {
+  const issues: string[] = [];
+  const trimmed = title.trim();
+  if (trimmed.length === 0) issues.push("方向名不能为空");
+  if (trimmed.length > MAX_TITLE_LENGTH) {
+    issues.push(`方向名过长（上限 ${MAX_TITLE_LENGTH} 字，当前 ${trimmed.length} 字）`);
+  }
+  return issues;
+}
 
 /** 校验一个生成的方向是否可用。返回问题列表，空数组表示合格。 */
 export function validateDraft(draft: DirectionDraft): string[] {
   const issues: string[] = [];
 
   if (draft.title.trim().length === 0) issues.push("标题为空");
-  if (draft.title.length > 60) issues.push("标题过长（上限 60 字）");
+  if (draft.title.length > MAX_TITLE_LENGTH) {
+    issues.push(`标题过长（上限 ${MAX_TITLE_LENGTH} 字）`);
+  }
   if (draft.description.trim().length === 0) issues.push("描述为空");
 
   const n = draft.concepts.length;

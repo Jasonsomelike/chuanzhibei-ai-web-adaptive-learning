@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import {
   PRESETS,
@@ -14,20 +14,27 @@ import {
   type ProviderConfig,
   type ProviderKind,
   type TestResult,
+  type ThinkingStatus,
 } from "@/lib/provider";
+import { probeThinking } from "@/lib/chat";
+import type { ThinkingStrength } from "@/lib/reasoning";
 import { THEMES, MODES } from "@/lib/themes";
 import { useTheme } from "@/lib/theme";
 import { MaterialSourcePanel } from "@/components/material-source-panel";
+import { ThinkingSettings, type ProbeState } from "@/components/thinking-settings";
+import { TtsSettings } from "@/components/tts-settings";
+import { SearchSettings } from "@/components/search-settings";
 
 /**
- * 设置页：模型供应商 + 知识口径 + 外观主题。
+ * 设置页：模型供应商 + 思考强度/依据核对 + 语音朗读 + 联网搜索 + 知识口径 + 外观。
  *
  * 供应商配置的设计参考主流 agent 工具（Cursor / Continue / Open WebUI）：
  * 地址、密钥、模型名全部用户自填，两种协议分别支持。
  *
  * 关键的安全与成本说明必须写在界面上，不能只写在文档里：
- * - key 只存在本浏览器，不上传
+ * - 三类密钥（聊天 / 搜索 / 语音）只存在本浏览器，各存各的键
  * - 请求由浏览器直连供应商，不经过本项目服务器
+ * - 思考档会抬高 max_tokens，费用显著增加；关档不增加预算
  * - HTTPS 页面不能请求 HTTP 地址（混合内容），这是浏览器硬限制
  */
 
@@ -35,6 +42,12 @@ type TestState =
   | { status: "idle" }
   | { status: "testing" }
   | { status: "done"; result: TestResult };
+
+const THINKING_LABEL: Record<ThinkingStrength, string> = {
+  off: "关",
+  standard: "标准",
+  deep: "深入",
+};
 
 export default function SettingsPage() {
   const { theme, mode, setTheme, setMode } = useTheme();
@@ -51,6 +64,13 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [existing, setExisting] = useState<ProviderConfig | null>(null);
 
+  // 思考强度与依据核对属于供应商配置，跟其余字段一起「保存配置」落盘
+  const [thinking, setThinking] = useState<ThinkingStrength>("off");
+  const [thinkingStatus, setThinkingStatus] = useState<ThinkingStatus>("unknown");
+  const [verification, setVerification] = useState(true);
+  const [probe, setProbe] = useState<ProbeState>({ status: "idle" });
+  const probeController = useRef<AbortController | null>(null);
+
   // 首次挂载：回显已保存的配置
   useEffect(() => {
     const p = loadProvider();
@@ -62,6 +82,9 @@ export default function SettingsPage() {
       setApiKey(p.apiKey);
       setModel(p.model);
       setExtraHeaders(p.extraHeaders ?? "");
+      setThinking(p.thinking ?? "off");
+      setThinkingStatus(p.thinkingStatus ?? "unknown");
+      setVerification(p.verification !== false);
       // 匹配到预设就选中它，否则落到对应协议的自定义
       const matched = PRESETS.find(
         (x) => x.baseUrl === p.baseUrl && x.kind === p.kind,
@@ -71,10 +94,23 @@ export default function SettingsPage() {
       applyPreset("deepseek");
     }
     // 只在挂载时回显一次；applyPreset 是稳定的纯 setter，放进依赖会重复覆盖用户输入
+    return () => probeController.current?.abort();
   }, []);
+
+  /**
+   * 换了预设、协议、地址或模型后，上一个端点的探测结论不再成立。
+   * 不重置的话，unsupported 会一直把新端点的思考档锁在置灰状态。
+   */
+  function resetThinkingStatus() {
+    probeController.current?.abort();
+    probeController.current = null;
+    setThinkingStatus("unknown");
+    setProbe({ status: "idle" });
+  }
 
   function applyPreset(id: string) {
     setPresetId(id);
+    resetThinkingStatus();
     const p = PRESETS.find((x) => x.id === id);
     if (!p) return;
     setLabel(p.label);
@@ -91,16 +127,37 @@ export default function SettingsPage() {
     apiKey: apiKey.trim(),
     model: model.trim(),
     extraHeaders: extraHeaders.trim() || undefined,
+    // 三项必须带上：save() 调它，漏掉就会「保存 → 刷新 → 再读」丢字段
+    thinking,
+    thinkingStatus,
+    verification,
   });
 
   const canTest = baseUrl.trim() !== "" && apiKey.trim() !== "" && model.trim() !== "";
   const urlCheck = baseUrl.trim() === "" ? null : checkBaseUrl(baseUrl);
   const localAddr = isLocalAddress(baseUrl);
 
+  /** 探测思考参数。结论写回表单状态，仍要点「保存配置」才落盘。 */
+  async function runProbe() {
+    if (!canTest || thinking === "off") return;
+    probeController.current?.abort();
+    const controller = new AbortController();
+    probeController.current = controller;
+
+    setProbe({ status: "running" });
+    const result = await probeThinking(currentConfig(), controller.signal);
+    if (controller.signal.aborted) return;
+    probeController.current = null;
+    setProbe({ status: "done", result });
+    setThinkingStatus(result.status);
+  }
+
   async function runTest() {
     setTest({ status: "testing" });
     const result = await testConnection(currentConfig());
     setTest({ status: "done", result });
+    // 连得上不代表端点接受思考字段；思考档非「关」时顺带探测一次
+    if (result.ok && thinking !== "off") await runProbe();
   }
 
   function save() {
@@ -115,6 +172,7 @@ export default function SettingsPage() {
     setExisting(null);
     setApiKey("");
     setTest({ status: "idle" });
+    resetThinkingStatus();
   }
 
   const preset = PRESETS.find((p) => p.id === presetId);
@@ -126,7 +184,7 @@ export default function SettingsPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            配置自己的模型供应商，以及界面外观。
+            配置自己的模型供应商、思考强度、依据核对、语音朗读、联网搜索与界面外观。
           </p>
         </div>
 
@@ -140,7 +198,8 @@ export default function SettingsPage() {
                 <span className="text-xs text-[var(--ink-faint)]">
                   {existing.label} · {existing.model} ·{" "}
                   {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
-                  {maskKey(existing.apiKey)}
+                  {maskKey(existing.apiKey)} · 思考 {THINKING_LABEL[existing.thinking ?? "off"]} · 依据核对{" "}
+                  {existing.verification !== false ? "开" : "关"}
                 </span>
               </>
             ) : (
@@ -228,6 +287,7 @@ export default function SettingsPage() {
                   onChange={(e) => {
                     setBaseUrl(e.target.value);
                     setTest({ status: "idle" });
+                    resetThinkingStatus();
                   }}
                   className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
                   placeholder={
@@ -289,7 +349,10 @@ export default function SettingsPage() {
               <Field label="模型名" hint="必须是供应商实际支持的模型 id">
                 <input
                   value={model}
-                  onChange={(e) => setModel(e.target.value)}
+                  onChange={(e) => {
+                    setModel(e.target.value);
+                    resetThinkingStatus();
+                  }}
                   className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 font-mono text-sm"
                   placeholder={kind === "anthropic" ? "claude-sonnet-4-5-20250929" : "deepseek-chat"}
                   spellCheck={false}
@@ -314,6 +377,7 @@ export default function SettingsPage() {
                       onChange={(e) => {
                         setKind(e.target.value as ProviderKind);
                         setTest({ status: "idle" });
+                        resetThinkingStatus();
                       }}
                       className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
                     >
@@ -364,7 +428,7 @@ export default function SettingsPage() {
                 </div>
                 {!canTest ? (
                   <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                    填齐地址、密钥、模型名后才能测试
+                    填齐地址、密钥、模型名后才能测试；思考强度与依据核对也随「保存配置」写入。
                   </p>
                 ) : null}
 
@@ -374,6 +438,39 @@ export default function SettingsPage() {
               </div>
             </div>
           </Card>
+        </section>
+
+        {/* ── 思考强度与依据核对 ── */}
+        <section className="mb-8">
+          <SectionTitle hint="思考强度只影响导师回答；出题、批解与方向生成始终走非思考，避免 JSON 被思考 token 吃光。">
+            思考强度与依据核对
+          </SectionTitle>
+          <ThinkingSettings
+            thinking={thinking}
+            thinkingStatus={thinkingStatus}
+            verification={verification}
+            providerReady={canTest}
+            probe={probe}
+            onThinkingChange={setThinking}
+            onVerificationChange={setVerification}
+            onProbe={runProbe}
+          />
+        </section>
+
+        {/* ── 语音朗读 ── */}
+        <section className="mb-8">
+          <SectionTitle hint="把导师回答念出来。浏览器语音免费，在线语音需要端点允许浏览器直连。">
+            语音朗读
+          </SectionTitle>
+          <TtsSettings />
+        </section>
+
+        {/* ── 联网搜索 ── */}
+        <section className="mb-8">
+          <SectionTitle hint="导师提问时可补充外部网页；结果会标为「未核对」，与教材/上传资料分开显示。">
+            联网搜索
+          </SectionTitle>
+          <SearchSettings />
         </section>
 
         {/* ── 知识口径 ── */}
@@ -390,7 +487,7 @@ export default function SettingsPage() {
               </li>
               <li>
                 <strong className="text-[var(--ink)]">出题与讲解会把摘录发给模型供应商。</strong>
-                命中的教材 / 讲义段落会随请求直接发到你配置的供应商（浏览器直连，不经过本项目）；
+                命中的教材 / 讲义 / 上传段落会随请求直接发到你配置的供应商（浏览器直连，不经过本项目）；
                 这是让模型按你的口径作答的前提，不配置模型时不外发。
               </li>
               <li>
@@ -403,8 +500,13 @@ export default function SettingsPage() {
                 退出登录、或在本浏览器换另一个账号登录，都会删除上一位用户的资料存档。
               </li>
               <li>
-                <strong className="text-[var(--ink)]">首版只接受粘贴文本。</strong>
-                不解析 PDF / PPT；需要引用时请先自己复制正文再粘贴到「我的讲义」。
+                <strong className="text-[var(--ink)]">支持 Markdown / TXT / PDF。</strong>
+                PDF 在浏览器里用 pdfjs-dist 抽取文本，需要文件自带文本层；扫描件不做 OCR，PPT / DOCX 不解析。
+              </li>
+              <li>
+                <strong className="text-[var(--ink)]">上传资料只存在本浏览器。</strong>
+                抽取后的文本按方向存进 IndexedDB，不保存原始文件、不上传本项目服务器；
+                换浏览器或换设备需要重新上传，方向市场里的副本默认是空库。
               </li>
             </ul>
           </Card>
@@ -470,16 +572,21 @@ export default function SettingsPage() {
             <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
               <li>
                 <strong className="text-[var(--ink)]">密钥只存在本浏览器。</strong>
-                保存在 localStorage，不上传到本项目服务器，也不写入任何日志。
+                聊天供应商、Tavily 搜索与在线语音各有自己的 localStorage 键，互不覆盖；
+                都不上传本项目服务器，也不写入任何日志。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">请求由浏览器直连供应商。</strong>
-                调用链是「浏览器 → 你填的地址」，本项目后端不参与转发，
+                对话、搜索与朗读的调用链都是「浏览器 → 你填的地址」，本项目后端不参与转发，
                 因此部署在公网也无需保管任何密钥。
               </li>
               <li>
+                <strong className="text-[var(--ink)]">上传资料不随请求整份外发。</strong>
+                只有检索命中的段落会随出题或问答请求发给你配置的模型；原文本身留在本浏览器的 IndexedDB。
+              </li>
+              <li>
                 <strong className="text-[var(--ink)]">费用由填 key 的人承担。</strong>
-                调用直接计入你的账户额度。
+                调用直接计入你的账户额度；思考档会抬高 max_tokens，开思考前先看成本说明。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">HTTPS 站点不能请求 HTTP 地址。</strong>
@@ -487,7 +594,7 @@ export default function SettingsPage() {
               </li>
               <li>
                 <strong className="text-[var(--ink)]">公共电脑上用完请点「清除」。</strong>
-                localStorage 在同一浏览器内共享。
+                localStorage 在同一浏览器内共享；搜索与语音密钥需在上面的区块单独清除。
               </li>
               <li>
                 <strong className="text-[var(--ink)]">路径功能不依赖任何密钥。</strong>
@@ -532,7 +639,7 @@ function TestReport({ result }: { result: TestResult }) {
       ) : null}
       {result.ok ? (
         <p className="mt-1 text-xs text-[var(--ink-faint)]">
-          支持对话与流式输出。导师页会使用此配置。
+          支持流式回答。导师页会使用此配置；思考强度只影响导师回答，出题仍是非思考模式。
         </p>
       ) : null}
     </div>

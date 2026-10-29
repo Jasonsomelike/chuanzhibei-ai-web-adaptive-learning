@@ -6,11 +6,14 @@
  * 绑在竞态上。这里改成看提示词本身——反转批次的第 3 题选项首项必然等于
  * 生成时第 3 题的最后一个选项（options[3]），据此判断批次是否被反转。
  *
- * 四个档位：
+ * 按路径分档（未列出的 badjson / dupstem 供出题链路回归使用）：
  *   /v1          正常：按题目给出的选项顺序与正确文本作答
  *   /shuffle/v1  answers 数组倒序返回，但每条 index 仍然是正确题号
  *   /badsolve/v1 反转批次里把第 3、4 题答错，用于验证降级成 practice
  *   /truncate/v1 返回 finish_reason=length，用于验证 ChatError 的截断分支
+ *   /stream/v1   返回 SSE：先 reasoning_content 再正文，用于验证思考面板与流式分流
+ *   /think400/v1 请求带 thinking/reasoning_effort 时返回 400，不带时正常返回，
+ *                用于验证 callChatStream 的「思考参数被拒 → 降级一次」
  *
  * 直接运行监听 127.0.0.1:3212：
  *   node node_modules/tsx/dist/cli.mjs scripts/mock-provider.ts
@@ -88,7 +91,15 @@ const MOCK_ITEMS: readonly MockItem[] = [
   },
 ];
 
-type MockMode = "normal" | "shuffle" | "badsolve" | "truncate" | "badjson" | "dupstem";
+type MockMode =
+  | "normal"
+  | "shuffle"
+  | "badsolve"
+  | "truncate"
+  | "badjson"
+  | "dupstem"
+  | "stream"
+  | "think400";
 
 interface ChatMessage {
   readonly role?: unknown;
@@ -97,6 +108,10 @@ interface ChatMessage {
 
 interface ChatBody {
   readonly messages?: unknown;
+  readonly stream?: unknown;
+  readonly thinking?: unknown;
+  readonly reasoning_effort?: unknown;
+  readonly output_config?: unknown;
 }
 
 interface PromptQuestion {
@@ -119,6 +134,35 @@ function sendJson(res: ServerResponse, body: unknown, status = 200): void {
   res.end(JSON.stringify(body));
 }
 
+/** 一次性写完的 SSE：默认思考增量在前、正文增量在后，最后给 usage 与 [DONE]。 */
+function sendStream(res: ServerResponse, options: { readonly reasoning?: boolean } = {}): void {
+  if (res.writableEnded) return;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    ...CORS_HEADERS,
+  });
+
+  const chunks: unknown[] = [{ choices: [{ delta: { role: "assistant" } }] }];
+  if (options.reasoning !== false) {
+    chunks.push({ choices: [{ delta: { reasoning_content: "先确认栈顶定义，" } }] });
+    chunks.push({ choices: [{ delta: { reasoning_content: "再看插入与删除的位置。" } }] });
+  }
+  chunks.push({ choices: [{ delta: { content: "栈的插入" } }] });
+  chunks.push({ choices: [{ delta: { content: "与删除都在栈顶完成。" } }] });
+  chunks.push({
+    choices: [{ delta: {}, finish_reason: "stop" }],
+    usage: { prompt_tokens: 18, completion_tokens: 24, total_tokens: 42 },
+  });
+
+  for (const chunk of chunks) {
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  }
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -128,6 +172,8 @@ async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function modeOf(pathname: string): MockMode {
+  if (pathname.startsWith("/stream/")) return "stream";
+  if (pathname.startsWith("/think400/")) return "think400";
   if (pathname.startsWith("/shuffle/")) return "shuffle";
   if (pathname.startsWith("/badsolve/")) return "badsolve";
   if (pathname.startsWith("/truncate/")) return "truncate";
@@ -226,6 +272,12 @@ export async function startMockProvider(
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
     const mode = modeOf(pathname);
 
+    // 流式档不关心提示词：固定返回「思考 → 正文 → usage → [DONE]」
+    if (mode === "stream") {
+      sendStream(res);
+      return;
+    }
+
     if (mode === "truncate") {
       sendJson(res, {
         choices: [{ message: { content: "" }, finish_reason: "length" }],
@@ -250,6 +302,34 @@ export async function startMockProvider(
       body = JSON.parse(await readBody(req)) as ChatBody;
     } catch {
       sendJson(res, { error: "请求体不是合法 JSON" }, 400);
+      return;
+    }
+
+    /*
+     * 模拟不支持思考参数的端点：带 thinking / reasoning_effort 就 400，
+     * 去掉这些字段后正常返回。callChatStream 应只降级一次并继续拿到正文。
+     */
+    if (mode === "think400") {
+      if (
+        body.thinking !== undefined ||
+        body.reasoning_effort !== undefined ||
+        body.output_config !== undefined
+      ) {
+        sendJson(
+          res,
+          { error: { type: "invalid_request_error", message: "thinking 参数不受支持" } },
+          400,
+        );
+        return;
+      }
+      // 降级后的请求是普通模式：只给正文，避免界面误以为本次仍有思考内容
+      if (body.stream === true) {
+        sendStream(res, { reasoning: false });
+        return;
+      }
+      sendJson(res, {
+        choices: [{ message: { content: "可用" }, finish_reason: "stop" }],
+      });
       return;
     }
 
@@ -319,6 +399,6 @@ if (isDirectRun) {
   const handle = await startMockProvider({ port: 3212 });
   console.log(`mock 供应商已启动：${handle.url}`);
   console.log(
-    "分档：/v1 正常 · /shuffle/v1 数组倒序 · /badsolve/v1 反转批第 3、4 题答错 · /truncate/v1 截断",
+    "分档：/v1 正常 · /shuffle/v1 数组倒序 · /badsolve/v1 反转批第 3、4 题答错 · /truncate/v1 截断 · /stream/v1 思考+正文流 · /think400/v1 思考字段 400",
   );
 }

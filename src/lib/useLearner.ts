@@ -17,6 +17,7 @@ import {
   saveLearner,
   createLearner,
   progressOf,
+  mergeServerProgress,
   type LearnerState,
   type SubjectProgress,
 } from "@/lib/learner";
@@ -73,12 +74,13 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
       try {
         const res = await fetch("/api/progress", { cache: "no-store" });
         if (res.ok) {
-          const data = (await res.json()) as { progress?: Record<string, SubjectProgress> };
-          const server = data.progress ?? {};
-          const merged: LearnerState = {
-            ...local,
-            subjects: { ...local.subjects, ...server },
-          };
+          /*
+           * 服务端返回的是整块 JSON，可能来自旧版本或被篡改：
+           * 超过 200 张 / 形状坏掉的 memories 不能原样进界面，
+           * 所以统一走 mergeServerProgress（逐学科 sanitizeProgress）。
+           */
+          const data = (await res.json()) as { progress?: unknown };
+          const merged = mergeServerProgress(local, data.progress);
           if (!cancelled) {
             setLearnerState(merged);
             setSynced(true);

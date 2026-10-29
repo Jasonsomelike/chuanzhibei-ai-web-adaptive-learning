@@ -15,17 +15,27 @@
  * 两份实现必然出现「这里能生成、那里生成不了」的错位。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { KnowledgeBasePanel, type KbCounts } from "@/components/knowledge-base-panel";
 import { useAuth } from "@/lib/useAuth";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
-import { ensureAllItems, fetchItems } from "@/lib/directionItems";
+import {
+  ensureAllItems,
+  fetchItems,
+  MAX_VERIFIED_CONCEPTS,
+  type EnsureAllItemsResult,
+  type ItemTraceStep,
+} from "@/lib/directionItems";
 import { kcEvidenceTarget, type ItemSource } from "@/lib/itemgen";
 import { useMaterialPack } from "@/lib/materialStore";
+import { getDefaultKbStorage, loadDirectionKb } from "@/lib/kbStore";
+import { uploadsToPack } from "@/lib/knowledge";
+import type { MaterialPack } from "@/lib/materials";
 import type { ProviderConfig } from "@/lib/provider";
 import type { KnowledgeGraph } from "@/lib/graph";
-import type { DirectionDraft } from "@/lib/direction";
+import { MAX_TITLE_LENGTH, validateTitle, type DirectionDraft } from "@/lib/direction";
 
 interface DirectionSummary {
   id: string;
@@ -59,6 +69,33 @@ export default function DirectionsPage() {
   const [genAllError, setGenAllError] = useState<Record<string, string>>({});
 
   const [manualFor, setManualFor] = useState<string | null>(null);
+
+  /*
+   * 知识库面板只在展开时挂载：useKnowledgeBase 会读该方向的 docs 与 chunks，
+   * 一次读全部方向会让首屏为每个方向付一次 IndexedDB 查询。
+   * 计数由面板回传，收起后仍能显示上次读到的「N 份 · M 段」。
+   */
+  const [kbOpen, setKbOpen] = useState<Record<string, boolean>>({});
+  const [kbCounts, setKbCounts] = useState<Record<string, KbCounts>>({});
+
+  const handleKbCounts = useCallback((id: string, counts: KbCounts) => {
+    setKbCounts((prev) => {
+      const current = prev[id];
+      if (current && current.docs === counts.docs && current.chunks === counts.chunks) {
+        return prev;
+      }
+      return { ...prev, [id]: counts };
+    });
+  }, []);
+
+  /*
+   * 字数与校验都按 trim 后的值：与服务端 validateTitle / validateDraft 的口径一致，
+   * 否则「输入 60 个空格 + 一个字」会在本地显示合规、保存时才被 422。
+   */
+  const titleLength = draftState.titleDraft.trim().length;
+  const titleIssue = draftState.draft
+    ? (validateTitle(draftState.titleDraft)[0] ?? null)
+    : null;
 
   const loadMine = useCallback(async () => {
     if (!user) return;
@@ -252,7 +289,39 @@ export default function DirectionsPage() {
                   </span>
                 </div>
 
-                <p className="font-medium">{draftState.draft.title}</p>
+                <label className="mt-2 block">
+                  <span className="text-sm font-medium">方向名</span>
+                  <span className="ml-2 text-xs text-[var(--ink-faint)]">
+                    保存时使用；最多 {MAX_TITLE_LENGTH} 字
+                  </span>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <input
+                      value={draftState.titleDraft}
+                      onChange={(e) => draftState.setTitleDraft(e.target.value)}
+                      maxLength={MAX_TITLE_LENGTH}
+                      placeholder={draftState.draft.title}
+                      aria-label="方向名"
+                      className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm font-medium"
+                    />
+                    <span className="tabular shrink-0 text-xs text-[var(--ink-faint)]">
+                      {titleLength}/{MAX_TITLE_LENGTH}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => draftState.setTitleDraft(draftState.draft!.title)}
+                      disabled={draftState.titleDraft === draftState.draft.title}
+                      className="shrink-0 rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs disabled:opacity-40"
+                    >
+                      恢复建议名
+                    </button>
+                  </div>
+                  <span className="mt-1 block text-xs text-[var(--ink-faint)]">
+                    建议名：{draftState.draft.title}。改名只影响这个方向，知识点不变。
+                  </span>
+                  {titleIssue !== null ? (
+                    <span className="mt-1 block text-xs text-[var(--bad)]">{titleIssue}</span>
+                  ) : null}
+                </label>
                 <p className="mt-1 text-sm text-[var(--ink-soft)]">
                   {draftState.draft.description}
                 </p>
@@ -404,6 +473,18 @@ export default function DirectionsPage() {
                           >
                             手动录题
                           </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setKbOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))
+                            }
+                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
+                          >
+                            {kbOpen[d.id] ? "收起知识库" : "知识库"}
+                            {kbCounts[d.id]
+                              ? ` ${kbCounts[d.id].docs} 份 · ${kbCounts[d.id].chunks} 段`
+                              : ""}
+                          </button>
                         </div>
 
                         {genAllError[d.id] ? (
@@ -429,6 +510,14 @@ export default function DirectionsPage() {
                       </div>
                     </div>
 
+                    {kbOpen[d.id] ? (
+                      <KnowledgeBasePanel
+                        directionId={d.id}
+                        concepts={d.graph?.concepts ?? []}
+                        onCounts={(counts) => handleKbCounts(d.id, counts)}
+                      />
+                    ) : null}
+
                     {manualFor === d.id && d.graph ? (
                       <ManualItemForm
                         directionId={d.id}
@@ -452,12 +541,29 @@ function nameOf(draft: DirectionDraft, id: string): string {
   return draft.concepts.find((c) => c.id === id)?.name ?? id;
 }
 
+const TRACE_STATUS_LABEL: Record<ItemTraceStep["status"], string> = {
+  ok: "通过",
+  warn: "注意",
+  fail: "失败",
+  skip: "跳过",
+};
+
+function traceTone(status: ItemTraceStep["status"]): string {
+  if (status === "ok") return "text-[var(--good)]";
+  if (status === "warn") return "text-[var(--warn)]";
+  if (status === "fail") return "text-[var(--bad)]";
+  return "text-[var(--ink-faint)]";
+}
+
 /**
  * 「生成全部题目」按钮。给老师/答辩演示用，不是默认路径。
  *
  * 单独成组件是因为 useMaterialPack：它一次只服务一个 targetId，
  * 而列表要在同一页渲染多个方向，父组件不能在 map 里循环调 hook。
- * 进度与失败原因都归这个方向自己，父组件只负责刷新覆盖度与显示错误。
+ * 进度、轨迹与失败原因都归这个方向自己，父组件只负责刷新覆盖度与显示错误。
+ *
+ * 上传资料在点击时才读：面板不展开也要能出题，但不能为了让按钮可用
+ * 就给每个方向在首屏读一遍 IndexedDB。
  */
 function GenerateAllButton({
   direction,
@@ -473,6 +579,27 @@ function GenerateAllButton({
 }) {
   const [progress, setProgress] = useState<{ done: number; total: number; name: string } | null>(
     null,
+  );
+  const [traces, setTraces] = useState<
+    { name: string; steps: readonly ItemTraceStep[] }[]
+  >([]);
+  const [verification, setVerification] = useState<
+    EnsureAllItemsResult["verification"] | null
+  >(null);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const [stopped, setStopped] = useState(false);
+  const [aborting, setAborting] = useState(false);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  /*
+   * 卸载时必须 abort：页面切走后组件不会再更新，
+   * 但 ensureItems 的模型请求仍会继续跑、继续计费。
+   */
+  useEffect(
+    () => () => {
+      controllerRef.current?.abort();
+    },
+    [],
   );
 
   /*
@@ -494,6 +621,12 @@ function GenerateAllButton({
    */
   const { pack, selection } = useMaterialPack(direction.id, graph ?? undefined);
 
+  const stop = (): void => {
+    if (controllerRef.current === null) return;
+    setAborting(true);
+    controllerRef.current.abort();
+  };
+
   const start = async () => {
     if (!graph) return;
     if (!provider) {
@@ -501,46 +634,159 @@ function GenerateAllButton({
       return;
     }
 
+    const controller = new AbortController();
+    controllerRef.current = controller;
     onError(null);
+    setTraces([]);
+    setVerification(null);
+    setUploadNote(null);
+    setStopped(false);
+    setAborting(false);
     setProgress({ done: 0, total: graph.concepts.length, name: "" });
 
-    const result = await ensureAllItems({
-      directionId: direction.id,
-      graph,
-      provider,
-      material: { pack, selection },
-      onProgress: (done, total, name) => setProgress({ done, total, name }),
-    });
-
-    setProgress(null);
-    if (result.failed.length > 0) {
+    try {
       /*
-       * 只列知识点名没法判断是「模型质量差」还是「系统坏了」：
-       * 实测里 46 次调用全 200、落了 52 道题，失败其实是没到 4 题门槛。
-       * 把去重后的原因带上（最多两条），用户才知道该重试还是该换模型。
+       * 读当前方向的上传资料。uploadsToPack 只收绑定了知识点的文档，
+       * 未绑定的只服务导师检索，不会混进出题与依据核对。
        */
-      const reasons = [...new Set(result.failed.map((f) => f.error))].slice(0, 2);
-      onError(
-        `${result.failed.length} 个知识点未就绪：${result.failed
-          .map((f) => f.name)
-          .slice(0, 3)
-          .join("、")}${result.failed.length > 3 ? " 等" : ""}。原因：${reasons.join("；")}`,
-      );
+      let uploadedPack: MaterialPack | undefined;
+      const storage = getDefaultKbStorage();
+      if (storage !== null) {
+        try {
+          const kb = await loadDirectionKb(storage, direction.id);
+          uploadedPack = uploadsToPack(kb.docs, kb.chunks);
+        } catch {
+          // 读不到上传资料不阻塞出题；教材与笔记仍然可用
+          uploadedPack = undefined;
+        }
+      }
+      if (uploadedPack !== undefined && uploadedPack.chunks.length > 0) {
+        setUploadNote(
+          `本次生成带上了上传资料 ${uploadedPack.chunks.length} 段（仅本浏览器；未绑定知识点的文档不参与出题）。`,
+        );
+      }
+
+      if (controller.signal.aborted) {
+        setStopped(true);
+        onError("已停止：尚未开始调用模型。");
+        return;
+      }
+
+      const result = await ensureAllItems({
+        directionId: direction.id,
+        graph,
+        provider,
+        signal: controller.signal,
+        material: { pack, selection, uploadedPack },
+        verification: provider.verification !== false,
+        onProgress: (done, total, name) => setProgress({ done, total, name }),
+        onTrace: (_kcId, kcName, trace) =>
+          setTraces((prev) => [...prev, { name: kcName, steps: trace }]),
+      });
+      setVerification(result.verification);
+
+      if (controller.signal.aborted) {
+        setStopped(true);
+        onError("已停止：已完成的题目已保存，未完成的不会继续生成。");
+      } else if (result.failed.length > 0) {
+        /*
+         * 只列知识点名没法判断是「模型质量差」还是「系统坏了」：
+         * 实测里 46 次调用全 200、落了 52 道题，失败其实是没到 4 题门槛。
+         * 把去重后的原因带上（最多两条），用户才知道该重试还是该换模型。
+         */
+        const reasons = [...new Set(result.failed.map((f) => f.error))].slice(0, 2);
+        onError(
+          `${result.failed.length} 个知识点未就绪：${result.failed
+            .map((f) => f.name)
+            .slice(0, 3)
+            .join("、")}${result.failed.length > 3 ? " 等" : ""}。原因：${reasons.join("；")}`,
+        );
+      }
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setStopped(true);
+        onError("已停止：已完成的题目已保存，未完成的不会继续生成。");
+      } else {
+        onError(`生成中断：${err instanceof Error ? err.message : String(err)}`);
+      }
+    } finally {
+      controllerRef.current = null;
+      setProgress(null);
+      setAborting(false);
+      onFinished();
     }
-    onFinished();
   };
 
   return (
-    <button
-      type="button"
-      onClick={() => void start()}
-      disabled={!graph || progress !== null}
-      className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs disabled:opacity-40"
-    >
-      {progress
-        ? `生成中 ${progress.done}/${progress.total}${progress.name ? ` · ${progress.name}` : ""}`
-        : "生成全部题目"}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => void start()}
+        disabled={!graph || progress !== null}
+        className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs disabled:opacity-40"
+      >
+        {progress
+          ? `生成中 ${progress.done}/${progress.total}${progress.name ? ` · ${progress.name}` : ""}`
+          : stopped
+            ? "继续生成全部题目"
+            : "生成全部题目"}
+      </button>
+
+      {progress !== null ? (
+        <button
+          type="button"
+          onClick={stop}
+          disabled={aborting}
+          className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs text-[var(--bad)] disabled:opacity-40"
+        >
+          {aborting ? "停止中…" : "停止"}
+        </button>
+      ) : null}
+
+      {provider !== null && provider.verification === false ? (
+        <span className="basis-full text-xs text-[var(--ink-faint)]">
+          设置页已关闭依据核对：本次只做生成与双解校验，不会发出 L6 核对请求。
+        </span>
+      ) : null}
+
+      {uploadNote !== null ? (
+        <span className="basis-full text-xs text-[var(--ink-faint)]">{uploadNote}</span>
+      ) : null}
+
+      {traces.length > 0 ? (
+        <details className="basis-full rounded-lg border border-[var(--line)] p-2 text-xs">
+          <summary className="cursor-pointer text-[var(--ink-soft)]">
+            生成过程（L1–L6）：{traces.length} 个知识点
+            {verification !== null ? ` · 依据核对 ${verification.checked} 个` : ""}
+            {stopped ? " · 已停止" : ""}
+          </summary>
+          <p className="mt-1 text-[var(--ink-faint)]">
+            这是每层校验的执行记录，不是模型的原始思维链；只存在于本次页面，不落库。
+          </p>
+          <ul className="mt-2 space-y-1.5">
+            {traces.map((entry, index) => (
+              <li key={`${entry.name}-${index}`}>
+                <span className="font-medium">{entry.name}</span>
+                <ul className="mt-0.5 space-y-0.5 pl-3">
+                  {entry.steps.map((step, stepIndex) => (
+                    <li key={`${step.key}-${stepIndex}`} className={traceTone(step.status)}>
+                      {step.label}：{TRACE_STATUS_LABEL[step.status]}
+                      {step.detail ? ` — ${step.detail}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+          {verification !== null && verification.capped.length > 0 ? (
+            <p className="mt-1 text-[var(--warn)]">
+              其余 {verification.capped.length} 个知识点因每批最多核对{" "}
+              {MAX_VERIFIED_CONCEPTS} 个而未核对；题目照常生成。
+            </p>
+          ) : null}
+        </details>
+      ) : null}
+    </>
   );
 }
 

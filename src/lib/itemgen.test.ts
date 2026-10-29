@@ -163,6 +163,22 @@ describe("L2/L3 单题校验", () => {
       expect([2, 3, 4]).toContain(item.difficulty);
     }
   });
+
+  it("l2Issues / l3Issues 分开暴露，issues 仍是两者之和", () => {
+    /*
+     * 生成流程的 trace 要分别标出「卫生没过」与「答案没过」；
+     * 只给合并后的 issues 会让两层一起亮红灯。
+     */
+    const l2 = checkItem(goodItem({ stem: "栈是？" }), META);
+    expect(l2.l2Issues.join()).toContain("题干长度");
+    expect(l2.l3Issues).toEqual([]);
+    expect(l2.issues).toEqual([...l2.l2Issues, ...l2.l3Issues]);
+
+    const l3 = checkItem(goodItem({ answerText: "以上都不对" }), META);
+    expect(l3.l2Issues).toEqual([]);
+    expect(l3.l3Issues.join()).toContain("answerText");
+    expect(l3.issues).toEqual([...l3.l2Issues, ...l3.l3Issues]);
+  });
 });
 
 describe("整批校验", () => {

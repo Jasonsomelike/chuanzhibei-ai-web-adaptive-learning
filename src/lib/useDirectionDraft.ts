@@ -13,13 +13,21 @@
 
 import { useCallback, useState } from "react";
 import { callChat, ChatError } from "@/lib/chat";
-import { extractJson, type DirectionDraft } from "@/lib/direction";
+import {
+  extractJson,
+  validateTitle,
+  withTitle,
+  type DirectionDraft,
+} from "@/lib/direction";
 import { loadProvider, type ProviderConfig } from "@/lib/provider";
 
 export interface DirectionDraftState {
   readonly description: string;
   readonly setDescription: (s: string) => void;
   readonly draft: DirectionDraft | null;
+  /** 用户在预览里编辑的方向名；生成成功时预填草稿标题。 */
+  readonly titleDraft: string;
+  readonly setTitleDraft: (s: string) => void;
   readonly source: "llm" | "existing" | null;
   readonly issues: readonly string[];
   readonly error: string | null;
@@ -36,6 +44,7 @@ export interface DirectionDraftState {
 export function useDirectionDraft(initialDescription = ""): DirectionDraftState {
   const [description, setDescription] = useState(initialDescription);
   const [draft, setDraft] = useState<DirectionDraft | null>(null);
+  const [titleDraft, setTitleDraft] = useState("");
   const [source, setSource] = useState<"llm" | "existing" | null>(null);
   const [issues, setIssues] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +56,7 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
 
   const reset = useCallback(() => {
     setDraft(null);
+    setTitleDraft("");
     setSource(null);
     setIssues([]);
     setError(null);
@@ -67,6 +77,7 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
       };
       if (res.ok && data.draft) {
         setDraft(data.draft);
+        setTitleDraft(data.draft.title);
         setSource("existing");
         return true;
       }
@@ -86,6 +97,7 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
     setError(null);
     setIssues([]);
     setDraft(null);
+    setTitleDraft("");
     setSource(null);
 
     try {
@@ -142,7 +154,10 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
           await generateFallback(text);
           return;
         }
-        setDraft(data.draft ?? null);
+        const nextDraft = data.draft ?? null;
+        setDraft(nextDraft);
+        // data.draft 缺失时 titleDraft 与 draft 一起清空，避免标题残留成孤立值
+        setTitleDraft(nextDraft?.title ?? "");
         setSource(data.source ?? "llm");
       } else {
         await generateFallback(text);
@@ -158,6 +173,19 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
   const save = useCallback(
     async (opts?: { readonly isPublic?: boolean }): Promise<string | null> => {
       if (!draft) return null;
+
+      /*
+       * 标题不合格时服务端必然 422，先在本地拦下：
+       * 不浪费一次往返，也避免用户看到「保存按钮没反应」。
+       * 60 字上限服务端 validateDraft 仍会再校验一次。
+       */
+      const titleIssues = validateTitle(titleDraft);
+      if (titleIssues.length > 0) {
+        setError(titleIssues[0]);
+        setIssues([]);
+        return null;
+      }
+
       setSaving(true);
       setError(null);
       try {
@@ -166,7 +194,7 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             description,
-            draft,
+            draft: withTitle(draft, titleDraft),
             isPublic: opts?.isPublic === true,
           }),
         });
@@ -182,6 +210,7 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
           return null;
         }
         setDraft(null);
+        setTitleDraft("");
         setSource(null);
         setDescription("");
         return data.id;
@@ -192,13 +221,15 @@ export function useDirectionDraft(initialDescription = ""): DirectionDraftState 
         setSaving(false);
       }
     },
-    [draft, description],
+    [draft, description, titleDraft],
   );
 
   return {
     description,
     setDescription,
     draft,
+    titleDraft,
+    setTitleDraft,
     source,
     issues,
     error,

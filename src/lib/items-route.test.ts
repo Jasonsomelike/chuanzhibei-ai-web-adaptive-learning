@@ -196,4 +196,70 @@ describe("POST /api/directions/items 写入语义", () => {
     expect(data.rejected).toHaveLength(1);
     expect(fakeDb.run).not.toHaveBeenCalled();
   });
+
+  it("L6 未过的题以 practice 落库，检查项与降级原因都保留", async () => {
+    /*
+     * L6 需要再调模型，服务端不重跑，只保留前端结论。
+     * 但它必须尊重 status=practice：降到 practice 的题不计证据，
+     * 若服务端把它提升成 accepted，等于让未核对通过的题照常计分。
+     */
+    fakeDb.run.mockResolvedValueOnce(1);
+    const check = "依据核对：未通过（引用无法在原文中逐字找到）";
+    const res = await POST(
+      req({
+        directionId: "d1",
+        kcId: "k1",
+        items: [{ ...goodItem, status: "practice", checks: ["双解校验", check] }],
+      }) as never,
+    );
+    const data = (await res.json()) as {
+      inserted: number;
+      practice: number;
+      items: { status: string; checks: string[] }[];
+    };
+
+    expect(data.inserted).toBe(1);
+    expect(data.practice).toBe(1);
+    expect(data.items[0].status).toBe("practice");
+    expect(data.items[0].checks).toContain(check);
+    expect(data.items[0].checks).toContain("双解校验");
+
+    const params = fakeDb.run.mock.calls[0][1];
+    expect(params[10]).toBe("practice");
+    expect(String(params[11] ?? "")).toContain("依据核对");
+  });
+
+  it("L6 未完成仍以 accepted 落库，检查项保留（未完成不是题目错）", async () => {
+    fakeDb.run.mockResolvedValueOnce(1);
+    const res = await POST(
+      req({
+        directionId: "d1",
+        kcId: "k1",
+        items: [{ ...goodItem, status: "accepted", checks: ["依据核对：未完成"] }],
+      }) as never,
+    );
+    const data = (await res.json()) as {
+      inserted: number;
+      accepted: number;
+      items: { status: string; checks: string[] }[];
+    };
+
+    expect(data.inserted).toBe(1);
+    expect(data.accepted).toBe(1);
+    expect(data.items[0].status).toBe("accepted");
+    expect(data.items[0].checks).toContain("依据核对：未完成");
+  });
+
+  it("不认识的自造检查项仍被丢弃", async () => {
+    fakeDb.run.mockResolvedValueOnce(1);
+    const res = await POST(
+      req({
+        directionId: "d1",
+        kcId: "k1",
+        items: [{ ...goodItem, checks: ["我自己编的通过项"] }],
+      }) as never,
+    );
+    const data = (await res.json()) as { items: { checks: string[] }[] };
+    expect(data.items[0].checks).not.toContain("我自己编的通过项");
+  });
 });

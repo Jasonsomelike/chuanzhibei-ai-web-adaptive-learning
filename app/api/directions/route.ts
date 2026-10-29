@@ -6,6 +6,7 @@ import {
   draftToDirection,
   composeFromExisting,
   coerceDraft,
+  MAX_TITLE_LENGTH,
   type CustomDirection,
   type DirectionDraft,
 } from "@/lib/direction";
@@ -207,7 +208,8 @@ export async function POST(request: Request) {
       [
         id,
         user.id,
-        `${original.title}（副本）`,
+        // 「（副本）」占 4 个字，60 字的合法标题直接拼会超限；先截断再拼
+        `${original.title.slice(0, MAX_TITLE_LENGTH - 4)}（副本）`,
         original.subjectId,
         original.description,
         graphJson,

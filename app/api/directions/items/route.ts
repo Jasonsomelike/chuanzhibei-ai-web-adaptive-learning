@@ -270,14 +270,18 @@ export async function POST(request: Request) {
     /*
      * 前端声称的 checks 不采信，只保留两类服务端无法重跑的结论：
      *   - 「双解校验」：需要再调两次模型，成本高
+     *   - 「依据核对…」：L6 只读核对，含通过、未通过、未完成三种
      *   - 「依据：…」：教材 / 讲义出处，只影响展示
-     * 依据不参与 source / status / 折扣的任何判定，编造一条出处
-     * 最多让界面多显示一行字，不会让题变成可计证据的高分题。
+     * 依据与核对结论都不参与 source / status / 折扣的任何判定，
+     * 编造一条最多让界面多显示一行字，不会让题变成可计证据的高分题。
+     * status 仍由客户端显式 practice 保留（见上），所以 L6 未过的题
+     * 落库后仍是 practice，不计证据。
      */
     const clientChecks = Array.isArray(raw.checks)
       ? raw.checks.filter(
           (c): c is string =>
-            typeof c === "string" && (c === "双解校验" || c.startsWith(MATERIAL_CHECK_PREFIX)),
+            typeof c === "string" &&
+            (c === "双解校验" || c.startsWith("依据核对") || c.startsWith(MATERIAL_CHECK_PREFIX)),
         )
       : [];
 

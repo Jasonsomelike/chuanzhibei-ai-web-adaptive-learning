@@ -18,6 +18,8 @@ import type { LearnerState } from "@/lib/learner";
 import { MATERIALS_STORAGE_KEY } from "@/lib/materials";
 import { CHAPTERS_STORAGE_KEY } from "@/lib/chapters";
 import { MATERIALS_CHANGED_EVENT } from "@/lib/materialStore";
+import { SEARCH_CONFIG_KEY } from "@/lib/searchClient";
+import { TTS_STORAGE_KEY } from "@/lib/tts";
 
 export interface AuthUser {
   readonly id: string;
@@ -35,6 +37,15 @@ export interface AuthUser {
  */
 const MATERIALS_OWNER_KEY = "alp.materials.owner";
 
+/**
+ * 搜索与语音的密钥同样是浏览器级的，而且不在 provider 配置里。
+ * 只清 provider 会让共享电脑上下一位用户接着用上一位的 Tavily / TTS 额度。
+ */
+function clearBrowserSecrets(): void {
+  window.localStorage.removeItem(SEARCH_CONFIG_KEY);
+  window.localStorage.removeItem(TTS_STORAGE_KEY);
+}
+
 /** 清掉资料存档并通知已挂载的面板重读；同标签页的 removeItem 不会触发 storage 事件。 */
 function clearMaterialsAndChapters(): void {
   window.localStorage.removeItem(MATERIALS_STORAGE_KEY);
@@ -46,7 +57,10 @@ function clearMaterialsAndChapters(): void {
 function adoptAccount(email: string | null): void {
   const owner = window.localStorage.getItem(MATERIALS_OWNER_KEY);
   const next = email ?? "";
-  if (owner !== null && owner !== next) clearMaterialsAndChapters();
+  if (owner !== null && owner !== next) {
+    clearMaterialsAndChapters();
+    clearBrowserSecrets();
+  }
   if (next === "") window.localStorage.removeItem(MATERIALS_OWNER_KEY);
   else window.localStorage.setItem(MATERIALS_OWNER_KEY, next);
 }
@@ -127,6 +141,7 @@ export function useAuth() {
       window.localStorage.removeItem("alp.subject");
       // 教材正文与章节勾选同样是浏览器级的：不清的话下一位用户会直接看到上一位的笔记
       clearMaterialsAndChapters();
+      clearBrowserSecrets();
       window.localStorage.removeItem(MATERIALS_OWNER_KEY);
     } catch {
       /* 隐私模式下可能不可用，忽略 */

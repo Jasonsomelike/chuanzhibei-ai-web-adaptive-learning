@@ -7,8 +7,20 @@ import {
   attemptedQuestionIds,
   attemptCount,
   progressOf,
+  sanitizeProgress,
+  mergeServerProgress,
+  loadLearner,
+  updateMemories,
   type LearnerState,
 } from "@/lib/learner";
+import {
+  MAX_MEMORIES,
+  dueAt,
+  errorMemoryId,
+  reviewMemory,
+  upsertErrorMemory,
+  type MemoryItem,
+} from "@/lib/memory";
 import { questions } from "@/data/questions";
 import { difficultyWeight, initialMastery, masteryMean, masterySd } from "@/lib/mastery";
 import { knowledgeGraph } from "@/data/knowledge-graph";
@@ -16,6 +28,7 @@ import type { KnowledgeGraph } from "@/lib/graph";
 import { DEFAULT_SUBJECT_ID, SUBJECTS } from "@/data/subjects";
 
 const NOW = "2026-10-22T10:00:00.000Z";
+const DAY = 86_400_000;
 const DS = DEFAULT_SUBJECT_ID;
 
 describe("新建学习者", () => {
@@ -366,3 +379,465 @@ describe("进度结构完整性", () => {
     expect(progressOf(roundTrip, DS).attempts).toHaveLength(1);
   });
 });
+
+describe("作答记录扩展字段", () => {
+  const q = questions.find((x) => x.kcId === "c09")!;
+
+  it("predicted/weightScale/source/selectedIndex 原样落进 attempts", () => {
+    const s = recordAttempt(createLearner(), DS, q, true, NOW, {
+      weightScale: 0.8,
+      predicted: 0.62,
+      source: "generated",
+      selectedIndex: 2,
+    });
+    const attempt = progressOf(s, DS).attempts[0];
+    expect(attempt).toMatchObject({
+      predicted: 0.62,
+      weightScale: 0.8,
+      source: "generated",
+      selectedIndex: 2,
+    });
+    // 计入证据的作答不带 counted 字段
+    expect(attempt.counted).toBeUndefined();
+    // 本轮不写 flow：不要为了「以后可能有练习流」先存一个恒定值
+    expect("flow" in attempt).toBe(false);
+  });
+
+  it("不传新字段时不写默认值，旧调用方行为不变", () => {
+    const attempt = progressOf(recordAttempt(createLearner(), DS, q, true, NOW), DS).attempts[0];
+    expect(attempt.predicted).toBeUndefined();
+    expect(attempt.weightScale).toBeUndefined();
+    expect(attempt.source).toBeUndefined();
+    expect(attempt.selectedIndex).toBeUndefined();
+  });
+
+  it("counted 语义不变：重复作答仍是 counted:false，新字段照常保留", () => {
+    let s = recordAttempt(createLearner(), DS, q, true, NOW, {
+      predicted: 0.5,
+      source: "builtin",
+    });
+    s = recordAttempt(s, DS, q, true, NOW, {
+      predicted: 0.9,
+      source: "builtin",
+      selectedIndex: 1,
+    });
+
+    const [first, second] = progressOf(s, DS).attempts;
+    expect(first.counted).toBeUndefined();
+    expect(second.counted).toBe(false);
+    expect(second.predicted).toBe(0.9);
+    expect(second.selectedIndex).toBe(1);
+  });
+
+  it("weightScale=0 的练习记录也保存折扣，且不改掌握度", () => {
+    const s = recordAttempt(createLearner(), DS, q, true, NOW, {
+      weightScale: 0,
+      source: "generated",
+    });
+    const progress = progressOf(s, DS);
+    const m = progress.mastery.find((x) => x.kcId === "c09")!;
+    expect(m.evidenceN).toBe(0);
+    expect(progress.attempts[0].counted).toBe(false);
+    expect(progress.attempts[0].weightScale).toBe(0);
+  });
+});
+
+describe("记忆卡与进度同步", () => {
+  const q = questions.find((x) => x.kcId === "c09")!;
+
+  function withErrorCard(): LearnerState {
+    return updateMemories(createLearner(), DS, (memories) =>
+      upsertErrorMemory(memories, {
+        questionId: q.id,
+        kcId: q.kcId,
+        prompt: q.stem,
+        chosen: q.options[1],
+        correction: q.options[q.answerIndex],
+        now: NOW,
+      }).memories,
+    );
+  }
+
+  it("新建进度带空 memories", () => {
+    expect(createSubjectProgress(DS).memories).toEqual([]);
+    expect(progressOf(createLearner(), DS).memories).toEqual([]);
+  });
+
+  it("updateMemories 写入记忆卡，作答记录原样保留", () => {
+    const before = recordAttempt(createLearner(), DS, q, false, NOW);
+    const after = updateMemories(before, DS, (memories) =>
+      upsertErrorMemory(memories, {
+        questionId: q.id,
+        kcId: q.kcId,
+        prompt: q.stem,
+        chosen: q.options[1],
+        correction: q.options[q.answerIndex],
+        now: NOW,
+      }).memories,
+    );
+
+    const progress = progressOf(after, DS);
+    expect(progress.memories).toHaveLength(1);
+    expect(progress.memories![0].id).toBe(errorMemoryId(q.id));
+    expect(progress.attempts).toEqual(progressOf(before, DS).attempts);
+
+    // 随进度整块同步时确实带上记忆卡
+    const roundTrip = JSON.parse(JSON.stringify(after)) as LearnerState;
+    expect(progressOf(roundTrip, DS).memories).toHaveLength(1);
+  });
+
+  it("updateMemories 前后 mastery.alpha/beta 完全不变", () => {
+    const before = recordAttempt(createLearner(), DS, q, false, NOW);
+    const masteryBefore = progressOf(before, DS).mastery;
+    const after = withErrorCard();
+
+    // withErrorCard 从 createLearner 起，先确认它本身没动掌握度
+    expect(progressOf(after, DS).mastery).toEqual(progressOf(createLearner(), DS).mastery);
+    // 再以「已有作答」的状态跑一次记忆卡写入
+    const combined = updateMemories(before, DS, (memories) =>
+      upsertErrorMemory(memories, {
+        questionId: q.id,
+        kcId: q.kcId,
+        prompt: q.stem,
+        correction: q.options[q.answerIndex],
+        now: NOW,
+      }).memories,
+    );
+    const masteryAfter = progressOf(combined, DS).mastery;
+    expect(masteryAfter).toEqual(masteryBefore);
+    expect(masteryAfter.map((m) => [m.alpha, m.beta])).toEqual(
+      masteryBefore.map((m) => [m.alpha, m.beta]),
+    );
+    expect(progressOf(combined, DS).attempts).toEqual(progressOf(before, DS).attempts);
+    expect(progressOf(combined, DS).pathEdits).toEqual(progressOf(before, DS).pathEdits);
+  });
+
+  it("复习自评刷新 lastSeenAt，下次到期时间随之后移", () => {
+    const later = "2026-10-30T00:00:00.000Z";
+    const id = errorMemoryId(q.id);
+    let s = withErrorCard();
+    const dueBefore = dueAt(progressOf(s, DS).memories![0]);
+    expect(dueBefore).toBe(new Date(Date.parse(NOW) + DAY).toISOString());
+
+    s = updateMemories(s, DS, (memories) => reviewMemory(memories, id, true, later));
+
+    const card = progressOf(s, DS).memories![0];
+    expect(card.lastSeenAt).toBe(later);
+    expect(card.streak).toBe(1);
+    expect(card.reviewCount).toBe(1);
+    // streak=1 → 3 天后到期，而不是继续基于旧的 lastSeenAt
+    expect(dueAt(card)).toBe(new Date(Date.parse(later) + 3 * DAY).toISOString());
+  });
+
+  it("updateMemories 对没有 memories 字段的旧进度按空数组处理", () => {
+    const mastery = createSubjectProgress(DS).mastery;
+    const legacy: LearnerState = {
+      version: 2,
+      learnerId: "legacy",
+      subjects: {
+        [DS]: { mastery, attempts: [], pathEdits: [], lastStepIndex: 0 },
+      },
+    };
+    const s = updateMemories(legacy, DS, (memories) =>
+      upsertErrorMemory(memories, {
+        questionId: q.id,
+        kcId: q.kcId,
+        prompt: q.stem,
+        correction: q.options[q.answerIndex],
+        now: NOW,
+      }).memories,
+    );
+    expect(progressOf(s, DS).memories).toHaveLength(1);
+  });
+
+  it("更新器返回坏形状或超量时，写入前会被清洗", () => {
+    const dirty = [{ id: "bad" }, { id: "bad" }] as unknown as MemoryItem[];
+    const bad = updateMemories(createLearner(), DS, () => dirty);
+    expect(progressOf(bad, DS).memories).toEqual([]);
+
+    let memories: readonly MemoryItem[] = [];
+    for (let i = 0; i < MAX_MEMORIES + 25; i += 1) {
+      memories = upsertErrorMemory(memories, {
+        questionId: `q-${i}`,
+        kcId: q.kcId,
+        prompt: `题干 ${i}`,
+        correction: "解析",
+        now: NOW,
+      }).memories;
+    }
+    const many = updateMemories(createLearner(), DS, () => memories);
+    expect(progressOf(many, DS).memories).toHaveLength(MAX_MEMORIES);
+  });
+});
+
+describe("旧存档兼容", () => {
+  it("没有新字段的 v2 存档仍能加载，缺省字段不影响已有数据", () => {
+    const legacy = {
+      version: 2,
+      learnerId: "legacy",
+      subjects: {
+        [DS]: {
+          mastery: [
+            { kcId: "c09", alpha: 0.7, beta: 1.3, evidenceN: 2 },
+            { kcId: "c10", alpha: 0.6, beta: 1.4, evidenceN: 1 },
+          ],
+          attempts: [
+            { questionId: "q-c09-1", kcId: "c09", difficulty: 1, correct: true, at: NOW },
+          ],
+          pathEdits: [{ at: NOW, kind: "reorder", detail: "调序" }],
+          lastStepIndex: 4,
+        },
+      },
+    };
+
+    const restore = installLocalStorage(JSON.stringify(legacy));
+    try {
+      const state = loadLearner();
+      const progress = progressOf(state, DS);
+
+      expect(state.learnerId).toBe("legacy");
+      expect(progress.mastery).toHaveLength(2);
+      expect(progress.lastStepIndex).toBe(4);
+      expect(progress.pathEdits).toHaveLength(1);
+
+      const attempt = progress.attempts[0];
+      expect(attempt).toMatchObject({
+        questionId: "q-c09-1",
+        kcId: "c09",
+        difficulty: 1,
+        correct: true,
+        at: NOW,
+      });
+      // 旧存档没有 counted，语义上等同 true；也没有新加的四个字段
+      expect(attempt.counted).toBeUndefined();
+      expect(attempt.predicted).toBeUndefined();
+      expect(attempt.weightScale).toBeUndefined();
+      expect(attempt.source).toBeUndefined();
+      expect(attempt.selectedIndex).toBeUndefined();
+      // memories 缺省补成空数组
+      expect(progress.memories).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("localStorage 里形状坏掉的学科被丢弃，其他学科照常加载", () => {
+    const legacy = {
+      version: 2,
+      learnerId: "legacy",
+      subjects: {
+        [DS]: {
+          mastery: [{ kcId: "c09", alpha: 0.7, beta: 1.3, evidenceN: 2 }],
+          attempts: [],
+          pathEdits: [],
+          lastStepIndex: 0,
+        },
+        broken: { mastery: "nope", attempts: [] },
+      },
+    };
+
+    const restore = installLocalStorage(JSON.stringify(legacy));
+    try {
+      const state = loadLearner();
+      expect(progressOf(state, DS).mastery).toHaveLength(1);
+      expect(state.subjects.broken).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it("localStorage 里超量/坏形状的 memories 加载时被清洗", () => {
+    const memories: unknown[] = [
+      ...Array.from({ length: MAX_MEMORIES + 30 }, (_, i) => memoryRecord(i)),
+      { id: "bad" },
+      null,
+    ];
+    const legacy = {
+      version: 2,
+      learnerId: "legacy",
+      subjects: {
+        [DS]: {
+          mastery: [{ kcId: "c09", alpha: 0.7, beta: 1.3, evidenceN: 2 }],
+          attempts: [],
+          pathEdits: [],
+          lastStepIndex: 0,
+          memories,
+        },
+      },
+    };
+
+    const restore = installLocalStorage(JSON.stringify(legacy));
+    try {
+      const state = loadLearner();
+      const stored = progressOf(state, DS).memories!;
+      expect(stored).toHaveLength(MAX_MEMORIES);
+      expect(stored.every((m) => m.id.startsWith("mem-error-"))).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("服务端进度清洗", () => {
+  it("sanitizeProgress 丢弃坏 mastery 并补齐 memories 数组", () => {
+    expect(sanitizeProgress(null)).toBeNull();
+    expect(sanitizeProgress({ mastery: "nope" })).toBeNull();
+    expect(
+      sanitizeProgress({ mastery: [{ kcId: "c09", alpha: "x", beta: 1, evidenceN: 1 }] }),
+    ).toBeNull();
+
+    const clean = sanitizeProgress({
+      mastery: [{ kcId: "c09", alpha: 0.6, beta: 1.4, evidenceN: 1 }],
+    });
+    expect(clean).not.toBeNull();
+    expect(clean!.memories).toEqual([]);
+    expect(clean!.attempts).toEqual([]);
+    expect(clean!.lastStepIndex).toBe(0);
+  });
+
+  it("sanitizeProgress 保留合法的新字段，丢弃未知 source", () => {
+    const clean = sanitizeProgress({
+      mastery: [{ kcId: "c09", alpha: 0.6, beta: 1.4, evidenceN: 1 }],
+      attempts: [
+        {
+          questionId: "q1",
+          kcId: "c09",
+          difficulty: 2,
+          correct: false,
+          at: NOW,
+          counted: false,
+          predicted: 0.4,
+          weightScale: 0.8,
+          source: "generated",
+          selectedIndex: 3,
+        },
+        {
+          questionId: "q2",
+          kcId: "c09",
+          difficulty: 2,
+          correct: true,
+          at: NOW,
+          source: "hacked",
+        },
+      ],
+    })!;
+
+    expect(clean.attempts).toHaveLength(2);
+    expect(clean.attempts[0]).toMatchObject({
+      counted: false,
+      predicted: 0.4,
+      weightScale: 0.8,
+      source: "generated",
+      selectedIndex: 3,
+    });
+    expect(clean.attempts[1].source).toBeUndefined();
+    expect(clean.attempts[1].counted).toBeUndefined();
+  });
+
+  it("超过 200 张的记忆卡被截到上限", () => {
+    const clean = sanitizeProgress({
+      mastery: [{ kcId: "c09", alpha: 0.6, beta: 1.4, evidenceN: 1 }],
+      memories: Array.from({ length: MAX_MEMORIES + 60 }, (_, i) => memoryRecord(i)),
+    })!;
+    expect(clean.memories).toHaveLength(MAX_MEMORIES);
+  });
+
+  it("mergeServerProgress 不会把服务端超量/坏形状的 memories 带进 UI 状态", () => {
+    const server = {
+      [DS]: {
+        mastery: [{ kcId: "c09", alpha: 0.6, beta: 1.4, evidenceN: 1 }],
+        attempts: [],
+        pathEdits: [],
+        lastStepIndex: 2,
+        memories: [
+          ...Array.from({ length: MAX_MEMORIES + 10 }, (_, i) => memoryRecord(i)),
+          { id: "bad" },
+        ],
+      },
+    };
+
+    const merged = mergeServerProgress(createLearner(), server);
+    const progress = progressOf(merged, DS);
+    expect(progress.memories).toHaveLength(MAX_MEMORIES);
+    expect(progress.mastery).toHaveLength(1);
+    expect(progress.lastStepIndex).toBe(2);
+  });
+
+  it("服务端某学科形状坏掉时保留本地版本，其他学科照常合并", () => {
+    const q = questions.find((x) => x.kcId === "c09")!;
+    const local = recordAttempt(createLearner(), DS, q, false, NOW);
+
+    const merged = mergeServerProgress(local, {
+      [DS]: { mastery: "nope" },
+      network: {
+        mastery: [{ kcId: "n1", alpha: 0.5, beta: 1.5, evidenceN: 0 }],
+        attempts: [],
+        pathEdits: [],
+        lastStepIndex: 0,
+      },
+    });
+
+    // 坏掉的学科不被清空
+    expect(progressOf(merged, DS).attempts).toHaveLength(1);
+    // 好的学科正常覆盖
+    expect(progressOf(merged, "network").mastery.map((m) => m.kcId)).toEqual(["n1"]);
+  });
+
+  it("服务端返回非对象时原样保留本地状态", () => {
+    const local = createLearner();
+    expect(mergeServerProgress(local, null)).toBe(local);
+    expect(mergeServerProgress(local, [1, 2, 3])).toBe(local);
+    expect(mergeServerProgress(local, "nope")).toBe(local);
+  });
+});
+
+// ── 测试辅助 ────────────────────────────────────────────────────────
+
+interface FakeWindow {
+  localStorage: {
+    getItem: (key: string) => string | null;
+    setItem: (key: string, value: string) => void;
+    removeItem: (key: string) => void;
+  };
+}
+
+/** node 环境没有 window；loadLearner 只用到 localStorage，挂一个最小实现即可。 */
+function installLocalStorage(initial: string | null): () => void {
+  const store = new Map<string, string>();
+  if (initial !== null) store.set("alp.learner.v2", initial);
+
+  const globals = globalThis as unknown as { window?: FakeWindow };
+  const previous = globals.window;
+  globals.window = {
+    localStorage: {
+      getItem: (key) => store.get(key) ?? null,
+      setItem: (key, value) => {
+        store.set(key, value);
+      },
+      removeItem: (key) => {
+        store.delete(key);
+      },
+    },
+  };
+
+  return () => {
+    if (previous === undefined) delete globals.window;
+    else globals.window = previous;
+  };
+}
+
+function memoryRecord(i: number): Record<string, unknown> {
+  return {
+    id: `mem-error-q${i}`,
+    kind: "error",
+    kcId: "c09",
+    questionId: `q${i}`,
+    prompt: `题干 ${i}`,
+    correction: "正确答案与解析",
+    createdAt: NOW,
+    lastSeenAt: NOW,
+    status: "open",
+    streak: 0,
+    reviewCount: 0,
+  };
+}

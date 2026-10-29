@@ -65,7 +65,7 @@ export default function AboutPage() {
               title="课程导师"
               href="/tutor"
               points={[
-                "回答只依据课程知识库，每条都标注引用了哪个知识点",
+                "回答优先依据课程知识库；引用只列回复里真正出现的知识点，没有引用会如实说明",
                 "检索用 BM25 中文 bigram，不依赖向量数据库",
                 "没配置大模型时仍可用，退化为检索拼装并如实标注",
               ]}
@@ -278,7 +278,7 @@ export default function AboutPage() {
                 ["认证", "PBKDF2-HMAC-SHA256 + 服务端会话"],
                 ["存储", "Postgres（Neon）；本地无库时退化为内存"],
                 ["工具协议", "MCP（JSON-RPC 2.0）"],
-                ["测试", "Vitest 270 条 + Playwright E2E + MCP 协议测试"],
+                ["测试", "Vitest 751 条 + Playwright E2E + MCP 协议测试"],
               ].map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-[var(--ink-soft)]">{k}</dt>
@@ -299,7 +299,7 @@ export default function AboutPage() {
               <li>· 题库与图谱未经任课教师逐条签字确认，是初始版本</li>
               <li>· 没有真实学生使用数据，掌握度数字来自自测</li>
               <li>· 教师班级视图未实现，这是当前最大的功能缺口</li>
-              <li>· 自定义方向不提供题库，因此不能做该方向的诊断</li>
+              <li>· 自定义方向没有内置题库，需要用模型生成或手动录题后才能诊断</li>
               <li>· 路径页是列表视图，未做图形化画布</li>
               <li>· 未做性能预算实测（Lighthouse / CWV）</li>
               <li>· 浏览器直连供应商受 CORS 约束，部分服务需自建代理</li>

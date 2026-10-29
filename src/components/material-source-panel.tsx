@@ -732,7 +732,8 @@ export function MaterialSourcePanel() {
           <div>
             <p className="text-sm font-medium">我的讲义</p>
             <p className="mt-1 text-xs text-[var(--ink-faint)]">
-              粘贴自己的讲义并绑定知识点；首版只接受粘贴文本，不解析 PDF / PPT。
+              粘贴自己的讲义并绑定知识点；本卡片只收粘贴文本，Markdown / TXT / PDF
+              请用方向页的知识库上传（PDF 需自带文本层，扫描件不做 OCR）。
               正文只存本浏览器；出题或讲解时命中的段落会随请求直接发给你配置的模型供应商。
               保存后回上面的来源列表勾选《我的讲义》才会生效。
             </p>

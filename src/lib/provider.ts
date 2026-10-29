@@ -20,7 +20,17 @@
  * 但原因不同，必须在测试与错误提示里区分开。
  */
 
+import {
+  buildThinkingBody,
+  extractNonStreamingReasoning,
+  extractNonStreamingText,
+  type ThinkingStrength,
+} from "@/lib/reasoning";
+
 export type ProviderKind = "openai-compatible" | "anthropic";
+
+/** 设置页探测思考参数的结论。unknown 表示没探测过或探测未完成。 */
+export type ThinkingStatus = "unknown" | "verified" | "verified-empty" | "unsupported";
 
 export interface ProviderConfig {
   /** 显示名，用户自己起。 */
@@ -32,6 +42,15 @@ export interface ProviderConfig {
   readonly model: string;
   /** 可选：额外请求头，JSON 字符串。 */
   readonly extraHeaders?: string;
+  /**
+   * 思考强度。只作用于导师流式问答（callChatStream）；
+   * callChat 故意不读，避免出题 JSON 被思考 token 吃光。
+   */
+  readonly thinking?: ThinkingStrength;
+  /** 探测结论。写回只发生在调用方（设置页/导师页），本模块不自己改。 */
+  readonly thinkingStatus?: ThinkingStatus;
+  /** 依据核对开关，默认开。 */
+  readonly verification?: boolean;
 }
 
 /** 常见供应商预设。用户仍可改地址与模型名。 */
@@ -147,6 +166,19 @@ export function loadProvider(): ProviderConfig | null {
       apiKey: p.apiKey.trim(),
       model: (p.model ?? "").trim(),
       extraHeaders: p.extraHeaders,
+      /*
+       * 三项必须显式读出并补默认值。只靠 saveProvider 写入是不够的：
+       * 旧存档、别处构造的 config、以及 save() 漏字段，都会让
+       * 「保存 → 刷新 → 再读」丢掉 unsupported 与核对开关。
+       */
+      thinking: p.thinking === "standard" || p.thinking === "deep" ? p.thinking : "off",
+      thinkingStatus:
+        p.thinkingStatus === "verified" ||
+        p.thinkingStatus === "verified-empty" ||
+        p.thinkingStatus === "unsupported"
+          ? p.thinkingStatus
+          : "unknown",
+      verification: p.verification !== false,
     };
   } catch {
     return null;
@@ -156,7 +188,17 @@ export function loadProvider(): ProviderConfig | null {
 export function saveProvider(config: ProviderConfig): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    // 三项显式落盘：调用方构造的 config 可能没有它们，读回时才能区分
+    // 「用户显式关掉」与「从来没存过」。
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...config,
+        thinking: config.thinking ?? "off",
+        thinkingStatus: config.thinkingStatus ?? "unknown",
+        verification: config.verification !== false,
+      }),
+    );
   } catch {
     // 存不进去就算了，当前会话仍可用
   }
@@ -246,6 +288,120 @@ export function isLocalAddress(baseUrl: string): boolean {
   }
 }
 
+// ── 请求构造（chat.ts 与本文件的连通性测试共用） ──────────────────
+
+export interface ChatBodyRequest {
+  readonly system?: string;
+  readonly user: string;
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+  /** 要求模型返回 JSON 对象。Anthropic 无此参数，靠提示词与 extractJson 兜底。 */
+  readonly jsonMode?: boolean;
+}
+
+export interface BuiltChatBody {
+  readonly body: Record<string, unknown>;
+  readonly maxTokens: number;
+  /** 是否写入了思考字段；400 降级只对这类请求重发一次。 */
+  readonly thinkingFields: boolean;
+}
+
+export function buildProviderHeaders(config: ProviderConfig): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+
+  if (config.kind === "anthropic") {
+    headers["x-api-key"] = config.apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    // Anthropic 官方要求浏览器直连时显式声明，否则会被拒
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  } else {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
+
+  if (config.extraHeaders) {
+    try {
+      Object.assign(headers, JSON.parse(config.extraHeaders) as Record<string, string>);
+    } catch {
+      /* 非法 JSON 由调用方在界面上提示 */
+    }
+  }
+
+  return headers;
+}
+
+/**
+ * 两种协议的请求体在这里统一构造。
+ *
+ * system/messages/jsonMode/temperature 的规则只写一份：chat.ts 的
+ * callChat 与 callChatStream、本文件的 testConnection 都走这里，
+ * 避免「流式会删 temperature、非流式忘了删」这类分支漂移。
+ *
+ * 思考字段由 buildThinkingBody 按档位矩阵增删：关档字段完全不出现，
+ * 开档删采样参数并抬高 max_tokens。
+ */
+export function buildChatBody(
+  kind: ProviderKind,
+  provider: Pick<ProviderConfig, "model">,
+  req: ChatBodyRequest,
+  strength: ThinkingStrength,
+): BuiltChatBody {
+  const maxTokens = req.maxTokens ?? 600;
+  const temperature = req.temperature ?? 0.3;
+
+  const base: Record<string, unknown> =
+    kind === "anthropic"
+      ? {
+          model: provider.model,
+          max_tokens: maxTokens,
+          temperature,
+          ...(req.system ? { system: req.system } : {}),
+          messages: [{ role: "user", content: req.user }],
+        }
+      : {
+          model: provider.model,
+          temperature,
+          max_tokens: maxTokens,
+          ...(req.jsonMode ? { response_format: { type: "json_object" } } : {}),
+          messages: [
+            ...(req.system ? [{ role: "system", content: req.system }] : []),
+            { role: "user", content: req.user },
+          ],
+        };
+
+  return buildThinkingBody(kind, strength, base, maxTokens);
+}
+
+/** 构造连通性测试的请求体与端点。 */
+function buildRequest(config: ProviderConfig): { endpoint: string; body: unknown } {
+  const anthropic = config.kind === "anthropic";
+  /*
+   * 不能只给 16：推理模型（deepseek-v4、o 系列等）的思考 token 也计入
+   * max_tokens，16 会被推理吃光、content 为空，于是连通性被误判成失败。
+   * 64 仍是一个可以忽略的成本，但足够让多数推理模型走到正文。
+   */
+  const built = buildChatBody(
+    config.kind,
+    config,
+    { user: "回复两个字：可用", maxTokens: 64 },
+    "off",
+  );
+  return {
+    endpoint: `${config.baseUrl}${anthropic ? "/messages" : "/chat/completions"}`,
+    body: anthropic ? built.body : { ...built.body, stream: false },
+  };
+}
+
+/** 结束原因：OpenAI 在 choices[0].finish_reason，Anthropic 在顶层 stop_reason。 */
+function finishReasonOf(json: Record<string, unknown>): string {
+  const choices = Array.isArray(json.choices) ? json.choices : [];
+  const first = choices[0];
+  if (typeof first === "object" && first !== null) {
+    const reason = (first as Record<string, unknown>).finish_reason;
+    if (typeof reason === "string" && reason !== "") return reason;
+  }
+  return typeof json.stop_reason === "string" ? json.stop_reason : "";
+}
+
 // ── 连通性测试 ────────────────────────────────────────────────────
 
 export type FailureKind =
@@ -269,57 +425,6 @@ export interface TestResult {
   readonly failure?: FailureKind;
   /** 该分类下的具体修复步骤。 */
   readonly hints?: readonly string[];
-}
-
-/** 构造请求体与端点。两种协议分开，避免把 Anthropic 的字段塞进 OpenAI 请求。 */
-function buildRequest(config: ProviderConfig): { endpoint: string; body: unknown } {
-  if (config.kind === "anthropic") {
-    return {
-      endpoint: `${config.baseUrl}/messages`,
-      body: {
-        model: config.model,
-        /*
-         * 不能只给 16：推理模型（deepseek-v4、o 系列等）的思考 token 也计入
-         * max_tokens，16 会被推理吃光、content 为空，于是连通性被误判成失败。
-         * 64 仍是一个可以忽略的成本，但足够让多数推理模型走到正文。
-         */
-        max_tokens: 64,
-        messages: [{ role: "user", content: "回复两个字：可用" }],
-      },
-    };
-  }
-  return {
-    endpoint: `${config.baseUrl}/chat/completions`,
-    body: {
-      model: config.model,
-      max_tokens: 64,
-      stream: false,
-      messages: [{ role: "user", content: "回复两个字：可用" }],
-    },
-  };
-}
-
-function buildHeaders(config: ProviderConfig): Record<string, string> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-
-  if (config.kind === "anthropic") {
-    headers["x-api-key"] = config.apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-    // Anthropic 官方要求浏览器直连时显式声明，否则会被拒
-    headers["anthropic-dangerous-direct-browser-access"] = "true";
-  } else {
-    headers.Authorization = `Bearer ${config.apiKey}`;
-  }
-
-  if (config.extraHeaders) {
-    try {
-      Object.assign(headers, JSON.parse(config.extraHeaders) as Record<string, string>);
-    } catch {
-      /* 非法 JSON 由调用方在界面上提示 */
-    }
-  }
-
-  return headers;
 }
 
 /**
@@ -379,7 +484,7 @@ export async function testConnection(
   try {
     const res = await fetch(endpoint, {
       method: "POST",
-      headers: buildHeaders(config),
+      headers: buildProviderHeaders(config),
       body: JSON.stringify(body),
       signal: combined,
     });
@@ -392,22 +497,19 @@ export async function testConnection(
       return { ok: false, latencyMs, detail, failure: kind, hints };
     }
 
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string }; finish_reason?: string }[];
-      content?: { text?: string }[];
-      stop_reason?: string;
-      usage?: unknown;
-    };
-
-    const reply = json.choices?.[0]?.message?.content ?? json.content?.[0]?.text ?? "";
-    const finishReason = json.choices?.[0]?.finish_reason ?? json.stop_reason ?? "";
+    const json = (await res.json()) as Record<string, unknown>;
+    // 与 callChat 共用解析：Anthropic 的 thinking 块在前时，正文仍要取到 type=text
+    const reply = extractNonStreamingText(config.kind, json);
+    const reasoning = extractNonStreamingReasoning(config.kind, json);
+    const finishReason = finishReasonOf(json);
+    const hasUsage = typeof json.usage === "object" && json.usage !== null;
 
     /*
      * 200 + 合法响应体 + finish_reason=length 但正文为空，说明端点、密钥、模型名都对，
      * 只是 token 预算被推理内容吃掉。这属于「连得上」，不能报成响应异常——
      * 否则每个推理模型第一次测连通性都会红，用户会以为地址填错了。
      */
-    if (!reply.trim() && finishReason === "length") {
+    if (!reply.trim() && (finishReason === "length" || reasoning.trim() !== "")) {
       return {
         ok: true,
         latencyMs,
@@ -428,7 +530,7 @@ export async function testConnection(
     return {
       ok: true,
       latencyMs,
-      detail: `模型返回「${reply.trim().slice(0, 40)}」${json.usage ? "，含用量统计" : ""}`,
+      detail: `模型返回「${reply.trim().slice(0, 40)}」${hasUsage ? "，含用量统计" : ""}`,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - started);

@@ -26,6 +26,8 @@ import {
   normalizeText,
   kcEvidenceTarget,
   type DirectionItem,
+  type ItemCheckResult,
+  type ItemStatus,
   type RawItem,
 } from "@/lib/itemgen";
 import type { KnowledgeGraph, KnowledgeConcept } from "@/lib/graph";
@@ -33,9 +35,12 @@ import { borrowItems } from "@/lib/borrow";
 import {
   buildMaterialContext,
   materialCheckLabel,
+  mergePacks,
   type MaterialPack,
   type MaterialSelection,
 } from "@/lib/materials";
+import { applyItemEvidence, stripNonEvidenceBlocks, type ItemEvidenceResult } from "@/lib/verify";
+import { verifyItemEvidence } from "@/lib/verifyClient";
 
 export const ITEM_SYSTEM_PROMPT = `你是大学课程的出题老师。根据给定的知识点，出一批四选一选择题。
 
@@ -69,7 +74,46 @@ export interface EnsureItemsResult {
   readonly generated: number;
   /** 降级原因。非空时界面必须如实展示。 */
   readonly error: string | null;
+  /** 本次生成的流程轨迹。只存在于内存，不落库。 */
+  readonly trace: readonly ItemTraceStep[];
+  /** 依据核对（L6）的汇总。 */
+  readonly verification: ItemVerificationSummary;
 }
+
+/**
+ * 生成流程的一步，供界面展示 L1–L6 的轨迹。
+ *
+ * 这是可核对的过程记录（跑了哪几层、哪层没过），不是模型的原始思维链。
+ */
+export interface ItemTraceStep {
+  readonly key: "generate" | "L1" | "L2" | "L3" | "L4" | "L6" | "save";
+  readonly label: string;
+  readonly status: "ok" | "warn" | "fail" | "skip";
+  readonly detail?: string;
+}
+
+/**
+ * 一个 KC 的依据核对汇总。
+ *
+ * attempted=false 时 note 说明为什么没核对（开关关闭 / 无原文 / 无题）。
+ * unverified 单独计数：它和 failed 不同，不构成降级证据。
+ */
+export interface ItemVerificationSummary {
+  readonly attempted: boolean;
+  readonly passed: number;
+  readonly failed: number;
+  readonly unverified: number;
+  readonly skipped: number;
+  readonly note: string | null;
+}
+
+/**
+ * ensureAllItems 一次最多核对多少个 KC。
+ *
+ * 每个 KC 一次调用，20 个恰好对应方向图谱的知识点上限；
+ * 超过时只核对前 20 个，其余在结果里如实报「未核对」。
+ */
+export const MAX_VERIFIED_CONCEPTS = 20;
 
 export interface EnsureItemsOptions {
   readonly directionId: string;
@@ -84,6 +128,11 @@ export interface EnsureItemsOptions {
    * 两者都不参与 source / status / 证据折扣的判定。
    */
   readonly material?: EnsureItemsMaterial;
+  /**
+   * 是否执行 L6 依据核对。不传时读 provider.verification（缺省开启）。
+   * 显式 false 时完全不发核对请求。
+   */
+  readonly verification?: boolean;
 }
 
 /** 注入生成链路的资料口径。详见 materials.ts 的 buildMaterialContext。 */
@@ -98,6 +147,11 @@ export interface EnsureItemsMaterial {
 export interface EnsureAllItemsMaterial {
   readonly pack: MaterialPack;
   readonly selection: MaterialSelection;
+  /**
+   * 该方向的上传资料包（IndexedDB → uploadsToPack）。
+   * 只包含绑定了知识点的文档；不传时行为与旧版一致。
+   */
+  readonly uploadedPack?: MaterialPack;
 }
 
 /**
@@ -105,6 +159,10 @@ export interface EnsureAllItemsMaterial {
  *
  * 这里是「资料怎么拼」的唯一实现：ensureAllItems 逐点调用它，
  * 诊断页的懒生成也按同一判据（citations 非空才注入）。
+ *
+ * uploadedPack 与内置包合并，并把上传来源追加进选择：uploadsToPack 的
+ * source id 是文档 id，不在用户的教材选择里；不追加就永远命中不了上传片段。
+ * 追加在末尾，因此上传资料优先级低于用户已选的教材 / 讲义。
  *
  * 没有可引用的片段时返回 undefined，而不是空上下文：
  * 空上下文只会让提示词多一个空的「教材原文」小节，
@@ -116,13 +174,79 @@ export function materialForConcept(
 ): EnsureItemsMaterial | undefined {
   if (!material) return undefined;
 
-  const context = buildMaterialContext(material.pack, [concept], material.selection);
+  const uploaded = material.uploadedPack;
+  const pack = uploaded ? mergePacks([material.pack, uploaded]) : material.pack;
+  const selection = uploaded
+    ? {
+        ...material.selection,
+        sourceIds: [
+          ...material.selection.sourceIds,
+          ...uploaded.sources
+            .map((source) => source.id)
+            .filter((id) => !material.selection.sourceIds.includes(id)),
+        ],
+      }
+    : material.selection;
+
+  const context = buildMaterialContext(pack, [concept], selection);
   if (context.citations.length === 0) return undefined;
 
   return {
     context: context.text,
     checkLabel: materialCheckLabel(context.citations),
   };
+}
+
+// ── 流程轨迹与依据核对开关 ─────────────────────────────────────────
+
+const TRACE_LABEL: Record<ItemTraceStep["key"], string> = {
+  generate: "生成题目",
+  L1: "L1 结构",
+  L2: "L2 卫生",
+  L3: "L3 答案",
+  L4: "L4 双解",
+  L6: "L6 依据核对",
+  save: "落库",
+};
+
+function traceStep(
+  key: ItemTraceStep["key"],
+  status: ItemTraceStep["status"],
+  detail?: string,
+): ItemTraceStep {
+  return detail === undefined
+    ? { key, label: TRACE_LABEL[key], status }
+    : { key, label: TRACE_LABEL[key], status, detail };
+}
+
+function emptyVerification(note: string | null): ItemVerificationSummary {
+  return { attempted: false, passed: 0, failed: 0, unverified: 0, skipped: 0, note };
+}
+
+/** 取某层的第一条问题，用于 trace 的 detail。 */
+function firstIssue(
+  results: readonly ItemCheckResult[],
+  key: "l2Issues" | "l3Issues",
+): string {
+  for (const result of results) {
+    const issue = result[key][0];
+    if (issue !== undefined) return issue;
+  }
+  return "";
+}
+
+/**
+ * 是否执行 L6：显式参数优先，其次读 provider.verification !== false。
+ *
+ * 没有 provider 时一定不开启——核对本身也要调用模型。
+ */
+function verificationEnabled(
+  provider: ProviderConfig | null,
+  explicit: boolean | undefined,
+): boolean {
+  if (provider === null) return false;
+  if (explicit !== undefined) return explicit;
+  return provider.verification !== false;
 }
 
 /** 拉取某 KC 已落库的题。 */
@@ -220,7 +344,15 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
    */
   const threshold = kcEvidenceTarget(accepted.map((i) => i.source));
   if (acceptedNow >= threshold) {
-    return { items: existing, generated: 0, error: null };
+    return {
+      items: existing,
+      generated: 0,
+      error: null,
+      trace: [
+        traceStep("generate", "skip", `缓存命中：已有 ${acceptedNow} 道通过校验的题`),
+      ],
+      verification: emptyVerification("缓存命中，未发起生成与核对"),
+    };
   }
 
   if (!provider) {
@@ -235,6 +367,8 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
         items: existing,
         generated: 0,
         error: "未配置模型供应商，且内置题库里没有同名知识点可借用。可以只规划路径、手动补题，或到设置页配置模型。",
+        trace: [traceStep("generate", "skip", "未配置模型供应商")],
+        verification: emptyVerification("未配置模型供应商，无法核对"),
       };
     }
 
@@ -267,6 +401,8 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
           items: existing,
           generated: 0,
           error: `借用题目落库失败：${data.error ?? `HTTP ${res.status}`}`,
+          trace: [traceStep("save", "fail", "借用题目落库失败")],
+          verification: emptyVerification("借用题未发起依据核对"),
         };
       }
       const data = (await res.json()) as { items?: DirectionItem[] };
@@ -275,12 +411,19 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
         items: [...existing, ...saved],
         generated: saved.length,
         error: null,
+        trace: [
+          traceStep("generate", "skip", `从内置题库借用 ${saved.length} 题`),
+          traceStep("save", "ok", `落库 ${saved.length} 题`),
+        ],
+        verification: emptyVerification("借用题来自人工校准题库，未发起依据核对"),
       };
     } catch (err) {
       return {
         items: existing,
         generated: 0,
         error: `借用题目落库失败：${err instanceof Error ? err.message : String(err)}`,
+        trace: [traceStep("save", "fail", "借用题目落库失败")],
+        verification: emptyVerification("借用题未发起依据核对"),
       };
     }
   }
@@ -311,6 +454,8 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
       items: existing,
       generated: 0,
       error: `生成失败：${err instanceof Error ? err.message : String(err)}`,
+      trace: [traceStep("generate", "fail", `生成失败：${err instanceof Error ? err.message : String(err)}`)],
+      verification: emptyVerification("生成失败，未发起核对"),
     };
   }
 
@@ -341,7 +486,16 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
   }
 
   if (!parsed.ok) {
-    return { items: existing, generated: 0, error: `模型输出无法解析：${parsed.reason}` };
+    return {
+      items: existing,
+      generated: 0,
+      error: `模型输出无法解析：${parsed.reason}`,
+      trace: [
+        traceStep("generate", "ok", `模型返回 ${raw.length} 字`),
+        traceStep("L1", "fail", parsed.reason),
+      ],
+      verification: emptyVerification("结构未通过，未发起核对"),
+    };
   }
 
   const now = new Date().toISOString();
@@ -366,6 +520,7 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
   const solvable = pairs.filter((p) => p.result.item.status === "accepted");
   let l4Pass: boolean[] = solvable.map(() => false);
   let l4Error: string | null = null;
+  let l4Complete = true;
 
   if (solvable.length > 0) {
     const raws = solvable.map((p) => p.raw).filter((r): r is RawItem => r !== undefined);
@@ -390,19 +545,151 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
         l4Error = `双解校验有问题：${solverIssues.join("；")}`;
       }
     } catch (err) {
+      l4Complete = false;
       l4Error = `双解校验未能完成：${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
+  // ── 流程轨迹：L1 / L2 / L3 / L4 ──
+  const l2Bad = checked.filter((r) => r.l2Issues.length > 0).length;
+  const l3Bad = checked.filter((r) => r.l3Issues.length > 0).length;
+  const trace: ItemTraceStep[] = [
+    traceStep("generate", "ok", `模型返回 ${raw.length} 字`),
+    traceStep("L1", "ok", `结构通过，共 ${parsed.batch.items.length} 题`),
+    l2Bad === 0
+      ? traceStep("L2", "ok", `${checked.length} 题通过卫生检查`)
+      : traceStep(
+          "L2",
+          l2Bad === checked.length ? "fail" : "warn",
+          `${l2Bad} 题未通过：${firstIssue(checked, "l2Issues")}`,
+        ),
+    l3Bad === 0
+      ? traceStep("L3", "ok", `${checked.length} 题答案唯一匹配`)
+      : traceStep(
+          "L3",
+          l3Bad === checked.length ? "fail" : "warn",
+          `${l3Bad} 题未通过：${firstIssue(checked, "l3Issues")}`,
+        ),
+  ];
+  if (solvable.length === 0) {
+    trace.push(traceStep("L4", "skip", "没有可批解的题"));
+  } else if (l4Error !== null && !l4Complete) {
+    trace.push(traceStep("L4", "fail", l4Error));
+  } else if (l4Error !== null) {
+    trace.push(traceStep("L4", "warn", l4Error));
+  } else {
+    const l4Bad = l4Pass.filter((pass) => !pass).length;
+    trace.push(
+      l4Bad === 0
+        ? traceStep("L4", "ok", `${solvable.length} 题两次批解一致`)
+        : traceStep("L4", "warn", `${l4Bad} 题两次批解不一致，降为练习`),
+    );
+  }
+
+  // ── L6 依据核对：整批题只发一次调用 ──
+  /*
+   * 只核对未被 L2/L3 拒掉的题：rejected 不落库，核对它们没有意义。
+   * L4 已降为 practice 的题仍在核对范围——通过也不会升级（applyItemEvidence
+   * 保持原状态），但未通过时能把原因一并写进 checks。
+   */
+  const evidenceTargets: { pairIndex: number; raw: RawItem; result: ItemCheckResult }[] = [];
+  pairs.forEach((pair, pairIndex) => {
+    if (pair.result.item.status === "rejected") return;
+    if (pair.raw === undefined) return;
+    evidenceTargets.push({ pairIndex, raw: pair.raw, result: pair.result });
+  });
+
+  const verificationOn = verificationEnabled(provider, opts.verification);
+  const materialContext = opts.material?.context ?? "";
+  // 只有口径指令块、没有原文时同样算「无原文可核对」
+  const evidenceAvailable = stripNonEvidenceBlocks(materialContext) !== "";
+  let evidenceResults: readonly ItemEvidenceResult[] | null = null;
+  let verification: ItemVerificationSummary;
+
+  if (!verificationOn) {
+    verification = emptyVerification("本次未开启依据核对");
+    trace.push(traceStep("L6", "skip", "本次未开启依据核对"));
+  } else if (!evidenceAvailable) {
+    verification = emptyVerification("无原文可核对");
+    trace.push(traceStep("L6", "skip", "无原文可核对"));
+  } else if (evidenceTargets.length === 0) {
+    verification = emptyVerification("没有可核对的题目");
+    trace.push(traceStep("L6", "skip", "没有可核对的题目"));
+  } else {
+    const outcome = await verifyItemEvidence(
+      provider,
+      evidenceTargets.map((target) => ({
+        stem: target.result.item.stem,
+        options: target.result.item.options,
+        answerText: target.raw.answerText,
+      })),
+      materialContext,
+      opts.signal,
+    );
+    evidenceResults = outcome.results;
+
+    let passed = 0;
+    let failed = 0;
+    let unverified = 0;
+    let skipped = 0;
+    for (const result of outcome.results) {
+      if (result.outcome === "passed") passed += 1;
+      else if (result.outcome === "failed") failed += 1;
+      else if (result.outcome === "unverified") unverified += 1;
+      else skipped += 1;
+    }
+
+    const note =
+      outcome.error !== null
+        ? `核对未完成：${outcome.error}`
+        : failed > 0
+          ? `${failed} 题未通过依据核对`
+          : unverified > 0
+            ? `${unverified} 题核对未完成`
+            : null;
+    verification = { attempted: true, passed, failed, unverified, skipped, note };
+
+    if (outcome.error !== null || unverified > 0) {
+      trace.push(traceStep("L6", "warn", note ?? "核对未完成"));
+    } else if (failed > 0) {
+      trace.push(traceStep("L6", "warn", `${failed} 题未通过，已降为练习`));
+    } else if (passed === 0) {
+      trace.push(traceStep("L6", "skip", "没有可核对的题目"));
+    } else {
+      trace.push(traceStep("L6", "ok", `${passed} 题有逐字依据`));
+    }
+  }
+
+  // 依据核对结果按题目在批次里的位置归位（parseItemEvidenceBatch 保持输入顺序）
+  const evidenceFor = new Map<number, ItemEvidenceResult>();
+  if (evidenceResults !== null) {
+    evidenceTargets.forEach((target, index) => {
+      const result = evidenceResults?.[index];
+      if (result !== undefined) evidenceFor.set(target.pairIndex, result);
+    });
+  }
+
   let solvableIndex = 0;
-  const payload = pairs.map(({ raw, result }) => {
+  const payload = pairs.map(({ raw, result }, pairIndex) => {
     const item = result.item;
-    const passed = item.status === "accepted" && l4Pass[solvableIndex] === true;
+    const l4Passed = item.status === "accepted" && l4Pass[solvableIndex] === true;
     if (item.status === "accepted") solvableIndex += 1;
 
-    const status = item.status === "rejected" ? "rejected" : passed ? "accepted" : "practice";
+    const l4Status: ItemStatus =
+      item.status === "rejected" ? "rejected" : l4Passed ? "accepted" : "practice";
+
+    /*
+     * L6 结果只改状态与检查项，不改答案。
+     * 通过不升级（L4 降成 practice 的题保持 practice）；
+     * 未完成不降级（网络 / 解析失败不是「题目错」的证据）。
+     */
+    const evidenceResult = evidenceFor.get(pairIndex) ?? null;
+    const applied = evidenceResult === null ? null : applyItemEvidence({ status: l4Status }, evidenceResult);
+    const status: ItemStatus = applied === null ? l4Status : applied.status;
+
     const checks = [...item.checks];
-    if (passed) checks.push("双解校验");
+    if (l4Passed) checks.push("双解校验");
+    if (applied !== null && applied.check !== null) checks.push(applied.check);
     // 依据只用于展示出处，不参与 status 与证据折扣；空标注不落库
     if (checkLabel !== "") checks.push(checkLabel);
 
@@ -438,10 +725,14 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
 
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const message = `题目落库失败：${data.error ?? `HTTP ${res.status}`}`;
+      trace.push(traceStep("save", "fail", message));
       return {
         items: existing,
         generated: 0,
-        error: `题目落库失败：${data.error ?? `HTTP ${res.status}`}`,
+        error: message,
+        trace,
+        verification,
       };
     }
 
@@ -474,18 +765,46 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
      */
     const errorParts = [l4Error, shortfall].filter((e): e is string => e !== null);
 
+    trace.push(
+      traceStep(
+        "save",
+        "ok",
+        `落库 ${saved.length} 题（accepted ${saved.filter((i) => i.status === "accepted").length}，practice ${saved.filter((i) => i.status === "practice").length}）`,
+      ),
+    );
+
     return {
       items: [...existing, ...saved],
       generated: saved.length,
       error: errorParts.length > 0 ? errorParts.join("；") : null,
+      trace,
+      verification,
     };
   } catch (err) {
+    const message = `题目落库失败：${err instanceof Error ? err.message : String(err)}`;
+    trace.push(traceStep("save", "fail", message));
     return {
       items: existing,
       generated: 0,
-      error: `题目落库失败：${err instanceof Error ? err.message : String(err)}`,
+      error: message,
+      trace,
+      verification,
     };
   }
+}
+
+/** 整批生成的结果。 */
+export interface EnsureAllItemsResult {
+  readonly generated: number;
+  readonly failed: { kcId: string; name: string; error: string }[];
+  /**
+   * 依据核对的执行汇总：checked 为实际发起核对的 KC 数；
+   * capped 为超过 MAX_VERIFIED_CONCEPTS 而未核对的知识点。
+   */
+  readonly verification: {
+    readonly checked: number;
+    readonly capped: readonly { readonly kcId: string; readonly name: string }[];
+  };
 }
 
 /**
@@ -496,17 +815,24 @@ export async function ensureItems(opts: EnsureItemsOptions): Promise<EnsureItems
  *
  * material 是整批共用的资料包与选择，逐点用 materialForConcept 拼成该点的口径：
  * 与诊断页的懒生成一致，没有可引用片段的知识点不带资料，提示词与旧行为相同。
+ *
+ * L6 最多核对 MAX_VERIFIED_CONCEPTS 个 KC（每 KC 一次调用）；超出的知识点
+ * 仍照常生成题目，只是不发核对请求，并在返回值里列出来。
  */
 export async function ensureAllItems(opts: {
   readonly directionId: string;
   readonly graph: KnowledgeGraph;
   readonly provider: ProviderConfig | null;
   readonly onProgress?: (done: number, total: number, kcName: string) => void;
+  /** 每个 KC 的流程轨迹回调。与 onProgress 一样在 KC 完成后调用。 */
+  readonly onTrace?: (kcId: string, kcName: string, trace: readonly ItemTraceStep[]) => void;
   readonly signal?: AbortSignal;
   /** 资料口径。不传时与旧行为完全一致（只用模型通用知识出题）。 */
   readonly material?: EnsureAllItemsMaterial;
-}): Promise<{ generated: number; failed: { kcId: string; name: string; error: string }[] }> {
-  const { directionId, graph, provider, onProgress } = opts;
+  /** 是否执行 L6；不传时读 provider.verification（缺省开启）。 */
+  readonly verification?: boolean;
+}): Promise<EnsureAllItemsResult> {
+  const { directionId, graph, provider, onProgress, onTrace } = opts;
   const all = await fetchItems(directionId, "");
   const byKc = new Map<string, DirectionItem[]>();
   for (const it of all) {
@@ -515,12 +841,23 @@ export async function ensureAllItems(opts: {
     byKc.set(it.kcId, list);
   }
 
+  const verificationOn = verificationEnabled(provider, opts.verification);
+  let verifiedCount = 0;
+  const capped: { kcId: string; name: string }[] = [];
+
   let generated = 0;
   const failed: { kcId: string; name: string; error: string }[] = [];
 
   for (let i = 0; i < graph.concepts.length; i += 1) {
     const concept = graph.concepts[i];
     if (opts.signal?.aborted) break;
+
+    /*
+     * 上限按「实际发起核对的 KC 数」计，而不是按知识点序号：
+     * 前面若有没配资料的知识点（不发请求），不应挤占后面的名额。
+     */
+    const overCap = verificationOn && verifiedCount >= MAX_VERIFIED_CONCEPTS;
+    if (overCap) capped.push({ kcId: concept.id, name: concept.name });
 
     const r = await ensureItems({
       directionId,
@@ -529,11 +866,14 @@ export async function ensureAllItems(opts: {
       cached: byKc.get(concept.id) ?? [],
       signal: opts.signal,
       material: materialForConcept(opts.material, concept),
+      verification: overCap ? false : opts.verification,
     });
     generated += r.generated;
     if (r.error) failed.push({ kcId: concept.id, name: concept.name, error: r.error });
+    if (r.verification.attempted) verifiedCount += 1;
+    onTrace?.(concept.id, concept.name, r.trace);
     onProgress?.(i + 1, graph.concepts.length, concept.name);
   }
 
-  return { generated, failed };
+  return { generated, failed, verification: { checked: verifiedCount, capped } };
 }

@@ -134,8 +134,12 @@ const BANNED_OPTION_PATTERNS = [
 
 export interface ItemCheckResult {
   readonly item: DirectionItem;
-  /** 未通过项。空数组表示 L2+L3 全过。 */
+  /** 未通过项（L2 + L3）。空数组表示两层全过。 */
   readonly issues: readonly string[];
+  /** 仅 L2 卫生问题。单独暴露，是为了让生成流程的 trace 能如实标出是哪一层没过。 */
+  readonly l2Issues: readonly string[];
+  /** 仅 L3 答案问题。 */
+  readonly l3Issues: readonly string[];
   /** 不构成拒绝的提示（如 L5 难度理由不匹配），供人工核查生成质量。 */
   readonly notes: readonly string[];
 }
@@ -275,7 +279,7 @@ export function checkItem(
     createdAt: meta.now,
   };
 
-  return { item, issues: [...issues, ...l3Issues], notes };
+  return { item, issues: [...issues, ...l3Issues], l2Issues: issues, l3Issues, notes };
 }
 
 /** 内容指纹：同 KC 下题干+选项+解析相同视为同一题（唯一索引据此幂等）。 */

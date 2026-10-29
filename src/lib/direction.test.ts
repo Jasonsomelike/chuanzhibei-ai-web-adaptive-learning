@@ -1,12 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
   validateDraft,
+  validateTitle,
+  withTitle,
   draftToDirection,
   composeFromExisting,
   extractJson,
   coerceDraft,
   MIN_CONCEPTS,
   MAX_CONCEPTS,
+  MAX_TITLE_LENGTH,
   type DirectionDraft,
 } from "@/lib/direction";
 import { computeDepths } from "@/lib/graph";
@@ -145,6 +148,63 @@ describe("方向草稿校验", () => {
       }),
     );
     expect(issues.some((i) => i.includes("重复边"))).toBe(true);
+  });
+
+  it("仍拒绝 61 字标题（服务端最后防线）", () => {
+    const issues = validateDraft(
+      validDraft({ title: "好".repeat(MAX_TITLE_LENGTH + 1) }),
+    );
+    expect(issues.some((i) => i.includes("标题过长"))).toBe(true);
+  });
+});
+
+describe("方向名编辑", () => {
+  it("withTitle 覆盖标题并去掉首尾空白", () => {
+    const d = validDraft();
+    const out = withTitle(d, "  我的树结构  ");
+    expect(out.title).toBe("我的树结构");
+    // 纯函数：原草稿与其他字段不受影响
+    expect(d.title).toBe("树结构入门");
+    expect(out.description).toBe(d.description);
+    expect(out.concepts).toEqual(d.concepts);
+    expect(out.edges).toEqual(d.edges);
+  });
+
+  it("withTitle 不把空标题兜底成原标题", () => {
+    /*
+     * 用户明确清空输入时若悄悄换回生成标题，界面显示原值、
+     * 用户却以为改名生效了。空标题必须留给校验拒绝。
+     */
+    const out = withTitle(validDraft(), "   ");
+    expect(out.title).toBe("");
+    expect(validateTitle(out.title)).not.toEqual([]);
+    expect(validateDraft(out).some((i) => i.includes("标题"))).toBe(true);
+  });
+
+  it("改过标题的草稿仍能通过草稿校验", () => {
+    const out = withTitle(validDraft(), "换一个方向名");
+    expect(validateDraft(out)).toEqual([]);
+  });
+
+  it("validateTitle 接受空数组以外的一切合法标题", () => {
+    expect(validateTitle("树结构入门")).toEqual([]);
+    expect(validateTitle("好".repeat(MAX_TITLE_LENGTH))).toEqual([]);
+  });
+
+  it("validateTitle 拒绝空与全空白，给出可直接展示的文案", () => {
+    for (const title of ["", "   ", "\n\t"]) {
+      const issues = validateTitle(title);
+      expect(issues.some((i) => i.includes("方向名不能为空"))).toBe(true);
+    }
+  });
+
+  it("validateTitle 拒绝超过 60 字", () => {
+    const issues = validateTitle("好".repeat(MAX_TITLE_LENGTH + 1));
+    expect(issues.some((i) => i.includes("过长"))).toBe(true);
+  });
+
+  it("validateTitle 按去掉首尾空白后的长度判断", () => {
+    expect(validateTitle(`  ${"好".repeat(MAX_TITLE_LENGTH)}  `)).toEqual([]);
   });
 });
 
