@@ -7,6 +7,7 @@ import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
 import { ErrorRetrainPanel } from "@/components/error-retrain-panel";
+import { MaterialReader } from "@/components/material-reader";
 import { useSubject } from "@/lib/subject";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
 import {
@@ -29,6 +30,7 @@ import {
 } from "@/lib/learner";
 import { useLearner } from "@/lib/useLearner";
 import { useMaterialPack } from "@/lib/materialStore";
+import { mergePacks } from "@/lib/materials";
 import { MATERIAL_CHECK_PREFIX } from "@/lib/materials";
 import { uploadsToPack } from "@/lib/knowledge";
 import { useKnowledgeBase } from "@/lib/kbStore";
@@ -202,6 +204,16 @@ export default function DiagnosePage() {
         kbChunks.filter((chunk) => chunk.directionId === directionId),
       ),
     [kbDocs, kbChunks, directionId],
+  );
+  /*
+   * 教材阅读模块用合并包：与 materialForConcept 的出题口径一致
+   * （内置教材/讲义 + 我的笔记 + 上传资料）。上传来源由阅读视图
+   * 按选中来源过滤——uploadsToPack 的来源 id 不在用户选择里时，
+   * 阅读模块同样不显示，保持「出题引用什么、阅读就有什么」。
+   */
+  const readingPack = useMemo(
+    () => (uploadedPack.chunks.length > 0 ? mergePacks([materialPack, uploadedPack]) : materialPack),
+    [materialPack, uploadedPack],
   );
   const depths = useMemo(
     () => (graph ? computeDepths(graph) : new Map<string, number>()),
@@ -1089,7 +1101,16 @@ export default function DiagnosePage() {
           attempts={progress.attempts}
           questions={availableQuestions}
           kcName={(id) => kcName.get(id) ?? id}
+          targetName={target.name}
           onRetrainQuestion={retrainQuestion}
+          className="mb-5"
+        />
+
+        {/* 教材原文阅读：与出题引用同源，按章节折叠 */}
+        <MaterialReader
+          pack={readingPack}
+          concepts={graph.concepts}
+          selection={materialSelection}
           className="mb-5"
         />
 

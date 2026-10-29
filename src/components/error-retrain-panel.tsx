@@ -20,6 +20,10 @@ import {
   summarizeErrorsByKc,
   type ErrorKcSummary,
 } from "@/lib/errorRetrain";
+import {
+  buildErrorSummaryMarkdown,
+  errorSummaryFileName,
+} from "@/lib/errorSummaryMd";
 
 export interface ErrorRetrainProps {
   /** 该目标全部历史作答（含仅练习）。 */
@@ -27,6 +31,8 @@ export interface ErrorRetrainProps {
   /** 题库：内置学科传全部题，自定义方向传已落库的题。 */
   readonly questions: readonly Question[];
   readonly kcName: (kcId: string) => string;
+  /** 学习目标显示名，用于导出文档标题与文件名。 */
+  readonly targetName: string;
   /** 点击「重做这道题」：页面把该题设为当前题并滚动到答题区。 */
   readonly onRetrainQuestion: (question: Question) => void;
   readonly className?: string;
@@ -51,11 +57,14 @@ export function ErrorRetrainPanel({
   attempts,
   questions,
   kcName,
+  targetName,
   onRetrainQuestion,
   className = "",
 }: ErrorRetrainProps) {
   /** 展开的总结知识点；null 表示全部收起。 */
   const [expandedKc, setExpandedKc] = useState<string | null>(null);
+  /** 导出失败原因（下载被浏览器拦截等）；成功时不显示。 */
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const questionById = useMemo(
     () => new Map(questions.map((q) => [q.id, q] as const)),
@@ -73,6 +82,37 @@ export function ErrorRetrainPanel({
 
   const summaries = useMemo(() => summarizeErrorsByKc(attempts), [attempts]);
 
+  /** 生成 Markdown 并触发浏览器下载。纯前端，无网络请求。 */
+  const downloadSummary = (): void => {
+    setDownloadError(null);
+    const exportedAt = new Date().toISOString();
+    const markdown = buildErrorSummaryMarkdown({
+      targetName,
+      attempts,
+      questions,
+      kcName,
+      exportedAt,
+    });
+    if (markdown === "") return;
+
+    try {
+      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = errorSummaryFileName(targetName, exportedAt);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      // Blob URL 已被浏览器接管，尽快释放
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setDownloadError(
+        `下载失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   if (retrainQuestions.length === 0) return null;
 
   return (
@@ -82,10 +122,25 @@ export function ErrorRetrainPanel({
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-lg font-semibold tracking-tight">错题重训</h2>
-        <span className="text-xs text-[var(--ink-soft)]">
-          {retrainQuestions.length} 道题最近一次做错 · 答对后自动移出队列
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-[var(--ink-soft)]">
+            {retrainQuestions.length} 道题最近一次做错 · 答对后自动移出队列
+          </span>
+          <button
+            type="button"
+            onClick={downloadSummary}
+            title="把错题知识点总结导出为 Markdown 文件下载"
+            className="shrink-0 rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)]"
+          >
+            下载总结（.md）
+          </button>
+        </div>
       </div>
+      {downloadError !== null ? (
+        <p role="alert" className="mt-2 text-xs text-[var(--bad)]">
+          {downloadError}
+        </p>
+      ) : null}
       <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">
         重做答对会毕业对应的错题记忆卡；答错则记忆卡重新到期、回到复习队列。
         同一道题只计一次证据（防刷分），所以重做不改动掌握度——想让掌握度真正回升，
