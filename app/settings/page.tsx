@@ -306,13 +306,19 @@ export default function SettingsPage() {
   const { user, loading: authLoading } = useAuth();
 
   // 分区导航：同一时刻只展示一个面板；所有面板保持挂载，避免切走再回来丢草稿
-  // 初始值支持 ?panel=<id> 深链：首页「切换主题」等入口直达对应分区
-  const [active, setActive] = useState<SectionId>(() => {
-    if (typeof window === "undefined") return "mode";
-    const param = new URLSearchParams(window.location.search).get("panel");
-    return SECTIONS.some((s) => s.id === param) ? (param as SectionId) : "mode";
-  });
+  const [active, setActive] = useState<SectionId>("mode");
   const mainRef = useRef<HTMLElement | null>(null);
+
+  /*
+   * ?panel=<id> 深链必须在挂载后读：用 useState 初始化时读 window 会让
+   * 服务端渲染成 "mode"、客户端水合不再重跑，深链失效并报 hydration 不一致。
+   */
+  useEffect(() => {
+    const param = new URLSearchParams(window.location.search).get("panel");
+    if (param !== null && SECTIONS.some((s) => s.id === param)) {
+      setActive(param as SectionId);
+    }
+  }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
