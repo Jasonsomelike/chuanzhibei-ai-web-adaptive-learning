@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
+import { useStaggerIn, useStepFlash } from "@/components/motion";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
 import { useSubject } from "@/lib/subject";
@@ -113,6 +114,15 @@ export default function PathPage() {
    * 导师页的引用 Pill 会带这个参数跳过来；参数缺失或 id 不在当前路径里时什么都不做。
    */
   const [highlightKc, setHighlightKc] = useState<string | null>(null);
+
+  /*
+   * 动效只包展示层：入场 stagger 覆盖标题与静态卡片，步骤列表作为一个整体入场；
+   * ?kc= 定位到的步骤额外做一次 0.985 → 1 的缩放脉冲（终态 scale 1）。
+   * 两者都在 prefers-reduced-motion 下直接跳过。
+   */
+  const mainRef = useRef<HTMLElement>(null);
+  useStaggerIn(mainRef);
+  useStepFlash(mainRef, highlightKc);
 
   /*
    * 章节选择跟着目标走：state 里带上所属 targetId，切目标后的第一帧
@@ -254,7 +264,12 @@ export default function PathPage() {
     // 定位点不在当前路径里（被手动移除 / 不在预算内）：静默跳过，路径照常显示
     if (el === null) return;
     scrolledKc.current = highlightKc;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    /*
+     * behavior:"smooth" 是显式参数，不受 CSS scroll-behavior:auto 约束（规范行为），
+     * 所以 reduced-motion 必须在这里单独判断，否则「减少动态效果」下仍会平滑滚动。
+     */
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
   }, [highlightKc, displayed]);
 
   /*
@@ -367,8 +382,8 @@ export default function PathPage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-4xl px-5 py-10">
-        <div className="mb-6">
+      <main id="main" ref={mainRef} className="mx-auto max-w-4xl px-5 py-10">
+        <div className="mb-6" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">学习路径</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
             排序由纯函数算出，不调用大模型。切换章节、改预算或用 ↑ / ↓ 调整步骤都会立刻重算，无需等待。
@@ -376,7 +391,7 @@ export default function PathPage() {
         </div>
 
         {/* 目标切换 */}
-        <Card className="mb-5">
+        <Card className="mb-5" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
           <TargetPicker current={targetId} onChange={setTargetId} />
           <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
@@ -389,7 +404,7 @@ export default function PathPage() {
 
         {/* 章节范围：只收窄 targets，不裁剪图谱 */}
         {target.kind === "direction" ? (
-          <Card className="mb-5">
+          <Card className="mb-5" motion="chapters">
             <p className="text-sm font-medium">教材章节</p>
             <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
               自定义方向没有教材章节，路径覆盖方向里的全部 {graph.concepts.length} 个知识点；
@@ -408,7 +423,7 @@ export default function PathPage() {
         ) : null}
 
         {/* 预算控制 */}
-        <Card className="mb-5">
+        <Card className="mb-5" motion="budget">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-medium">这周能投入多少时间</p>
@@ -436,7 +451,7 @@ export default function PathPage() {
         </Card>
 
         {/* 反事实对比 */}
-        <Card className="mb-5">
+        <Card className="mb-5" motion="counterfactual">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-medium">反事实：如果时间不一样</p>
@@ -522,7 +537,7 @@ export default function PathPage() {
 
         {/* 路径 */}
         <section className="mb-5">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2" data-motion="steps-heading">
             <SectionTitle
               hint={`共 ${displayed.length} 步 · ${totalMinutes} 分钟${manualEdit ? " · 已手动修改" : ""}`}
             >
@@ -561,7 +576,7 @@ export default function PathPage() {
           ) : null}
 
           {displayed.length === 0 ? (
-            <Card>
+            <Card motion="empty">
               {plan && plan.steps.length > 0 ? (
                 <p className="text-sm text-[var(--ink-soft)]">
                   你已手动移除本周路径的全部 {plan.steps.length} 步。这不是算法排不出东西——
@@ -587,7 +602,7 @@ export default function PathPage() {
               )}
             </Card>
           ) : (
-            <ol className="space-y-2">
+            <ol className="space-y-2" data-motion="steps">
               {displayed.map((step, i) => {
                 const c = kcById.get(step.kcId);
                 const m = progress.mastery.find((x) => x.kcId === step.kcId);
@@ -598,7 +613,7 @@ export default function PathPage() {
                 const blockedByInCounterfactual = counterfactualSummary.blockedByOf(step.kcId);
 
                 return (
-                  <li key={`${step.kcId}-${i}`} id={pathStepId(step.kcId)}>
+                  <li key={`${step.kcId}-${i}`} id={pathStepId(step.kcId)} data-motion-step={step.kcId}>
                     <Card
                       className={`${deferredInCounterfactual ? "opacity-50" : ""} ${
                         highlightKc === step.kcId ? "ring-2 ring-[var(--accent)]" : ""
@@ -691,7 +706,7 @@ export default function PathPage() {
           <SectionTitle hint="输入指纹相同 → 路径指纹必然相同；任一不同，说明输入或算法变了。">
             可复现性
           </SectionTitle>
-          <Card>
+          <Card motion="repro">
             <dl className="space-y-2 text-sm">
               <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-[var(--ink-soft)]">输入指纹</dt>

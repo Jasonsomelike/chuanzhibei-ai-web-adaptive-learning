@@ -68,12 +68,12 @@ function hitOf(chunk: UploadChunk): UploadHit {
 }
 
 describe("上限常量", () => {
-  it("与设计口径一致", () => {
-    expect(MAX_FILE_BYTES).toBe(20 * 1024 * 1024);
-    expect(MAX_PDF_PAGES).toBe(300);
-    expect(MAX_FILE_CHARS).toBe(200_000);
-    expect(MAX_DIRECTION_CHUNKS).toBe(800);
-    expect(MAX_DIRECTION_CHARS).toBe(400_000);
+  it("默认是防 OOM 的安全上限，不再是 800 段/20 万字的产品配额", () => {
+    expect(MAX_FILE_BYTES).toBe(64 * 1024 * 1024);
+    expect(MAX_PDF_PAGES).toBe(2_000);
+    expect(MAX_FILE_CHARS).toBe(1_000_000);
+    expect(MAX_DIRECTION_CHUNKS).toBe(50_000);
+    expect(MAX_DIRECTION_CHARS).toBe(10_000_000);
     expect(CHUNK_SIZE).toBe(500);
     expect(CHUNK_OVERLAP).toBe(50);
     expect(MIN_CHUNK_CHARS).toBe(80);

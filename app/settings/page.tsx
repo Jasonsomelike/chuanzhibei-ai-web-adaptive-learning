@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { gsap } from "gsap";
+import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   Nav,
   Pill,
@@ -52,6 +52,30 @@ import {
   useMotionSafe,
   type SecretField,
 } from "@/components/secret-config-form";
+import { useStaggerIn, useSwapIn } from "@/components/motion";
+
+/*
+ * 三个新分区的交互代码放在 sections.tsx，按需加载。
+ * 静态 import 会把 MCP / 模型检查 / 向量重建整块打进首屏；这里用 next/dynamic
+ * 拆到独立 chunk，首次切到该分区时再解析。
+ * 面板外框、标题与 aria 仍留在本文件，隐藏面板的草稿在首次挂载后保留。
+ */
+const ToneSection = dynamic(() => import("./sections").then((mod) => mod.ToneSection), {
+  ssr: false,
+  loading: () => <SectionLoading label="语气" />,
+});
+const McpSection = dynamic(() => import("./sections").then((mod) => mod.McpSection), {
+  ssr: false,
+  loading: () => <SectionLoading label="智能体与工具" />,
+});
+const VectorSection = dynamic(() => import("./sections").then((mod) => mod.VectorSection), {
+  ssr: false,
+  loading: () => <SectionLoading label="向量检索" />,
+});
+
+function SectionLoading({ label }: { readonly label: string }) {
+  return <p className="text-xs text-[var(--ink-faint)]">正在加载「{label}」…</p>;
+}
 
 /**
  * 设置页：左侧分区导航 + 右侧内容。
@@ -84,21 +108,17 @@ const SECTIONS = [
   { id: "mode", label: "调用模式" },
   { id: "provider", label: "模型供应商" },
   { id: "thinking", label: "思考与核对" },
+  { id: "tone", label: "语气" },
   { id: "tts", label: "语音朗读" },
   { id: "search", label: "联网搜索" },
   { id: "materials", label: "知识口径" },
+  { id: "agent", label: "智能体与工具" },
+  { id: "vector", label: "向量检索" },
   { id: "appearance", label: "外观" },
   { id: "privacy", label: "密钥与隐私" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
-
-/*
- * SSR 保护：服务端没有 window，useLayoutEffect 会告警；客户端用 layout effect
- * 保证分区切换的第一帧就落到动画起点，不会先闪一下完整内容。
- * 与 @gsap/react 的 useGSAP 内部做法一致（官方文档 React 指南）。
- */
-const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 const panelAttrs = (id: SectionId, active: SectionId) => ({
   role: "tabpanel" as const,
@@ -159,6 +179,21 @@ const PRIVACY_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: str
     term: "上传资料不随请求整份外发。",
     detail:
       "只有检索命中的段落会随出题或问答请求发给你配置的模型；原文本身留在本浏览器的 IndexedDB。",
+  },
+  {
+    term: "图片只在当轮存在，不落库。",
+    detail:
+      "本机模式下图片由浏览器直连供应商；服务端模式下图片会经本项目转发给你配置的模型供应商，只在该次请求的内存里存在，不写入数据库、不写日志，刷新即失。",
+  },
+  {
+    term: "MCP 鉴权头只显示掩码。",
+    detail:
+      "自建 MCP 服务器的鉴权头用账号主密钥加密存库，设置页与任何响应只显示末 4 位掩码；服务器地址与工具白名单是可公开配置，但同样只存在你的账号里。",
+  },
+  {
+    term: "语气与向量索引存在哪。",
+    detail:
+      "语气选择目前只存这个浏览器（alp.tutor.tone.v1）；本地向量索引写在账号的 kb_chunk_vectors 表，原始片段仍按知识库同步规则上传。",
   },
   {
     term: "费用由填 key 的人承担。",
@@ -272,10 +307,19 @@ export default function SettingsPage() {
 
   // 分区导航：同一时刻只展示一个面板；所有面板保持挂载，避免切走再回来丢草稿
   const [active, setActive] = useState<SectionId>("mode");
+  const mainRef = useRef<HTMLElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const runMotion = useMotionSafe();
+
+  /*
+   * 展示层动效：标题 / 状态栏 / 分区导航做一次性 stagger；分区内容在
+   * active 变化时淡入 8px 上移（useSwapIn 自动跳过首次挂载）。
+   * reduced-motion 下两者都不建 tween，保存确认的脉冲由 useMotionSafe 跳过。
+   */
+  useStaggerIn(mainRef);
+  useSwapIn(panelRef, active);
 
   // 调用模式与账号配置；未登录时按本机模式工作（服务端模式按钮禁用）
   const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
@@ -302,6 +346,12 @@ export default function SettingsPage() {
   const [verification, setVerification] = useState(true);
   const [probe, setProbe] = useState<ProbeState>({ status: "idle" });
   const probeController = useRef<AbortController | null>(null);
+
+  // 三个新分区按需挂载；首次进入后保持挂载，切走再回来不丢草稿。
+  // 分开三个标记是为了「点语气」不会顺带触发 MCP 请求与模型文件检查。
+  const [toneMounted, setToneMounted] = useState(false);
+  const [agentMounted, setAgentMounted] = useState(false);
+  const [vectorMounted, setVectorMounted] = useState(false);
 
   // 首次挂载：回显已保存的配置
   useEffect(() => {
@@ -333,6 +383,13 @@ export default function SettingsPage() {
   useEffect(() => {
     setCallMode(loadCallMode());
   }, []);
+
+  // 第一次进入某个新分区时才加载对应内容；之后保持挂载
+  useEffect(() => {
+    if (active === "tone") setToneMounted(true);
+    else if (active === "agent") setAgentMounted(true);
+    else if (active === "vector") setVectorMounted(true);
+  }, [active]);
 
   /**
    * 生效模式：未登录时服务端模式没有意义（保存不了、代理也会 401），
@@ -385,25 +442,9 @@ export default function SettingsPage() {
   }, [authLoading, user, effectiveMode, hydrateTick]);
 
   /*
-   * 分区切换：内容淡入 + 上移 8px，180ms。
-   * 用 gsap.matchMedia 而不是手写布尔值：用户中途打开「减少动态效果」时，
-   * 动画会被立即 revert，界面回到无动画状态。context 由 matchMedia 内部管理，
-   * 返回的 revert 同时负责依赖变化和组件卸载。
-   * 官方文档：https://gsap.com/docs/v3/GSAP/gsap.matchMedia()/
+   * 分区切换的动效已交给 useSwapIn(panelRef, active)（见组件顶部）：
+   * 0.28s 淡入 + 8px 上移，首次挂载不播，reduced-motion 下不建 tween。
    */
-  useIsoLayoutEffect(() => {
-    const element = panelRef.current;
-    if (element === null) return;
-    const media = gsap.matchMedia();
-    media.add("(prefers-reduced-motion: no-preference)", () => {
-      gsap.fromTo(
-        element,
-        { opacity: 0, y: 8 },
-        { opacity: 1, y: 0, duration: 0.18, ease: "power2.out", overwrite: true },
-      );
-    });
-    return () => media.revert();
-  }, [active]);
 
   function chooseMode(next: CallMode) {
     if (next === "server" && user === null) return;
@@ -532,8 +573,8 @@ export default function SettingsPage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-6xl px-5 py-8 sm:py-10">
-        <div className="mb-6 max-w-[62ch]">
+      <main id="main" ref={mainRef} className="mx-auto max-w-6xl px-5 py-8 sm:py-10">
+        <div className="mb-6 max-w-[62ch]" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
           <p className="mt-1 text-sm leading-relaxed text-[var(--ink-soft)]">
             按左侧分区逐项配置。调用模式决定请求由谁发出；其余分区各自保存，互不覆盖。
@@ -541,7 +582,10 @@ export default function SettingsPage() {
         </div>
 
         {/* ── 当前状态：只读摘要，不参与编辑 ── */}
-        <div className="mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm">
+        <div
+          data-motion="status"
+          className="mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm"
+        >
           <span className="text-[var(--ink-soft)]">当前状态</span>
           {effectiveMode === "server" ? (
             serverState?.serverConfigured ? (
@@ -590,7 +634,7 @@ export default function SettingsPage() {
 
         <div className="lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10">
           {/* 窄屏：顶部横向 scroll 的分区标签；lg 以上改为左侧竖向导航 */}
-          <nav aria-label="设置分区" className="lg:sticky lg:top-8 lg:self-start">
+          <nav aria-label="设置分区" data-motion="nav" className="lg:sticky lg:top-8 lg:self-start">
             <div
               role="tablist"
               aria-orientation="vertical"
@@ -625,7 +669,12 @@ export default function SettingsPage() {
             </div>
           </nav>
 
-          <div ref={panelRef} className="mt-6 min-w-0 lg:mt-0">
+          <div
+            ref={panelRef}
+            data-motion="settings-panel"
+            data-motion-manual
+            className="mt-6 min-w-0 lg:mt-0"
+          >
             {/* ── 调用模式 ── */}
             <div {...panelAttrs("mode", active)}>
               <SettingsSection
@@ -973,6 +1022,16 @@ export default function SettingsPage() {
               </SettingsSection>
             </div>
 
+            {/* ── 语气 ── */}
+            <div {...panelAttrs("tone", active)}>
+              <SettingsSection
+                title="语气"
+                hint="同一套安全规则下换口吻：陪伴、学长、严格三选一。语气不改依据优先级，也不放宽引用与不确定协议。"
+              >
+                {toneMounted ? <ToneSection /> : <SectionLoading label="语气" />}
+              </SettingsSection>
+            </div>
+
             {/* ── 语音朗读 ── */}
             <div {...panelAttrs("tts", active)}>
               <SettingsSection
@@ -1015,6 +1074,39 @@ export default function SettingsPage() {
                     ))}
                   </dl>
                 </SettingsGroup>
+              </SettingsSection>
+            </div>
+
+            {/* ── 智能体与工具 ── */}
+            <div {...panelAttrs("agent", active)}>
+              <SettingsSection
+                title="智能体与工具"
+                hint="给服务端 Agent 接自建 MCP 服务器；工具默认拒绝，只有白名单里的只读工具会被调用。"
+              >
+                {agentMounted ? (
+                  <McpSection
+                    userId={user?.id ?? null}
+                    effectiveMode={effectiveMode}
+                    serverConfigured={serverState === null ? null : serverState.serverConfigured}
+                    authLoading={authLoading}
+                  />
+                ) : (
+                  <SectionLoading label="智能体与工具" />
+                )}
+              </SettingsSection>
+            </div>
+
+            {/* ── 向量检索 ── */}
+            <div {...panelAttrs("vector", active)}>
+              <SettingsSection
+                title="向量检索"
+                hint="本地 bge-small-zh-v1.5 给上传资料建 512 维索引；模型或索引不可用时自动退回 BM25，主流程不受影响。"
+              >
+                {vectorMounted ? (
+                  <VectorSection userId={user?.id ?? null} />
+                ) : (
+                  <SectionLoading label="向量检索" />
+                )}
               </SettingsSection>
             </div>
 

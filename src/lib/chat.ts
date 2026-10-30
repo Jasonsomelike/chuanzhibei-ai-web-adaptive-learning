@@ -20,7 +20,9 @@ import type { ChatPurpose } from "@/lib/apiContracts";
 import {
   buildChatBody,
   buildProviderHeaders,
+  contentTextOf,
   effectiveProviderMode,
+  ProviderCapabilityError,
   type ChatBodyRequest,
   type ProviderConfig,
   type ThinkingStatus,
@@ -29,10 +31,13 @@ import {
   createSseDecoder,
   extractNonStreamingReasoning,
   extractNonStreamingText,
+  extractNonStreamingToolCalls,
   parseStreamPayload,
   type ChatUsage,
   type SseEvent,
   type ThinkingStrength,
+  type ToolCall,
+  type ToolCallDelta,
 } from "@/lib/reasoning";
 import { classifyThinkingRejection } from "@/lib/thinking";
 
@@ -67,6 +72,8 @@ export interface ChatResult {
   readonly reasoning: string;
   /** 供应商报告的结束原因。length 表示被截断，调用方应判失败而不是硬解析。 */
   readonly finishReason: string | null;
+  /** 模型请求的工具调用；没有工具调用时为空数组。 */
+  readonly toolCalls: readonly ToolCall[];
   readonly usage?: ChatUsage;
 }
 
@@ -77,12 +84,19 @@ export interface ChatStreamHandlers {
   readonly onReasoning?: (delta: string) => void;
   /** 用量更新。Anthropic 的输入/输出 token 分属两条事件，这里已合并。 */
   readonly onUsage?: (usage: ChatUsage) => void;
+  /**
+   * 工具调用增量。id/name/arguments 可能分片到达，index 用于归组；
+   * 完整调用在流结束后由 ChatStreamResult.toolCalls 给出。
+   */
+  readonly onToolCall?: (delta: ToolCallDelta) => void;
 }
 
 export interface ChatStreamResult {
   readonly text: string;
   readonly reasoning: string;
   readonly finishReason: string | null;
+  /** 流结束后拼好的工具调用；没有时为空数组。 */
+  readonly toolCalls: readonly ToolCall[];
   readonly usage?: ChatUsage;
   /**
    * 端点拒绝了思考参数，本次已自动按普通模式重发。
@@ -102,7 +116,7 @@ export type DowngradeReason = "thinking" | "other" | null;
 
 /** 调用失败。区分「被截断」与其它错误，因为前者重试更可能成功。 */
 export class ChatError extends Error {
-  readonly kind: "truncated" | "empty" | "http" | "timeout" | "network" | "aborted";
+  readonly kind: "truncated" | "empty" | "http" | "timeout" | "network" | "aborted" | "unsupported";
   /** HTTP 状态码；只有 kind === "http" 时才有值。 */
   readonly status?: number;
   /**
@@ -160,6 +174,11 @@ function createRequestSignal(timeoutMs: number, external?: AbortSignal): Request
 
 function toChatError(err: unknown, external: AbortSignal | undefined, timeoutMs: number): ChatError {
   if (err instanceof ChatError) return err;
+  /*
+   * 协议能力不足（Anthropic + tools、非 data URI 图片）不是网络故障，
+   * 必须原样把「为什么发不出去」传给调用方，否则界面会提示「检查网络」。
+   */
+  if (err instanceof ProviderCapabilityError) return new ChatError("unsupported", err.message);
   if (isAbortError(err)) {
     // 外部取消与超时都是 AbortError，按 signal 状态区分，避免把「用户取消」报成超时
     if (external?.aborted) return new ChatError("aborted", "请求已取消");
@@ -206,13 +225,23 @@ function buildServerChatBody(
   req: ChatRequest,
   stream: boolean,
 ): Record<string, unknown> {
-  const system = req.system?.trim() ?? "";
+  const hasTools = req.tools !== undefined && req.tools.length > 0;
+  if (provider.kind === "anthropic" && (hasTools || req.toolChoice !== undefined)) {
+    throw new ProviderCapabilityError(
+      "tools",
+      "Anthropic 协议不支持工具调用：当前供应商未启用工具，请换用 OpenAI 兼容模型",
+    );
+  }
+
+  const systemText = req.system === undefined ? "" : contentTextOf(req.system);
   return {
     kind: provider.kind,
     messages: [
-      ...(system !== "" ? [{ role: "system", content: req.system }] : []),
+      ...(systemText.trim() !== "" ? [{ role: "system", content: systemText }] : []),
       { role: "user", content: req.user },
     ],
+    ...(hasTools ? { tools: req.tools } : {}),
+    ...(req.toolChoice !== undefined ? { toolChoice: req.toolChoice } : {}),
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
     ...(req.jsonMode === true ? { jsonMode: true } : {}),
@@ -309,11 +338,12 @@ export async function callChat(
   req: ChatRequest,
 ): Promise<ChatResult> {
   // 只认请求里的档位：配置里的 thinking 留给 callChatStream（导师问答）。
-  const prepared = prepareChatBody(provider, req, req.thinking ?? "off", false);
   const timeoutMs = req.timeoutMs ?? 60000;
   const { signal, cleanup } = createRequestSignal(timeoutMs, req.signal);
 
   try {
+    // 构造请求体也可能失败（Anthropic + tools）：必须在 try 内，才能折成 ChatError。
+    const prepared = prepareChatBody(provider, req, req.thinking ?? "off", false);
     const res = await fetch(endpointOf(provider), {
       method: "POST",
       headers: headersOf(provider),
@@ -335,6 +365,7 @@ export async function callChat(
     const json = asRecord((await res.json()) as unknown);
     const text = extractNonStreamingText(provider.kind, json);
     const reasoning = extractNonStreamingReasoning(provider.kind, json);
+    const toolCalls = extractNonStreamingToolCalls(provider.kind, json);
     const finishReason = finishReasonOf(json);
     const usage = usageOf(json);
 
@@ -347,12 +378,19 @@ export async function callChat(
         throw new ChatError("truncated", "模型输出被截断（达到 max_tokens），请重试或换更短的批次");
       }
     }
-    if (!text.trim() && !req.allowEmptyText) throw new ChatError("empty", "模型返回空内容");
+    /*
+     * finish_reason=tool_calls 的响应正文本来就是空的（实测 content:null），
+     * 工具调用就是这次响应的全部产出，不能按「模型返回空内容」判失败。
+     */
+    if (!text.trim() && toolCalls.length === 0 && !req.allowEmptyText) {
+      throw new ChatError("empty", "模型返回空内容");
+    }
 
     return {
       text: text.trim(),
       reasoning: reasoning.trim(),
       finishReason,
+      toolCalls,
       ...(usage !== undefined ? { usage } : {}),
     };
   } catch (err) {
@@ -391,7 +429,16 @@ interface StreamBodyResult {
   readonly text: string;
   readonly reasoning: string;
   readonly finishReason: string | null;
+  readonly toolCalls: readonly ToolCall[];
   readonly usage?: ChatUsage;
+}
+
+/** 流式工具调用的累积槽：按 index 归组，id/name/arguments 逐片拼接。 */
+interface ToolCallDraft {
+  readonly index: number;
+  id: string;
+  name: string;
+  arguments: string;
 }
 
 async function readStream(
@@ -410,6 +457,7 @@ async function readStream(
   let text = "";
   let reasoning = "";
   let finishReason: string | null = null;
+  const toolCallDrafts = new Map<number, ToolCallDraft>();
   /*
    * 是否见过结束标记（[DONE] 或 finish_reason）。上游/代理干净地提前关闭连接时，
    * read() 只会返回 done，拿不到任何错误——不记这个标记就会把半截回答当完整回答。
@@ -452,6 +500,25 @@ async function readStream(
       reasoning += delta.reasoning;
       handlers.onReasoning?.(delta.reasoning);
     }
+    if (delta.toolCalls !== undefined) {
+      /*
+       * id/name/arguments 都是分片：id 通常只在首块，arguments 会碎成很多段。
+       * 按 index 累积而不是按 id——后续分片没有 id，按 id 归组会把一次调用拆成多条。
+       */
+      for (const fragment of delta.toolCalls) {
+        const draft = toolCallDrafts.get(fragment.index) ?? {
+          index: fragment.index,
+          id: "",
+          name: "",
+          arguments: "",
+        };
+        if (fragment.id !== undefined) draft.id += fragment.id;
+        if (fragment.name !== undefined) draft.name += fragment.name;
+        if (fragment.arguments !== undefined) draft.arguments += fragment.arguments;
+        toolCallDrafts.set(fragment.index, draft);
+        handlers.onToolCall?.(fragment);
+      }
+    }
     if (delta.finishReason !== null) {
       finishReason = delta.finishReason;
       sawTerminator = true;
@@ -487,7 +554,16 @@ async function readStream(
   }
 
   // 只有思考、没有正文不算空：供应商可能把预算全用在推理上，正文由调用方决定怎么提示
-  if (text.trim() === "" && reasoning.trim() === "") {
+  const toolCalls = [...toolCallDrafts.values()]
+    .sort((a, b) => a.index - b.index)
+    .map(({ id, name, arguments: args }) => ({ id, name, arguments: args }));
+
+  /*
+   * 只有 tool_calls、正文与思考都为空的流是**正常**的工具轮：
+   * 实测真实端点 74 个 chunk 里 72 个是纯 tool_calls 块。把它判成 empty
+   * 会让「模型请求工具」这个最需要继续执行的结果被当成失败。
+   */
+  if (text.trim() === "" && reasoning.trim() === "" && toolCalls.length === 0) {
     throw new ChatError("empty", "模型返回空内容");
   }
 
@@ -501,6 +577,7 @@ async function readStream(
     text: text.trim(),
     reasoning: reasoning.trim(),
     finishReason,
+    toolCalls,
     ...(usage !== undefined ? { usage } : {}),
   };
 }
@@ -607,13 +684,19 @@ export async function callChatStream(
       const json = (await res.json().catch(() => null)) as unknown;
       const fallbackText = extractNonStreamingText(provider.kind, json).trim();
       const fallbackReasoning = extractNonStreamingReasoning(provider.kind, json).trim();
-      if (fallbackText === "" && fallbackReasoning === "") {
+      const fallbackToolCalls = extractNonStreamingToolCalls(provider.kind, json);
+      if (
+        fallbackText === "" &&
+        fallbackReasoning === "" &&
+        fallbackToolCalls.length === 0
+      ) {
         throw new ChatError("empty", "模型返回空内容");
       }
       return {
         text: fallbackText,
         reasoning: fallbackReasoning,
         finishReason: null,
+        toolCalls: fallbackToolCalls,
         thinkingDowngraded: downgraded,
         downgradeReason,
       };
@@ -828,7 +911,8 @@ export async function runStructuredCall<T>(
     failure = err.message;
   }
 
-  const repairUser = `${req.user}
+  // parts 用户消息做结构化重试时只保留文本：图片不该被拼进 repair 提示词。
+  const repairUser = `${contentTextOf(req.user)}
 
 上一次的输出有以下问题：${failure}
 请严格按要求的 JSON 格式重新输出，不要任何解释文字。`;

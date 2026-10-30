@@ -499,13 +499,110 @@ export function isLocalAddress(baseUrl: string): boolean {
 
 // ── 请求构造（chat.ts 与本文件的连通性测试共用） ──────────────────
 
+/** 文本片段。system 里的 parts 只取这些片段拼接，图片不会进 system。 */
+export interface ChatTextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+/** 图片片段。只接受 data:image/...;base64，不接受 http(s) URL。 */
+export interface ChatImagePart {
+  readonly type: "image_url";
+  readonly image_url: {
+    readonly url: string;
+    readonly detail?: "auto" | "low" | "high";
+  };
+}
+
+export type ChatContentPart = ChatTextPart | ChatImagePart;
+/** 一条消息的正文：旧字符串，或「文本/图片」parts 数组。 */
+export type ChatContent = string | readonly ChatContentPart[];
+
+/** OpenAI 兼容协议的函数工具定义。 */
+export interface ChatToolDefinition {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description?: string;
+    readonly parameters?: Record<string, unknown>;
+  };
+}
+
+/** auto/none/required，或指定某个函数。 */
+export type ChatToolChoice =
+  | "auto"
+  | "none"
+  | "required"
+  | { readonly type: "function"; readonly function: { readonly name: string } };
+
+export type ProviderCapability = "tools" | "image";
+
+/**
+ * 请求里带了当前协议发不出的能力。
+ *
+ * 单独成类是为了让 chat.ts 能把它折成 ChatError("unsupported")，
+ * 而不是伪装成网络错误；调用方据此给「换协议 / 改为文字提问」的明确提示。
+ */
+export class ProviderCapabilityError extends Error {
+  readonly capability: ProviderCapability;
+
+  constructor(capability: ProviderCapability, message: string) {
+    super(message);
+    this.name = "ProviderCapabilityError";
+    this.capability = capability;
+  }
+}
+
 export interface ChatBodyRequest {
-  readonly system?: string;
-  readonly user: string;
+  readonly system?: ChatContent;
+  readonly user: ChatContent;
   readonly maxTokens?: number;
   readonly temperature?: number;
   /** 要求模型返回 JSON 对象。Anthropic 无此参数，靠提示词与 extractJson 兜底。 */
   readonly jsonMode?: boolean;
+  /** 函数工具定义。只有 OpenAI 兼容协议会写进请求体。 */
+  readonly tools?: readonly ChatToolDefinition[];
+  /** 工具选择策略。Anthropic 协议收到它（或 tools）会抛 ProviderCapabilityError。 */
+  readonly toolChoice?: ChatToolChoice;
+}
+
+/** data URI 的严格形式；http(s) 地址在这里天然不匹配。 */
+const DATA_IMAGE_URL = /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/u;
+
+/**
+ * 取消息里的可读文本。
+ *
+ * system 与结构化重试的提示词只需要文本；图片在文本位置上没有意义。
+ * 逐片段拼接而不是 String(part)，否则会得到 "[object Object]"。
+ */
+export function contentTextOf(content: ChatContent): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((part): part is ChatTextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
+/**
+ * 把正文转成 Anthropic 的 content 形状。
+ * 字符串原样返回；parts 里的图片转成 base64 image block（去掉 data: 前缀）。
+ */
+export function anthropicContentOf(content: ChatContent): unknown {
+  if (typeof content === "string") return content;
+  return content.map((part) => {
+    if (part.type === "text") return { type: "text", text: part.text };
+    const match = DATA_IMAGE_URL.exec(part.image_url.url);
+    if (match === null) {
+      throw new ProviderCapabilityError(
+        "image",
+        "Anthropic 协议只接受 data:image/(jpeg|png|webp|gif);base64 图片，不接受 http(s) URL",
+      );
+    }
+    return {
+      type: "image",
+      source: { type: "base64", media_type: match[1], data: match[2] },
+    };
+  });
 }
 
 export interface BuiltChatBody {
@@ -554,8 +651,22 @@ export function buildChatBody(
   req: ChatBodyRequest,
   strength: ThinkingStrength,
 ): BuiltChatBody {
+  /*
+   * Anthropic 的 Messages 协议也有 tool_use，但本项目的 Anthropic 分支不实现
+   * 「发 tools → 收 tool_use」的循环。静默丢掉 tools 会让调用方以为工具轮成功了，
+   * 实际拿到一段没有工具依据的正文，所以这里必须显式失败。
+   */
+  const hasTools = req.tools !== undefined && req.tools.length > 0;
+  if (kind === "anthropic" && (hasTools || req.toolChoice !== undefined)) {
+    throw new ProviderCapabilityError(
+      "tools",
+      "Anthropic 协议不支持工具调用：请不要向 kind=anthropic 的请求传 tools / toolChoice",
+    );
+  }
+
   const maxTokens = req.maxTokens ?? 600;
   const temperature = req.temperature ?? 0.3;
+  const systemText = req.system === undefined ? "" : contentTextOf(req.system);
 
   const base: Record<string, unknown> =
     kind === "anthropic"
@@ -563,16 +674,20 @@ export function buildChatBody(
           model: provider.model,
           max_tokens: maxTokens,
           temperature,
-          ...(req.system ? { system: req.system } : {}),
-          messages: [{ role: "user", content: req.user }],
+          // Anthropic 的 system 只能是字符串；parts 只拼文本，图片不进 system。
+          ...(systemText !== "" ? { system: systemText } : {}),
+          messages: [{ role: "user", content: anthropicContentOf(req.user) }],
         }
       : {
           model: provider.model,
           temperature,
           max_tokens: maxTokens,
           ...(req.jsonMode ? { response_format: { type: "json_object" } } : {}),
+          // 只有 OpenAI 兼容协议能直接透传 tools；图片 parts 也原样交给上游。
+          ...(hasTools ? { tools: req.tools } : {}),
+          ...(req.toolChoice !== undefined ? { tool_choice: req.toolChoice } : {}),
           messages: [
-            ...(req.system ? [{ role: "system", content: req.system }] : []),
+            ...(systemText !== "" ? [{ role: "system", content: systemText }] : []),
             { role: "user", content: req.user },
           ],
         };

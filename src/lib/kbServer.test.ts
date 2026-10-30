@@ -109,12 +109,6 @@ function makePut(overrides: Partial<KbPut> = {}): KbPut {
   };
 }
 
-const fakeEmbedder: EmbedTextsForUser = async (_userId, texts) => ({
-  model: "fake-embed",
-  dim: 2,
-  vectors: texts.map(() => [0.5, -0.5]),
-});
-
 let db: Db;
 const originalDatabaseUrl = process.env.DATABASE_URL;
 
@@ -259,14 +253,20 @@ describe("行映射", () => {
     expect(clampVectorLimit(Number.NaN)).toBe(100);
   });
 
-  it("MAX_KB_PUT_BYTES 是 8MB", () => {
-    expect(MAX_KB_PUT_BYTES).toBe(8 * 1024 * 1024);
+  it("MAX_KB_PUT_BYTES 默认 32MB，可由 ALP_MAX_KB_BYTES 覆盖", () => {
+    expect(MAX_KB_PUT_BYTES).toBe(32 * 1024 * 1024);
   });
 });
 
 describe("putKbDocument（内存 DB）", () => {
-  it("首次写入后可按方向读回，缺向量的片段由注入的 embedder 补齐", async () => {
-    const result = await putKbDocument(db, "u1", makePut(), { embedTexts: fakeEmbedder });
+  it("首次写入后可按方向读回；PUT 不再自动生成向量", async () => {
+    let embedCalls = 0;
+    const embedder: EmbedTextsForUser = async (_userId, texts) => {
+      embedCalls += 1;
+      return { model: "fake-embed", dim: 2, vectors: texts.map(() => [1, 0]) };
+    };
+
+    const result = await putKbDocument(db, "u1", makePut(), { embedTexts: embedder });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -276,64 +276,28 @@ describe("putKbDocument（内存 DB）", () => {
 
     const chunks = await listDirectionChunks(db, "u1", "d1");
     expect(chunks).toHaveLength(2);
-    expect(chunks.every((chunk) => chunk.embedding?.length === 2)).toBe(true);
-    expect(chunks[0].embeddingModel).toBe("fake-embed");
+    expect(chunks.every((chunk) => chunk.embedding === undefined)).toBe(true);
+    // 512 维本地向量只走 POST /api/kb/vectors；文档 PUT 不再触碰 embedder
+    expect(embedCalls).toBe(0);
   });
 
-  it("缺向量的片段按 64 条一批调用 embedder", async () => {
-    const batches: number[] = [];
-    let sawSignal = false;
-    const embedder: EmbedTextsForUser = async (_userId, texts, signal) => {
-      batches.push(texts.length);
-      sawSignal = signal instanceof AbortSignal;
-      return { model: "fake-embed", dim: 2, vectors: texts.map(() => [1, 0]) };
-    };
-
-    const chunks = Array.from({ length: 65 }, (_, index) => ({
-      id: `doc-1:${index}`,
-      docId: "doc-1",
-      directionId: "d1",
-      title: "讲义",
-      section: "s",
-      text: `第 ${index} 段`,
-      index,
+  it("显式提交的 embedding（外部模型）仍原样落库", async () => {
+    const put = makePut();
+    const chunks = put.chunks.map((chunk, index) => ({
+      ...chunk,
+      embedding: [0.1 + index, 0.2],
+      embeddingModel: "external-embed",
+      embeddingDim: 2,
     }));
-    const result = await putKbDocument(
-      db,
-      "u1",
-      makePut({
-        doc: { ...makePut().doc, chunkCount: 65, charCount: 650 },
-        chunks,
-      }),
-      { embedTexts: embedder },
-    );
-
+    const result = await putKbDocument(db, "u1", makePut({ chunks }));
     expect(result.ok).toBe(true);
-    expect(batches).toEqual([64, 1]);
-    expect(sawSignal).toBe(true);
-    expect(await listDirectionChunks(db, "u1", "d1")).toHaveLength(65);
-  });
+    if (!result.ok) return;
 
-  it("embedder 返回 null 时写入成功但向量为 null", async () => {
-    const result = await putKbDocument(db, "u1", makePut(), {
-      embedTexts: async () => null,
-    });
-    expect(result.ok).toBe(true);
-
-    const chunks = await listDirectionChunks(db, "u1", "d1");
-    expect(chunks).toHaveLength(2);
-    expect(chunks.every((chunk) => chunk.embedding === undefined)).toBe(true);
-  });
-
-  it("embedder 抛错时不让整次 PUT 失败", async () => {
-    const result = await putKbDocument(db, "u1", makePut(), {
-      embedTexts: async () => {
-        throw new Error("upstream down");
-      },
-    });
-    expect(result.ok).toBe(true);
-    const chunks = await listDirectionChunks(db, "u1", "d1");
-    expect(chunks.every((chunk) => chunk.embedding === undefined)).toBe(true);
+    const stored = await listDirectionChunks(db, "u1", "d1");
+    expect(stored).toHaveLength(2);
+    expect(stored[0].embedding).toEqual([0.1, 0.2]);
+    expect(stored[0].embeddingModel).toBe("external-embed");
+    expect(stored[0].embeddingDim).toBe(2);
   });
 
   it("baseUpdatedAt 过期时 409 且一行都不写", async () => {

@@ -27,11 +27,13 @@ import {
   type UploadDoc,
 } from "@/lib/knowledge";
 import {
+  IDLE_VECTOR_SYNC,
   getKbStorageForUser,
   isKbConflictError,
   kbSyncWarningOf,
   vectorsById,
   type KbVectorField,
+  type KbVectorSyncState,
 } from "@/lib/kbRemote";
 
 // ── 存储契约 ──────────────────────────────────────────────────────
@@ -427,6 +429,8 @@ export interface KnowledgeBaseState {
   /** chunk.id → 向量；调用过 ensureVectors 且存储支持向量时才非空。 */
   readonly vectors: ReadonlyMap<string, KbVectorField>;
   readonly vectorsLoading: boolean;
+  /** 本地向量同步（读已有 → 本地嵌入 → 分批上传）的实时状态。 */
+  readonly vectorSync: KbVectorSyncState;
   /** 首次需要向量时调用；重复调用不会重复请求。 */
   readonly ensureVectors: () => void;
   /** 导入 / 删除 / 绑定变更后调用，重新读取当前方向。 */
@@ -441,6 +445,7 @@ export interface KbViewState {
   readonly syncWarning: string | null;
   readonly vectors: ReadonlyMap<string, KbVectorField>;
   readonly vectorsLoading: boolean;
+  readonly vectorSync: KbVectorSyncState;
 }
 
 export type KbViewAction =
@@ -459,7 +464,8 @@ export type KbViewAction =
       readonly vectors: ReadonlyMap<string, KbVectorField>;
       readonly syncWarning: string | null;
     }
-  | { readonly type: "vectorsFailed"; readonly syncWarning: string | null };
+  | { readonly type: "vectorsFailed"; readonly syncWarning: string | null }
+  | { readonly type: "vectorSync"; readonly state: KbVectorSyncState };
 
 const EMPTY_VECTORS: ReadonlyMap<string, KbVectorField> = new Map();
 
@@ -472,6 +478,7 @@ export function initialKbViewState(): KbViewState {
     syncWarning: null,
     vectors: EMPTY_VECTORS,
     vectorsLoading: false,
+    vectorSync: IDLE_VECTOR_SYNC,
   };
 }
 
@@ -516,6 +523,8 @@ export function kbViewReducer(state: KbViewState, action: KbViewAction): KbViewS
       };
     case "vectorsFailed":
       return { ...state, vectorsLoading: false, syncWarning: action.syncWarning };
+    case "vectorSync":
+      return { ...state, vectorSync: action.state };
   }
 }
 
@@ -544,6 +553,35 @@ export function useKnowledgeBase(
   useEffect(() => {
     dispatch({ type: "reset" });
     setVectorsWanted(0);
+  }, [directionId, userId]);
+
+  // 订阅本地向量同步状态：loading / embedding / uploading / ready / unavailable
+  useEffect(() => {
+    const direction = directionId.trim();
+    if (direction === "") return;
+    const storage = getKbStorageForUser(userId);
+    if (storage === null) return;
+    const subscribe = (storage as { onVectorSync?: unknown }).onVectorSync;
+    if (typeof subscribe !== "function") return;
+
+    const unsubscribe = (
+      subscribe as (
+        listener: (id: string, state: KbVectorSyncState) => void,
+      ) => () => void
+    ).call(storage, (id, state) => {
+      if (id === direction) dispatch({ type: "vectorSync", state });
+    });
+
+    // 订阅前同步已经在跑（例如换回一个已完成的方向）：先补一次当前状态
+    const read = (storage as { vectorSyncState?: unknown }).vectorSyncState;
+    if (typeof read === "function") {
+      dispatch({
+        type: "vectorSync",
+        state: (read as (id: string) => KbVectorSyncState).call(storage, direction),
+      });
+    }
+
+    return typeof unsubscribe === "function" ? unsubscribe : undefined;
   }, [directionId, userId]);
 
   useEffect(() => {
@@ -607,8 +645,23 @@ export function useKnowledgeBase(
     }
 
     const storage = getKbStorageForUser(userId);
-    const loader = storage === null ? null : (storage as { loadVectors?: unknown }).loadVectors;
-    if (storage === null || typeof loader !== "function") {
+    if (storage === null) {
+      return () => {
+        alive = false;
+      };
+    }
+
+    /*
+     * 先触发本地向量同步（读远端已有 chunkId → 本地嵌入缺口 → 分批上传）。
+     * 它不阻塞下面对已有 TEXT 向量的读取；失败只改状态，不影响 BM25。
+     */
+    const syncer = (storage as { syncVectors?: unknown }).syncVectors;
+    if (typeof syncer === "function") {
+      void (syncer as (id: string) => Promise<KbVectorSyncState>).call(storage, direction);
+    }
+
+    const loader = (storage as { loadVectors?: unknown }).loadVectors;
+    if (typeof loader !== "function") {
       // 未登录 / 本地存储没有向量：给空表，检索自然退化为 BM25
       dispatch({
         type: "vectorsLoaded",
@@ -653,6 +706,7 @@ export function useKnowledgeBase(
     syncWarning: view.syncWarning,
     vectors: view.vectors,
     vectorsLoading: view.vectorsLoading,
+    vectorSync: view.vectorSync,
     ensureVectors,
     reload,
   };

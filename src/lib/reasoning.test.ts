@@ -4,6 +4,7 @@ import {
   createSseDecoder,
   extractNonStreamingReasoning,
   extractNonStreamingText,
+  extractNonStreamingToolCalls,
   parseStreamPayload,
   type SseDecoder,
   type SseEvent,
@@ -214,6 +215,106 @@ describe("parseStreamPayload / OpenAI 兼容", () => {
     expect(
       parseStreamPayload("openai-compatible", { event: "message", data: "[1,2,3]" }),
     ).toBeNull();
+  });
+
+  it("纯 tool_calls 块不再返回 null", () => {
+    expect(
+      parseOpenAi({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_weather", arguments: '{"ci' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }),
+    ).toEqual({
+      text: "",
+      reasoning: "",
+      finishReason: null,
+      toolCalls: [{ index: 0, id: "call_1", name: "get_weather", arguments: '{"ci' }],
+    });
+  });
+
+  it("finish_reason=tool_calls 且 delta 为空时仍然返回结束原因", () => {
+    expect(parseOpenAi({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })).toEqual({
+      text: "",
+      reasoning: "",
+      finishReason: "tool_calls",
+    });
+  });
+
+  it("文本与工具调用可以在同一个块里", () => {
+    expect(
+      parseOpenAi({
+        choices: [
+          {
+            delta: {
+              content: "我先查一下",
+              tool_calls: [{ index: 0, function: { arguments: "{}" } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+    ).toEqual({
+      text: "我先查一下",
+      reasoning: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ index: 0, arguments: "{}" }],
+    });
+  });
+
+  it("并行工具调用按各自 index 返回碎片", () => {
+    expect(
+      parseOpenAi({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_a", function: { name: "get_weather" } },
+                { index: 1, id: "call_b", function: { name: "get_time", arguments: "{" } },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      text: "",
+      reasoning: "",
+      finishReason: null,
+      toolCalls: [
+        { index: 0, id: "call_a", name: "get_weather" },
+        { index: 1, id: "call_b", name: "get_time", arguments: "{" },
+      ],
+    });
+  });
+
+  it("工具调用碎片缺 index 时按数组位置兜底；纯 index 的空碎片被忽略", () => {
+    expect(
+      parseOpenAi({
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ id: "call_x", function: { name: "f" } }, { index: 1 }],
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      text: "",
+      reasoning: "",
+      finishReason: null,
+      toolCalls: [{ index: 0, id: "call_x", name: "f" }],
+    });
   });
 });
 
@@ -557,6 +658,57 @@ describe("非流式解析", () => {
     expect(extractNonStreamingReasoning("openai-compatible", "x")).toBe("");
     expect(extractNonStreamingText("anthropic", [])).toBe("");
     expect(extractNonStreamingReasoning("anthropic", 42)).toBe("");
+  });
+
+  it("OpenAI：非流式响应取出 message.tool_calls", () => {
+    const json = {
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "get_weather", arguments: '{"city":"北京"}' },
+              },
+              {
+                id: "call_2",
+                type: "function",
+                function: { name: "get_time", arguments: { zone: "UTC" } },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    };
+    expect(extractNonStreamingToolCalls("openai-compatible", json)).toEqual([
+      { id: "call_1", name: "get_weather", arguments: '{"city":"北京"}' },
+      { id: "call_2", name: "get_time", arguments: '{"zone":"UTC"}' },
+    ]);
+  });
+
+  it("没有 tool_calls 或没有函数名时返回空数组", () => {
+    expect(
+      extractNonStreamingToolCalls("openai-compatible", {
+        choices: [{ message: { content: "普通回答" } }],
+      }),
+    ).toEqual([]);
+    expect(
+      extractNonStreamingToolCalls("openai-compatible", {
+        choices: [{ message: { tool_calls: [{ id: "x", function: { arguments: "{}" } }] } }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("Anthropic 的 tool_use 不在这里解释：本项目不向 Anthropic 发 tools", () => {
+    expect(
+      extractNonStreamingToolCalls("anthropic", {
+        content: [{ type: "tool_use", id: "tu_1", name: "get_weather", input: { city: "北京" } }],
+        stop_reason: "tool_use",
+      }),
+    ).toEqual([]);
   });
 });
 

@@ -15,7 +15,16 @@
 import { Readable } from "node:stream";
 
 import { getDb } from "@/lib/db";
-import { buildChatBody, type ProviderKind } from "@/lib/provider";
+import {
+  anthropicContentOf,
+  buildChatBody,
+  contentTextOf,
+  ProviderCapabilityError,
+  type ChatContent,
+  type ChatToolChoice,
+  type ChatToolDefinition,
+  type ProviderKind,
+} from "@/lib/provider";
 import type { ThinkingStrength } from "@/lib/reasoning";
 import { SecretCryptoError } from "@/lib/secretCrypto";
 import {
@@ -28,11 +37,23 @@ import {
 
 // ── 请求体 ────────────────────────────────────────────────────────
 
-export type UpstreamRole = "system" | "user" | "assistant";
+export type UpstreamRole = "system" | "user" | "assistant" | "tool";
+
+/** assistant 消息里的函数调用；字段名沿用 OpenAI wire format（snake_case）。 */
+export interface UpstreamToolCall {
+  readonly id: string;
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly arguments: string;
+  };
+}
 
 export interface UpstreamMessage {
   readonly role: UpstreamRole;
-  readonly content: string;
+  readonly content: ChatContent;
+  readonly tool_calls?: readonly UpstreamToolCall[];
+  readonly tool_call_id?: string;
 }
 
 export interface UpstreamChatRequest {
@@ -42,6 +63,9 @@ export interface UpstreamChatRequest {
   readonly stream: boolean;
   /** 要求上游返回 JSON 对象；OpenAI 兼容协议写 response_format。 */
   readonly jsonMode?: boolean;
+  /** 函数工具定义。只有 OpenAI 兼容协议会透传；Anthropic 收到时显式报错。 */
+  readonly tools?: readonly ChatToolDefinition[];
+  readonly toolChoice?: ChatToolChoice;
 }
 
 /** 拒绝用户通过 extraHeaders 覆盖的传输层头：它们会改变连接目标或分帧。 */
@@ -98,10 +122,12 @@ export function endpointFor(kind: ProviderKind, baseUrl: string): string {
  * 构造上游对话请求体。
  *
  * 复用 provider.buildChatBody 的思考字段规则（以及 OpenAI 兼容协议的 jsonMode →
- * response_format）：浏览器直连与服务端代发必须写出同一份请求体，否则
- * 「设置页能用的思考档位 / JSON 模式，切到服务端模式就失效」。
- * buildChatBody 只接受单条 user 消息，因此这里用它生成基底（含 system 与思考字段，
- * 并让它在 off 档删掉 temperature 复制），再把 messages 换成完整多轮数组。
+ * response_format、tools → tools/tool_choice）：浏览器直连与服务端代发必须写出同一份
+ * 请求体，否则「设置页能用的思考档位 / JSON 模式 / 工具」切到服务端模式就失效。
+ *
+ * messages 不能再压成「一条 system + 最后一条 user」：工具轮依赖
+ * assistant.tool_calls 与 role:"tool" 的 tool_call_id 一一对应，任何一条丢失，
+ * 上游都会 400 或把工具结果当成普通用户输入。
  */
 export function buildUpstreamChatBody(
   kind: ProviderKind,
@@ -109,25 +135,42 @@ export function buildUpstreamChatBody(
   request: UpstreamChatRequest,
   strength: ThinkingStrength = "off",
 ): Record<string, unknown> {
+  /*
+   * system 可能带 parts。之前直接 join(content) 会把数组变成 "[object Object]"；
+   * 这里只取文本片段，图片不会进 system（Anthropic 的 system 也只收字符串）。
+   */
   const systemText = request.messages
     .filter((message) => message.role === "system")
-    .map((message) => message.content)
+    .map((message) => contentTextOf(message.content))
     .join("\n\n");
+
+  if (kind === "anthropic" && request.messages.some(isToolMessage)) {
+    throw new ProviderCapabilityError(
+      "tools",
+      "Anthropic 协议不支持工具消息（role=tool / assistant.tool_calls）：请换用 OpenAI 兼容模型",
+    );
+  }
+
   const dialogue = request.messages
     .filter((message) => message.role !== "system")
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map(toOpenAiMessage);
 
-  const lastUser = [...dialogue].reverse().find((message) => message.role === "user");
-  const fallback = dialogue[dialogue.length - 1];
+  const lastUser = [...request.messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  const fallback = request.messages[request.messages.length - 1];
   const built = buildChatBody(
     kind,
     { model },
     {
       system: systemText === "" ? undefined : systemText,
-      user: lastUser?.content ?? fallback?.content ?? "",
+      // 基底只用来复用思考/工具规则，messages 随后会被完整 dialogue 替换。
+      user: contentTextOf(lastUser?.content ?? fallback?.content ?? ""),
       maxTokens: request.maxTokens,
       temperature: request.temperature,
       jsonMode: request.jsonMode === true,
+      ...(request.tools !== undefined ? { tools: request.tools } : {}),
+      ...(request.toolChoice !== undefined ? { toolChoice: request.toolChoice } : {}),
     },
     strength,
   );
@@ -135,16 +178,36 @@ export function buildUpstreamChatBody(
   const body = built.body;
   body.stream = request.stream;
   if (kind === "anthropic") {
-    // Anthropic 的 system 在顶层，messages 里不能出现 system 角色。
+    // Anthropic 的 system 在顶层，messages 里不能出现 system 角色；
+    // 图片 parts 在这里转成 base64 image block，history 顺序保持不变。
     body.messages =
       dialogue.length > 0
-        ? dialogue
-        : [{ role: "user", content: lastUser?.content ?? fallback?.content ?? "" }];
+        ? request.messages
+            .filter((message) => message.role !== "system")
+            .map((message) => ({
+              role: message.role,
+              content: anthropicContentOf(message.content),
+            }))
+        : [{ role: "user", content: "" }];
   } else {
     body.messages =
       systemText === "" ? dialogue : [{ role: "system", content: systemText }, ...dialogue];
   }
   return body;
+}
+
+/** 工具消息或带 tool_calls 的 assistant 消息：Anthropic 分支无法表达。 */
+function isToolMessage(message: UpstreamMessage): boolean {
+  return message.role === "tool" || (message.tool_calls?.length ?? 0) > 0;
+}
+
+function toOpenAiMessage(message: UpstreamMessage): Record<string, unknown> {
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.tool_calls !== undefined ? { tool_calls: message.tool_calls } : {}),
+    ...(message.tool_call_id !== undefined ? { tool_call_id: message.tool_call_id } : {}),
+  };
 }
 
 // ── 脱敏 ──────────────────────────────────────────────────────────

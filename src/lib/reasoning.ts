@@ -27,11 +27,33 @@ export interface ChatUsage {
   readonly totalTokens?: number;
 }
 
+/** 流结束后拼好的一条工具调用。 */
+export interface ToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: string;
+}
+
+/**
+ * 工具调用增量。
+ *
+ * id / name / arguments 都可能分片到达：OpenAI 实测 id 只在首块出现，
+ * arguments 会按 2/4/1/3 字节的碎片陆续到达。index 用来把并行调用的碎片归组，
+ * 调用方（chat.ts）按 index 累积，绝不能按 id 归组——id 在后续分片里是缺省的。
+ */
+export interface ToolCallDelta {
+  readonly index: number;
+  readonly id?: string;
+  readonly name?: string;
+  readonly arguments?: string;
+}
+
 export interface StreamDelta {
   readonly text: string;
   readonly reasoning: string;
   readonly finishReason: string | null;
   readonly usage?: ChatUsage;
+  readonly toolCalls?: readonly ToolCallDelta[];
 }
 
 export interface SseDecoder {
@@ -286,6 +308,37 @@ function anthropicReasoning(content: unknown): string {
 
 // ── 流式解析 ──────────────────────────────────────────────────────
 
+/**
+ * 解析 OpenAI 兼容 delta.tool_calls 的分片。
+ *
+ * 形状：`[{index, id?, type:"function", function:{name?, arguments?}}]`。
+ * 缺 index 的兼容实现按数组位置兜底；空碎片（只有 index）不产出增量。
+ */
+function toolCallDeltas(raw: unknown): ToolCallDelta[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ToolCallDelta[] = [];
+  for (const [position, item] of raw.entries()) {
+    if (!isRecord(item)) continue;
+    const index =
+      typeof item.index === "number" && Number.isInteger(item.index) && item.index >= 0
+        ? item.index
+        : position;
+    const fn = isRecord(item.function) ? item.function : {};
+    const id = asString(item.id);
+    const name = asString(fn.name);
+    const args = typeof fn.arguments === "string" ? fn.arguments : "";
+
+    if (id === "" && name === "" && args === "") continue;
+    out.push({
+      index,
+      ...(id !== "" ? { id } : {}),
+      ...(name !== "" ? { name } : {}),
+      ...(args !== "" ? { arguments: args } : {}),
+    });
+  }
+  return out;
+}
+
 function parseOpenAiChunk(json: Record<string, unknown>): StreamDelta | null {
   const choices = Array.isArray(json.choices) ? json.choices : [];
   const choice: unknown = choices[0];
@@ -294,10 +347,17 @@ function parseOpenAiChunk(json: Record<string, unknown>): StreamDelta | null {
 
   const text = delta ? textFromOpenAiContent(delta.content) : "";
   const reasoning = delta ? reasoningFromMessage(delta) : "";
+  const toolCalls = delta ? toolCallDeltas(delta.tool_calls) : [];
   const finishReason = choiceRecord ? asString(choiceRecord.finish_reason) : "";
   const usage = openAiUsage(json.usage);
 
-  if (text === "" && reasoning === "" && finishReason === "" && usage === undefined) {
+  if (
+    text === "" &&
+    reasoning === "" &&
+    toolCalls.length === 0 &&
+    finishReason === "" &&
+    usage === undefined
+  ) {
     // role 占位块、心跳块等没有可消费内容
     return null;
   }
@@ -306,6 +366,7 @@ function parseOpenAiChunk(json: Record<string, unknown>): StreamDelta | null {
     text,
     reasoning,
     finishReason: finishReason === "" ? null : finishReason,
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
     ...(usage !== undefined ? { usage } : {}),
   };
 }
@@ -425,6 +486,45 @@ export function extractNonStreamingReasoning(kind: ProviderKind, json: unknown):
   if (isRecord(choice.message)) return reasoningFromMessage(choice.message);
   // 个别兼容端点把 reasoning 放在 choice 顶层
   return reasoningFromMessage(choice);
+}
+
+/** arguments 在规范里是 JSON 字符串；个别兼容端点会直接给对象。 */
+function toolArguments(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (isRecord(raw)) return JSON.stringify(raw);
+  return "";
+}
+
+/**
+ * 取非流式响应里的工具调用。
+ *
+ * 只实现 OpenAI 兼容形状：本项目不向 Anthropic 发 tools，Anthropic 的 tool_use
+ * 即便出现也不在这里解释（ADR 明确不做 Anthropic 工具调用）。返回空数组表示
+ * 「没有工具调用」，与「模型返回空内容」是两件事——调用方据此避免误判空响应。
+ */
+export function extractNonStreamingToolCalls(kind: ProviderKind, json: unknown): ToolCall[] {
+  if (!isRecord(json) || kind === "anthropic") return [];
+
+  const choices = Array.isArray(json.choices) ? json.choices : [];
+  const choice: unknown = choices[0];
+  if (!isRecord(choice) || !isRecord(choice.message)) return [];
+
+  const raw = choice.message.tool_calls;
+  if (!Array.isArray(raw)) return [];
+
+  const calls: ToolCall[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const fn = isRecord(item.function) ? item.function : {};
+    const name = asString(fn.name);
+    if (name === "") continue;
+    calls.push({
+      id: asString(item.id),
+      name,
+      arguments: toolArguments(fn.arguments),
+    });
+  }
+  return calls;
 }
 
 // ── 请求体 ────────────────────────────────────────────────────────

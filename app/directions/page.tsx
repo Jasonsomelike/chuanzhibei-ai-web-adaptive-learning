@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { useStaggerIn } from "@/components/motion";
 import { KnowledgeBasePanel, type KbCounts } from "@/components/knowledge-base-panel";
 import { useAuth } from "@/lib/useAuth";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
@@ -77,6 +78,10 @@ export default function DirectionsPage() {
    */
   const [kbOpen, setKbOpen] = useState<Record<string, boolean>>({});
   const [kbCounts, setKbCounts] = useState<Record<string, KbCounts>>({});
+
+  /* 页面入场与「方向卡片到达」都走同一个一次性 stagger；reduced-motion 下不播。 */
+  const mainRef = useRef<HTMLElement>(null);
+  useStaggerIn(mainRef);
 
   const handleKbCounts = useCallback((id: string, counts: KbCounts) => {
     setKbCounts((prev) => {
@@ -164,8 +169,10 @@ export default function DirectionsPage() {
     return (
       <>
         <Nav />
-        <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-          <p className="text-[var(--ink-soft)]">正在加载…</p>
+        <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+          <p className="text-[var(--ink-soft)]" data-motion="loading">
+            正在加载…
+          </p>
         </main>
       </>
     );
@@ -175,8 +182,8 @@ export default function DirectionsPage() {
     return (
       <>
         <Nav />
-        <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-          <Card>
+        <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+          <Card motion="login-required">
             <SectionTitle hint="自定义方向需要账号才能保存，这样换设备也不会丢。">
               需要先登录
             </SectionTitle>
@@ -202,8 +209,8 @@ export default function DirectionsPage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6">
+      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+        <div className="mb-6" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">我的学习方向</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
             描述你想学什么，系统把它拆成带先修关系的知识点图谱，可直接用于路径规划与诊断。
@@ -222,7 +229,7 @@ export default function DirectionsPage() {
             新建方向
           </SectionTitle>
 
-          <Card>
+          <Card motion="create">
             <label className="block">
               <span className="block text-sm font-medium">你想学什么</span>
               <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
@@ -399,7 +406,7 @@ export default function DirectionsPage() {
           </SectionTitle>
 
           {mine.length === 0 && !fetching ? (
-            <Card>
+            <Card motion="empty">
               <p className="text-sm text-[var(--ink-soft)]">
                 还没有创建方向。上面输入一句描述就能生成第一个。
               </p>
@@ -423,7 +430,7 @@ export default function DirectionsPage() {
                   : 0;
 
                 return (
-                  <div key={d.id} id={d.id}>
+                  <div key={d.id} id={d.id} data-motion="direction">
                     <Card>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">

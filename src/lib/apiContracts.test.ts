@@ -23,6 +23,7 @@ import {
   search,
   tts,
 } from "@/lib/apiContracts";
+import { MAX_DIRECTION_CHUNKS } from "@/lib/knowledge";
 
 interface SafeParse {
   safeParse(value: unknown): { success: boolean };
@@ -316,8 +317,136 @@ describe("llmChat", () => {
     expect(accepts(llmChat, { messages: [] })).toBe(false);
     expect(accepts(llmChat, { messages: [{ role: "user", content: "" }] })).toBe(false);
     expect(accepts(llmChat, { messages: [{ role: "tool", content: "x" }] })).toBe(false);
+    expect(accepts(llmChat, { messages: [{ role: "developer", content: "x" }] })).toBe(false);
     expect(accepts(llmChat, { messages: [{ role: "user", content: "a".repeat(16_001) }] })).toBe(false);
     expect(accepts(llmChat, { messages: [{ role: "user", content: "a".repeat(16_000) }] })).toBe(true);
+  });
+
+  it("content 允许「文本 + 图片」parts，最多 4 段", () => {
+    const image = {
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,iVBORw0KGgo=" },
+    };
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "user", content: [{ type: "text", text: "这张图是什么" }, image] }],
+      }),
+    ).toBe(true);
+    expect(
+      accepts(llmChat, {
+        messages: [
+          { role: "user", content: Array.from({ length: 4 }, () => ({ type: "text", text: "x" })) },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      accepts(llmChat, {
+        messages: [
+          { role: "user", content: Array.from({ length: 5 }, () => ({ type: "text", text: "x" })) },
+        ],
+      }),
+    ).toBe(false);
+    // 纯图片也可以：前端允许「只贴图不写字」。
+    expect(accepts(llmChat, { messages: [{ role: "user", content: [image] }] })).toBe(true);
+  });
+
+  it("图片只接受 data:image/(jpeg|png|webp|gif);base64，拒绝 http(s) URL", () => {
+    const withUrl = (url: string) => ({
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url } }] }],
+    });
+    for (const mime of ["jpeg", "png", "webp", "gif"]) {
+      expect(accepts(llmChat, withUrl(`data:image/${mime};base64,AAAA`)), mime).toBe(true);
+    }
+    for (const url of [
+      "https://example.com/a.png",
+      "http://example.com/a.png",
+      "data:image/svg+xml;base64,PHN2Zz4=",
+      "data:image/png;base64,",
+      "data:text/html;base64,PHNjcmlwdD4=",
+    ]) {
+      expect(accepts(llmChat, withUrl(url)), url).toBe(false);
+    }
+  });
+
+  it("一条消息最多 3 张图片", () => {
+    const image = { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } };
+    expect(
+      accepts(llmChat, { messages: [{ role: "user", content: [image, image, image] }] }),
+    ).toBe(true);
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "user", content: [image, image, image, { type: "text", text: "x" }] }],
+      }),
+    ).toBe(true);
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "user", content: [image, image, image, image] }],
+      }),
+    ).toBe(false);
+  });
+
+  it("assistant 允许 tool_calls（正文可为空），tool 消息必须带 tool_call_id", () => {
+    const call = {
+      id: "call_1",
+      type: "function",
+      function: { name: "get_weather", arguments: '{"city":"北京"}' },
+    };
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "assistant", content: "", tool_calls: [call] }],
+      }),
+    ).toBe(true);
+    expect(
+      accepts(llmChat, {
+        messages: [
+          { role: "assistant", content: "", tool_calls: [call] },
+          { role: "tool", content: "晴", tool_call_id: "call_1" },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "tool", content: "晴" }],
+      }),
+    ).toBe(false);
+    // tool_calls 只能出现在 assistant 消息上
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "user", content: "问", tool_calls: [call] }],
+      }),
+    ).toBe(false);
+    // tool_call_id 也只能出现在 tool 消息上
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "assistant", content: "答", tool_call_id: "call_1" }],
+      }),
+    ).toBe(false);
+    // 普通 assistant 正文仍不能为空
+    expect(accepts(llmChat, { messages: [{ role: "assistant", content: "" }] })).toBe(false);
+    expect(
+      accepts(llmChat, {
+        messages: [{ role: "assistant", content: "x", tool_calls: [{ ...call, type: "other" }] }],
+      }),
+    ).toBe(false);
+  });
+
+  it("接受 tools 与 toolChoice，但拒绝不合法工具名", () => {
+    const tool = {
+      type: "function",
+      function: { name: "get_weather", parameters: { type: "object" } },
+    };
+    expect(accepts(llmChat, { ...CHAT, tools: [tool], toolChoice: "auto" })).toBe(true);
+    expect(
+      accepts(llmChat, {
+        ...CHAT,
+        tools: [tool],
+        toolChoice: { type: "function", function: { name: "get_weather" } },
+      }),
+    ).toBe(true);
+    expect(accepts(llmChat, { ...CHAT, tools: [{ ...tool, function: { name: "带空格 名" } }] })).toBe(
+      false,
+    );
+    expect(accepts(llmChat, { ...CHAT, tools: [tool], toolChoice: "always" })).toBe(false);
   });
 
   it("拒绝超过 50 条消息与越界采样参数", () => {
@@ -457,16 +586,20 @@ describe("kbPut", () => {
     expect(accepts(kbPut, { ...KB_PUT, chunks: [{ ...CHUNK, text: "a".repeat(8001) }] })).toBe(false);
   });
 
-  it("片段数上限 800：800 通过、801 拒绝", () => {
+  it("片段数上限 5 万：到上限通过、多 1 段拒绝", () => {
+    // 默认值写死在这里：常量被顺手改大/改小时测试先响（部署可用 ALP_MAX_KB_DIRECTION_CHUNKS 覆盖）。
+    expect(MAX_DIRECTION_CHUNKS).toBe(50_000);
     const chunksOf = (count: number) =>
       Array.from({ length: count }, (_, index) => ({ ...CHUNK, id: `doc-6f1c:${index}` }));
-    expect(accepts(kbPut, { ...KB_PUT, chunks: chunksOf(800) })).toBe(true);
-    expect(accepts(kbPut, { ...KB_PUT, chunks: chunksOf(801) })).toBe(false);
+    expect(accepts(kbPut, { ...KB_PUT, chunks: chunksOf(MAX_DIRECTION_CHUNKS) })).toBe(true);
+    expect(accepts(kbPut, { ...KB_PUT, chunks: chunksOf(MAX_DIRECTION_CHUNKS + 1) })).toBe(false);
   });
 
   it("拒绝越界文档字段与未知字段", () => {
     expect(accepts(kbPut, { ...KB_PUT, doc: { ...DOC, kind: "docx" } })).toBe(false);
-    expect(accepts(kbPut, { ...KB_PUT, doc: { ...DOC, chunkCount: 801 } })).toBe(false);
+    expect(accepts(kbPut, { ...KB_PUT, doc: { ...DOC, chunkCount: MAX_DIRECTION_CHUNKS + 1 } })).toBe(
+      false,
+    );
     expect(accepts(kbPut, { ...KB_PUT, doc: { ...DOC, createdAt: "2026-10-29" } })).toBe(false);
     expect(accepts(kbPut, { ...KB_PUT, doc: { ...DOC, ownerId: "u1" } })).toBe(false);
     expect(accepts(kbPut, { ...KB_PUT, chunks: [{ ...CHUNK, score: 0.9 }] })).toBe(false);

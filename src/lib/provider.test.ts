@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   PRESETS,
+  ProviderCapabilityError,
+  buildChatBody,
   checkBaseUrl,
   effectiveProviderMode,
   hydrateProviderFromServer,
@@ -10,6 +12,8 @@ import {
   maskKey,
   saveProvider,
   testConnection,
+  type ChatContentPart,
+  type ChatToolDefinition,
   type ProviderConfig,
 } from "@/lib/provider";
 
@@ -677,5 +681,162 @@ describe("hydrateProviderFromServer", () => {
     stubConfig({ nope: true });
     await expect(hydrateProviderFromServer()).resolves.toBeNull();
     expect(storage.getItem("alp.provider.v1")).toBe("{}");
+  });
+});
+
+// ── buildChatBody：工具与图片 ──────────────────────────────────────
+
+const WEATHER_TOOL: ChatToolDefinition = {
+  type: "function",
+  function: {
+    name: "get_weather",
+    description: "查询城市天气",
+    parameters: { type: "object", properties: { city: { type: "string" } } },
+  },
+};
+
+const IMAGE_PART: ChatContentPart = {
+  type: "image_url",
+  image_url: { url: "data:image/png;base64,iVBORw0KGgo=" },
+};
+
+describe("buildChatBody", () => {
+  it("旧的纯字符串请求体保持不变", () => {
+    const built = buildChatBody(
+      "openai-compatible",
+      { model: "m" },
+      { system: "你是助教", user: "问" },
+      "off",
+    );
+    expect(built.body).toEqual({
+      model: "m",
+      temperature: 0.3,
+      max_tokens: 600,
+      messages: [
+        { role: "system", content: "你是助教" },
+        { role: "user", content: "问" },
+      ],
+    });
+  });
+
+  it("OpenAI 兼容：tools 与 tool_choice 写进请求体", () => {
+    const built = buildChatBody(
+      "openai-compatible",
+      { model: "m" },
+      { user: "查天气", tools: [WEATHER_TOOL], toolChoice: "auto" },
+      "off",
+    );
+    expect(built.body.tools).toEqual([WEATHER_TOOL]);
+    expect(built.body.tool_choice).toBe("auto");
+
+    const named = buildChatBody(
+      "openai-compatible",
+      { model: "m" },
+      {
+        user: "查天气",
+        tools: [WEATHER_TOOL],
+        toolChoice: { type: "function", function: { name: "get_weather" } },
+      },
+      "off",
+    );
+    expect(named.body.tool_choice).toEqual({
+      type: "function",
+      function: { name: "get_weather" },
+    });
+  });
+
+  it("没有 tools 时不写 tools / tool_choice", () => {
+    const built = buildChatBody("openai-compatible", { model: "m" }, { user: "问" }, "off");
+    expect(built.body.tools).toBeUndefined();
+    expect(built.body.tool_choice).toBeUndefined();
+  });
+
+  it("Anthropic 收到 tools 时抛 ProviderCapabilityError，不静默丢弃", () => {
+    let error: unknown;
+    try {
+      buildChatBody(
+        "anthropic",
+        { model: "claude" },
+        { user: "问", tools: [WEATHER_TOOL], toolChoice: "auto" },
+        "off",
+      );
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(ProviderCapabilityError);
+    expect((error as ProviderCapabilityError).capability).toBe("tools");
+    expect((error as Error).message).toContain("不支持工具调用");
+  });
+
+  it("Anthropic 收到空 tools 数组不算「使用工具」，不抛错也不写字段", () => {
+    const built = buildChatBody(
+      "anthropic",
+      { model: "claude" },
+      { user: "问", tools: [] },
+      "off",
+    );
+    expect(built.body.tools).toBeUndefined();
+    expect(built.body.tool_choice).toBeUndefined();
+  });
+
+  it("OpenAI 兼容：图片 parts 原样透传；system parts 拼成文本", () => {
+    const built = buildChatBody(
+      "openai-compatible",
+      { model: "m" },
+      {
+        system: [{ type: "text", text: "你是" }, { type: "text", text: "助教" }],
+        user: [{ type: "text", text: "图里是什么" }, IMAGE_PART],
+      },
+      "off",
+    );
+    const messages = built.body.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toEqual({ role: "system", content: "你是助教" });
+    expect(messages[1]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "图里是什么" }, IMAGE_PART],
+    });
+  });
+
+  it("Anthropic：图片 parts 转成 base64 image block，system 用文本拼接", () => {
+    const built = buildChatBody(
+      "anthropic",
+      { model: "claude" },
+      {
+        system: [{ type: "text", text: "你是" }, { type: "text", text: "助教" }],
+        user: [{ type: "text", text: "图里是什么" }, IMAGE_PART],
+      },
+      "off",
+    );
+    expect(built.body.system).toBe("你是助教");
+    const messages = built.body.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "图里是什么" },
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+        },
+      ],
+    });
+    expect(JSON.stringify(built.body)).not.toContain("[object Object]");
+  });
+
+  it("Anthropic：http 图片 URL 被拒绝", () => {
+    expect(() =>
+      buildChatBody(
+        "anthropic",
+        { model: "claude" },
+        {
+          user: [
+            {
+              type: "image_url",
+              image_url: { url: "https://example.com/a.png" },
+            },
+          ],
+        },
+        "off",
+      ),
+    ).toThrow(ProviderCapabilityError);
   });
 });

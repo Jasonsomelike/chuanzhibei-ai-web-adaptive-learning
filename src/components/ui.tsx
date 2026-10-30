@@ -229,12 +229,16 @@ export function Collapse({
 export function Card({
   children,
   className = "",
+  motion,
 }: {
   children: ReactNode;
   className?: string;
+  /** 动效标记：带这个属性的卡片会被 useStaggerIn 纳入一次性入场（见 motion.tsx）。 */
+  motion?: string;
 }) {
   return (
     <div
+      data-motion={motion}
       className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
     >
       {children}
@@ -245,12 +249,15 @@ export function Card({
 export function SectionTitle({
   children,
   hint,
+  motion,
 }: {
   children: ReactNode;
   hint?: string;
+  /** 动效标记：标题组参与入场 stagger。 */
+  motion?: string;
 }) {
   return (
-    <div className="mb-4">
+    <div data-motion={motion} className="mb-4">
       <h2 className="text-lg font-semibold tracking-tight">{children}</h2>
       {hint ? <p className="mt-1 text-sm text-[var(--ink-soft)]">{hint}</p> : null}
     </div>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
+import { useStaggerIn, useSwapIn } from "@/components/motion";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
@@ -163,6 +164,17 @@ export default function DiagnosePage() {
   /** 本次会话里已经尝试过生成的 KC，防止「生成成功但题不够」反复计费。 */
   const attemptedGenKcs = useRef<Set<string>>(new Set());
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
+
+  /*
+   * 动效只包展示层：
+   * - 入场：标题与首屏卡片一次性 stagger；
+   * - 题卡切换：current.question.id 变化时淡入 + 8px 上移；
+   *   答题后的 revealed 反馈只改颜色与文案，不改变 id，因此不会重播。
+   */
+  const mainRef = useRef<HTMLElement>(null);
+  const questionCardRef = useRef<HTMLDivElement>(null);
+  useStaggerIn(mainRef);
+  useSwapIn(questionCardRef, current?.question.id ?? null);
 
   // 切目标时重读一次：用户可能刚在设置页改过供应商配置
   useEffect(() => {
@@ -947,8 +959,8 @@ export default function DiagnosePage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-4" data-motion="hero">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">诊断测评</h1>
             <p className="mt-1 text-sm text-[var(--ink-soft)]">
@@ -965,7 +977,7 @@ export default function DiagnosePage() {
         </div>
 
         {/* 目标切换 */}
-        <Card className="mb-5">
+        <Card className="mb-5" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
           <TargetPicker
             current={targetId}
@@ -1008,7 +1020,7 @@ export default function DiagnosePage() {
         ) : null}
 
         {/* 进度 */}
-        <Card className="mb-5">
+        <Card className="mb-5" motion="progress">
           <div className="flex items-center justify-between text-sm">
             <span className="text-[var(--ink-soft)]">
               本次已答{" "}
@@ -1335,6 +1347,7 @@ export default function DiagnosePage() {
 
         {/* 当前题目 */}
         {current && !done ? (
+          <div ref={questionCardRef} data-motion="question-card" data-motion-manual>
           <Card className="mb-5">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <Pill tone="accent">{current.kcName}</Pill>
@@ -1453,7 +1466,7 @@ export default function DiagnosePage() {
             </details>
 
             {revealed ? (
-              <div className="mt-4 rounded-lg bg-[var(--canvas)] p-3 text-sm">
+              <div data-motion="feedback" className="mt-4 rounded-lg bg-[var(--canvas)] p-3 text-sm">
                 <p className="font-medium">
                   {selected === current.question.answerIndex ? "回答正确" : "回答错误"}
                 </p>
@@ -1493,6 +1506,7 @@ export default function DiagnosePage() {
               </button>
             )}
           </Card>
+          </div>
         ) : null}
 
         {/* 诊断完成 */}

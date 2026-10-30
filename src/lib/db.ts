@@ -23,6 +23,97 @@ export interface Db {
   one<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null>;
 }
 
+// ── 新表的 SQL 形状（Postgres 与内存实现共用） ─────────────────────
+
+/**
+ * kb_chunk_vectors 的 SQL 形状。
+ *
+ * 表里**不存 direction_id**：按方向取向量必须先 JOIN kb_chunks 拿 c.direction_id。
+ * 直接写 `WHERE direction_id = $2` 会报「column does not exist」——这是 ADR
+ * 决策二里示例查询的缺陷，这里按修正后的 JOIN 形状落地。
+ */
+export const KB_VECTOR_SQL = {
+  /**
+   * 单行 upsert。
+   *
+   * 向量以字符串传入再 ::vector：驱动会把 JS 数组序列化成 `{1,2,3}`，
+   * 那不是 pgvector 认的文本格式。内存实现只认这一种单行形状；ADR 里的
+   * 「50 条一条多行 INSERT」只允许出现在 dbBackend()==='postgres' 的分支。
+   */
+  upsert: `INSERT INTO kb_chunk_vectors (user_id, chunk_id, model, dim, vec, updated_at)
+    VALUES ($1, $2, $3, $4, $5::vector(512), $6)
+    ON CONFLICT (user_id, chunk_id, model) DO UPDATE SET
+      dim = EXCLUDED.dim,
+      vec = EXCLUDED.vec,
+      updated_at = EXCLUDED.updated_at`,
+  /** 按方向列向量。参数顺序固定：user_id, direction_id, model。 */
+  byDirection: `SELECT v.chunk_id, v.model, v.dim, v.updated_at::text AS updated_at
+    FROM kb_chunk_vectors v
+    JOIN kb_chunks c ON c.user_id = v.user_id AND c.chunk_id = v.chunk_id
+    WHERE v.user_id = $1 AND c.direction_id = $2 AND v.model = $3
+    ORDER BY v.chunk_id`,
+  /**
+   * 精确扫描的相似度查询（默认路径，不依赖 HNSW）。
+   * 参数顺序固定：user_id, direction_id, model, 查询向量（字符串）, limit。
+   */
+  similar: `SELECT v.chunk_id, 1 - (v.vec <=> $4::vector(512)) AS score
+    FROM kb_chunk_vectors v
+    JOIN kb_chunks c ON c.user_id = v.user_id AND c.chunk_id = v.chunk_id
+    WHERE v.user_id = $1 AND c.direction_id = $2 AND v.model = $3
+    ORDER BY v.vec <=> $4::vector(512) LIMIT $5`,
+  /** 删一个片段在该用户下的全部模型行（对应复合外键的父行删除）。 */
+  deleteByChunk: `DELETE FROM kb_chunk_vectors WHERE user_id = $1 AND chunk_id = $2`,
+} as const;
+
+/** 按方向读回的向量行。updated_at 在 SQL 里 ::text，两种后端都返回字符串。 */
+export interface KbChunkVectorRef {
+  chunk_id: string;
+  model: string;
+  dim: number;
+  updated_at: string;
+}
+
+/**
+ * 按方向列出一个模型下已写入的向量（参考实现，调用方应优先用它而不是自拼 SQL）。
+ *
+ * user_id 只能来自会话；方向与模型由调用方校验后传入。
+ */
+export async function listKbChunkVectorsByDirection(
+  db: Db,
+  userId: string,
+  directionId: string,
+  model: string,
+): Promise<KbChunkVectorRef[]> {
+  return db.all<KbChunkVectorRef>(KB_VECTOR_SQL.byDirection, [userId, directionId, model]);
+}
+
+/**
+ * mcp_servers 的 SQL 形状。
+ *
+ * 鉴权头只进密文列（auth_ct/auth_iv/auth_tag）：明文密钥、header 名与格式
+ * 一律在应用层加密后再写；auth_hint 是给界面看的掩码。
+ * 公开服务器没有鉴权头，此时四个密文字段为空串。
+ */
+export const MCP_SERVER_SQL = {
+  upsert: `INSERT INTO mcp_servers (user_id, server_id, label, url, enabled, allowed_tools_json,
+    auth_ct, auth_iv, auth_tag, auth_kid, auth_hint, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    ON CONFLICT (user_id, server_id) DO UPDATE SET
+      label = EXCLUDED.label,
+      url = EXCLUDED.url,
+      enabled = EXCLUDED.enabled,
+      allowed_tools_json = EXCLUDED.allowed_tools_json,
+      auth_ct = EXCLUDED.auth_ct,
+      auth_iv = EXCLUDED.auth_iv,
+      auth_tag = EXCLUDED.auth_tag,
+      auth_kid = EXCLUDED.auth_kid,
+      auth_hint = EXCLUDED.auth_hint,
+      updated_at = EXCLUDED.updated_at`,
+  list: `SELECT * FROM mcp_servers WHERE user_id = $1 ORDER BY server_id`,
+  byId: `SELECT * FROM mcp_servers WHERE user_id = $1 AND server_id = $2`,
+  deleteById: `DELETE FROM mcp_servers WHERE user_id = $1 AND server_id = $2`,
+} as const;
+
 // ── Postgres 实现 ──────────────────────────────────────────────────
 
 /**
@@ -224,8 +315,26 @@ function createMemoryDb(): Db {
   const kbDocs = new Map<string, Record<string, unknown>>();
   const kbChunks = new Map<string, Record<string, unknown>>();
   const memories = new Map<string, Record<string, unknown>>();
+  /** key = `${user_id}|${chunk_id}|${model}`，对应 Postgres 的复合主键。 */
+  const kbChunkVectors = new Map<string, Record<string, unknown>>();
+  /** key = `${user_id}|${server_id}`，对应 Postgres 的复合主键。 */
+  const mcpServers = new Map<string, Record<string, unknown>>();
 
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+
+  /*
+   * 删片段时同步删掉它的向量行：Postgres 侧由 kb_chunk_vectors 的复合外键
+   * ON DELETE CASCADE 完成。少了这一步，内存实现会在「删片段 → 用同一个
+   * chunk_id 重新写入」时把旧向量带出来，本地绿、线上不同。
+   */
+  const dropChunk = (key: string, row: Record<string, unknown>): void => {
+    kbChunks.delete(key);
+    for (const [vectorKey, vector] of kbChunkVectors) {
+      if (vector.user_id === row.user_id && vector.chunk_id === row.chunk_id) {
+        kbChunkVectors.delete(vectorKey);
+      }
+    }
+  };
 
   return {
     async run(text, params = []) {
@@ -412,6 +521,59 @@ function createMemoryDb(): Db {
       }
 
       /*
+       * kb_chunk_vectors：只认单行 upsert。
+       * `kb_chunk_vectors` 不以 `kb_chunks` 为前缀（第 9 个字符是 `_` 而不是 `s`），
+       * 所以上面的片段分支不会误吞这条语句；不要改成别的表名风格。
+       */
+      if (q.startsWith("insert into kb_chunk_vectors")) {
+        return upsertRow(
+          kbChunkVectors,
+          q,
+          params,
+          "kb_chunk_vectors",
+          ["user_id", "chunk_id", "model"],
+          (row) => `${row.user_id}|${row.chunk_id}|${row.model}`,
+        );
+      }
+
+      if (q.startsWith("insert into mcp_servers")) {
+        return upsertRow(mcpServers, q, params, "mcp_servers", ["user_id", "server_id"], (row) =>
+          `${row.user_id}|${row.server_id}`,
+        );
+      }
+
+      /*
+       * mcp_servers 的唯一删除形状是 (user_id, server_id)。
+       * 只写 user_id 的「删全部」形状没有实现：那会让一次误传参删光用户配置，
+       * 真需要时再加，并在这里显式分支。
+       */
+      if (q.startsWith("delete from mcp_servers")) {
+        const [user_id, server_id] = params as string[];
+        return mcpServers.delete(`${user_id}|${server_id}`) ? 1 : 0;
+      }
+
+      /*
+       * kb_chunk_vectors 的唯一删除形状是 (user_id, chunk_id)：一个片段在多个
+       * 模型下各有一行，删片段就要把该片段的所有模型行一起删掉。
+       * 其它 WHERE（比如按 model 删）当前没有调用方，直接抛错而不是静默删 0 行——
+       * 「删除返回 0、调用方当成功」是本文件里反复出现过的坑。
+       */
+      if (q.startsWith("delete from kb_chunk_vectors")) {
+        if (!q.includes("chunk_id =")) {
+          throw new Error(`内存实现不支持的 kb_chunk_vectors 删除形状：${q.slice(0, 100)}`);
+        }
+        const [user_id, chunk_id] = params as string[];
+        let n = 0;
+        for (const [key, row] of kbChunkVectors) {
+          if (row.user_id === user_id && row.chunk_id === chunk_id) {
+            kbChunkVectors.delete(key);
+            n += 1;
+          }
+        }
+        return n;
+      }
+
+      /*
        * user_secrets 的唯一删除形状是 (user_id, kind)。
        * 返回真实删除数：调用方（删除配置）据此区分「删掉了」与「本来就没有」。
        */
@@ -436,7 +598,7 @@ function createMemoryDb(): Db {
           const doc_id = params[1] as string;
           if (kbDocs.delete(`${user_id}|${doc_id}`)) n += 1;
           for (const [key, row] of kbChunks) {
-            if (row.user_id === user_id && row.doc_id === doc_id) kbChunks.delete(key);
+            if (row.user_id === user_id && row.doc_id === doc_id) dropChunk(key, row);
           }
           return n;
         }
@@ -451,7 +613,7 @@ function createMemoryDb(): Db {
           }
           for (const [key, row] of kbChunks) {
             if (row.user_id === user_id && row.direction_id === direction_id) {
-              kbChunks.delete(key);
+              dropChunk(key, row);
             }
           }
           return n;
@@ -471,14 +633,18 @@ function createMemoryDb(): Db {
         let n = 0;
 
         if (q.includes("chunk_id =")) {
-          return kbChunks.delete(`${user_id}|${params[1]}`) ? 1 : 0;
+          const key = `${user_id}|${params[1]}`;
+          const row = kbChunks.get(key);
+          if (!row) return 0;
+          dropChunk(key, row);
+          return 1;
         }
 
         if (q.includes("doc_id =")) {
           const doc_id = params[1] as string;
           for (const [key, row] of kbChunks) {
             if (row.user_id === user_id && row.doc_id === doc_id) {
-              kbChunks.delete(key);
+              dropChunk(key, row);
               n += 1;
             }
           }
@@ -489,7 +655,7 @@ function createMemoryDb(): Db {
           const direction_id = params[1] as string;
           for (const [key, row] of kbChunks) {
             if (row.user_id === user_id && row.direction_id === direction_id) {
-              kbChunks.delete(key);
+              dropChunk(key, row);
               n += 1;
             }
           }
@@ -549,6 +715,67 @@ function createMemoryDb(): Db {
           rows = rows.filter((r) => r.doc_id === params[1]);
         }
         rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        return rows as T[];
+      }
+
+      /*
+       * kb_chunk_vectors 的读取形状：按方向取向量。
+       *
+       * 表里不存 direction_id，方向过滤只能 JOIN kb_chunks：
+       *   FROM kb_chunk_vectors v
+       *   JOIN kb_chunks c ON c.user_id = v.user_id AND c.chunk_id = v.chunk_id
+       *   WHERE v.user_id = $1 AND c.direction_id = $2 AND v.model = $3
+       * 参数顺序固定：user_id, direction_id, model。必须先判这一条：如果把 JOIN
+       * 写成 `FROM kb_chunks c JOIN kb_chunk_vectors v`，文本里也会含
+       * `from kb_chunks`，顺序反了就会把向量查询当成片段查询处理。
+       *
+       * 其它形状直接抛错而不是静默返回空——向量查询写错列名正是 ADR 里
+       * `direction_id` 缺陷的来源，静默空会让这类错误在线下永远暴露不出来。
+       */
+      if (q.includes("from kb_chunk_vectors")) {
+        /*
+         * 相似度排序（vec <=> $4::vector）在内存实现里没有 pgvector：返回空数组。
+         * 不用应用层余弦冒充 pgvector 结果——本地绿、线上不同是最难查的偏差。
+         * 调用方拿到空数组时应退回 vector.ts 的余弦路径（或直接报「未启用」）。
+         */
+        if (q.includes("<=>")) return [];
+
+        if (!q.includes("join kb_chunks") || !q.includes("direction_id =")) {
+          throw new Error(`内存实现不支持的 kb_chunk_vectors 查询形状：${q.slice(0, 100)}`);
+        }
+
+        const [userId, directionId, model] = params as string[];
+        const chunks = new Map<string, Record<string, unknown>>();
+        for (const chunk of kbChunks.values()) {
+          if (chunk.user_id === userId) chunks.set(String(chunk.chunk_id), chunk);
+        }
+
+        const rows = [...kbChunkVectors.values()]
+          .filter((r) => r.user_id === userId && r.model === model)
+          .filter((r) => {
+            const chunk = chunks.get(String(r.chunk_id));
+            // JOIN 的另一半：片段不存在（被删）或不在该方向，都不该出现在结果里
+            return chunk !== undefined && chunk.direction_id === directionId;
+          })
+          .sort(
+            (a, b) =>
+              String(a.chunk_id).localeCompare(String(b.chunk_id)) ||
+              String(a.model).localeCompare(String(b.model)),
+          );
+        return rows as T[];
+      }
+
+      /*
+       * mcp_servers：列表与按 server_id 的单条查询共用同一个分支。
+       * 参数顺序固定：user_id（$1），可选的 server_id（$2）。排序按 server_id，
+       * 与 MCP_SERVER_SQL.list 的 ORDER BY 一致。
+       */
+      if (q.includes("from mcp_servers")) {
+        let rows = [...mcpServers.values()].filter((r) => r.user_id === params[0]);
+        if (q.includes("server_id =")) {
+          rows = rows.filter((r) => r.server_id === params[1]);
+        }
+        rows.sort((a, b) => String(a.server_id).localeCompare(String(b.server_id)));
         return rows as T[];
       }
 
@@ -681,6 +908,12 @@ function createMemoryDb(): Db {
         return (found ?? null) as T | null;
       }
 
+      // 单条 MCP 服务器配置：(user_id, server_id) 就是主键
+      if (q.includes("from mcp_servers") && q.includes("server_id =")) {
+        const found = mcpServers.get(`${params[0]}|${params[1]}`);
+        return (found ?? null) as T | null;
+      }
+
       if (q.includes("from kb_docs") && q.includes("doc_id =")) {
         const found = kbDocs.get(`${params[0]}|${params[1]}`);
         return (found ?? null) as T | null;
@@ -777,8 +1010,8 @@ export async function getDb(): Promise<Db> {
   return cached;
 }
 
-/** 建表语句。幂等，可重复执行。 */
-const SCHEMA = [
+/** 建表语句。幂等，可重复执行；db/migrations/0001_capability.sql 必须与它逐条一致。 */
+export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
@@ -915,6 +1148,51 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_kb_chunks_direction_chunk ON kb_chunks(user_id, direction_id, chunk_id)`,
   `CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(user_id, doc_id)`,
   /*
+   * pgvector 窄表：只承载 512 维本地嵌入（bge-small-zh），1024/1536 维外部
+   * 嵌入继续走 kb_chunks.embedding 的 TEXT 列 + 应用层余弦（vector.ts）。
+   *
+   * 不存 direction_id：方向过滤靠 JOIN kb_chunks（见 KB_VECTOR_SQL.byDirection）。
+   * 窄表而不是给 kb_chunks 加列：不动热表、删表即回滚，TEXT 列仍是唯一真相。
+   *
+   * vec 依赖 vector 扩展：ensureSchema 在建表前单独 try/catch 创建扩展，
+   * 扩展不可用时跳过这一条语句，其余表照建——向量是可选能力，不能让应用起不来。
+   * 默认查询走精确扫描，因此这里不建 HNSW 索引（规模上去后另行评估）。
+   */
+  `CREATE TABLE IF NOT EXISTS kb_chunk_vectors (
+    user_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vec vector(512) NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (user_id, chunk_id, model),
+    FOREIGN KEY (user_id, chunk_id) REFERENCES kb_chunks(user_id, chunk_id) ON DELETE CASCADE
+  )`,
+  /*
+   * 用户自建的 MCP 服务器。
+   *
+   * 鉴权头与其他密钥一样只存密文：auth_ct/auth_iv/auth_tag 是 AES-256-GCM 的
+   * 三个部分，auth_kid 记录加密时的密钥版本，auth_hint 是给界面看的掩码。
+   * 公开服务器没有鉴权头，此时四个密文字段为空串（不是「加密失败」）。
+   * allowed_tools_json 是用户勾选的工具白名单，与代码内只读集合、tools/list 取交集。
+   */
+  `CREATE TABLE IF NOT EXISTS mcp_servers (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    server_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    url TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+    auth_ct TEXT NOT NULL DEFAULT '',
+    auth_iv TEXT NOT NULL DEFAULT '',
+    auth_tag TEXT NOT NULL DEFAULT '',
+    auth_kid TEXT NOT NULL DEFAULT '',
+    auth_hint TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, server_id)
+  )`,
+  /*
    * 记忆卡。payload 是整张卡的 JSON：错题与易混字段差异较大，
    * 但读取时统一走 memory.ts 的 parseMemories 清洗，列只保留查询与容量需要的维度。
    */
@@ -935,25 +1213,95 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(user_id, subject_id)`,
 ];
 
+/**
+ * pgvector 扩展的启用语句。
+ *
+ * 必须是**单独一条**：扩展不存在或数据库用户没有 CREATE EXTENSION 权限时，
+ * 只让这一条失败，不能拖垮后面的建表。db/migrations/0001_capability.sql
+ * 里的同一条语句必须与它逐字一致（db.test.ts 有一致性断言）。
+ */
+export const PGVECTOR_EXTENSION = `CREATE EXTENSION IF NOT EXISTS vector`;
+
+/** 依赖 pgvector 的建表语句：扩展不可用时整条跳过，其余表照建。 */
+const VECTOR_DEPENDENT = /kb_chunk_vectors/i;
+
+/** 已经告警过的键。同一种故障只刷一次日志，避免每次 getDb 都刷屏。 */
+const warned = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(message);
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * 尝试启用 pgvector，返回扩展是否可用。
+ *
+ * 三种失败都走 catch：扩展没装、用户没有建扩展权限、后端是内存实现
+ * （它不认 CREATE EXTENSION，但会返回 0 而不是抛错）。失败时只告警一次并
+ * 返回 false——向量检索是可选能力，不能因为扩展装不上就让整个应用起不来。
+ */
+async function ensureVectorExtension(db: Db): Promise<boolean> {
+  try {
+    await db.run(PGVECTOR_EXTENSION);
+    return true;
+  } catch (err) {
+    warnOnce(
+      "pgvector-extension",
+      `[db] pgvector 扩展不可用，跳过 kb_chunk_vectors（向量检索退回应用层余弦）：${errorText(err)}`,
+    );
+    return false;
+  }
+}
+
 async function ensureSchema(db: Db): Promise<void> {
+  const vectorReady = await ensureVectorExtension(db);
+
   for (const stmt of SCHEMA) {
+    const vectorDependent = VECTOR_DEPENDENT.test(stmt);
+    if (vectorDependent && !vectorReady) continue;
+
     try {
       await db.run(stmt);
     } catch (err) {
+      const msg = errorText(err);
       // 内存实现不认 CREATE TABLE，忽略即可
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/not supported|unrecognized|syntax/i.test(msg)) {
-        // Postgres 的真实错误要暴露出来，否则建表失败会静默
-        if (process.env.DATABASE_URL) throw err;
+      if (/not supported|unrecognized|syntax/i.test(msg)) continue;
+
+      if (vectorDependent) {
+        // 扩展在、建表仍失败（版本/权限）：也只告警，不让应用起不来
+        warnOnce("pgvector-table", `[db] kb_chunk_vectors 建表失败，向量检索不可用：${msg}`);
+        continue;
       }
+
+      // Postgres 的真实错误要暴露出来，否则建表失败会静默
+      if (process.env.DATABASE_URL) throw err;
     }
   }
 }
 
-/** 测试用：重置内存库。不清 backendOverride——它是后端选择，不是库内容。 */
+/**
+ * 测试用：直接跑一遍建表流程，不经过 getDb 的单例缓存。
+ *
+ * 生产路径由 getDb() 首次调用触发；单独暴露它是为了用注入的 Db 验证
+ * 「pgvector 不可用时跳过向量表、其余表照建」这一条不能靠真实 Postgres 覆盖的分支。
+ */
+export async function __ensureSchemaForTests(db: Db): Promise<void> {
+  await ensureSchema(db);
+}
+
+/**
+ * 测试用：重置内存库。不清 backendOverride——它是后端选择，不是库内容。
+ * 同时清空「只告警一次」的记录，让降级告警的断言在用例之间互相隔离。
+ */
 export function __resetMemoryDbForTests(): void {
   cached = null;
   initialized = false;
+  warned.clear();
 }
 
 /**

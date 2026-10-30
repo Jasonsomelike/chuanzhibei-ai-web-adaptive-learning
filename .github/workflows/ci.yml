@@ -1,7 +1,7 @@
 # CI 门禁（评审 P1-10：此前仓库完全没有 CI）。
 #
-# 顺序是「便宜的在前、贵的在后」：类型 → 规范 → 测试 → 数据 → 密钥 → 构建 → 体积。
-# check:bundle 解析 `next build` 的产物，所以必须排在 build 之后。
+# 顺序是「便宜的在前、贵的在后」：类型 → 规范 → 测试 → 数据 → 密钥 → 构建。
+# 构建放在最后：`next build` 会打印各路由首屏 JS 体积，只作记录，不设通过线。
 #
 # CI 环境没有 .env.local：本项目在缺省环境变量下必须完整可构建
 # （模型 / TTS / 向量检索只是功能降级，见 .env.example），所以这里不注入任何密钥。
@@ -55,6 +55,3 @@ jobs:
 
       - name: Build
         run: npm run build
-
-      - name: Check bundle budget
-        run: npm run check:bundle

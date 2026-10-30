@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Nav, Card, Pill } from "@/components/ui";
+import { useStaggerIn, useSwapIn } from "@/components/motion";
 import { useAuth } from "@/lib/useAuth";
 
 /**
@@ -23,6 +24,12 @@ export default function LoginPage() {
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const mainRef = useRef<HTMLElement>(null);
+  const formRef = useRef<HTMLDivElement>(null);
+  /* 登录态没有切换；这里只播一次性入场，切换登录 / 注册时表单再淡入一次。 */
+  useStaggerIn(mainRef);
+  useSwapIn(formRef, mode);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,8 +54,8 @@ export default function LoginPage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-md px-5 py-12">
-        <div className="mb-6">
+      <main id="main" ref={mainRef} className="mx-auto max-w-md px-5 py-12">
+        <div className="mb-6" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">
             {mode === "login" ? "登录" : "创建账号"}
           </h1>
@@ -60,7 +67,7 @@ export default function LoginPage() {
         </div>
 
         {/* 模式切换 */}
-        <div className="mb-5 flex gap-1.5">
+        <div className="mb-5 flex gap-1.5" data-motion="tabs">
           <button
             type="button"
             onClick={() => {
@@ -93,6 +100,7 @@ export default function LoginPage() {
           </button>
         </div>
 
+        <div ref={formRef} data-motion="form">
         <Card>
           <form onSubmit={submit} className="space-y-4">
             {mode === "register" ? (
@@ -158,8 +166,9 @@ export default function LoginPage() {
             </button>
           </form>
         </Card>
+        </div>
 
-        <div className="mt-5 space-y-3 text-sm text-[var(--ink-soft)]">
+        <div className="mt-5 space-y-3 text-sm text-[var(--ink-soft)]" data-motion="privacy">
           <p>
             <Link href="/diagnose" className="underline">
               不登录继续使用

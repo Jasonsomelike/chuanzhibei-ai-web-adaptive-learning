@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { __resetMemoryDbForTests, getDb } from "@/lib/db";
+import { MAX_KB_PUT_BYTES } from "@/lib/kbServer";
 
 /**
  * 路由级回归：用真实的内存 DB，只替换登录用户。
@@ -10,7 +11,7 @@ import { __resetMemoryDbForTests, getDb } from "@/lib/db";
  * - 两用户隔离；
  * - baseUpdatedAt 过期的 409 不覆盖任何行；
  * - PUT /api/memories 不删除未提交的 mem_id，删除只走显式 DELETE；
- * - 没有 Content-Length 的 chunked 请求也必须被 8MB 上限拦住。
+ * - 没有 Content-Length 的 chunked 请求也必须被请求体上限拦住。
  */
 
 const authState = vi.hoisted(() => ({
@@ -289,8 +290,8 @@ describe("鉴权与写保护", () => {
     expect((await kbPut(request)).status).toBe(415);
   });
 
-  it("超过 8MB 且没有 Content-Length 的流式请求 413", async () => {
-    const total = 8 * 1024 * 1024 + 1;
+  it("超过请求体上限且没有 Content-Length 的流式请求 413", async () => {
+    const total = MAX_KB_PUT_BYTES + 1;
     const chunkBytes = new Uint8Array(1024 * 1024);
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

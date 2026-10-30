@@ -12,6 +12,7 @@ import {
   buildTutorUserPrompt,
   buildVerificationContext,
   citationVerificationBadge,
+  COMPOSED_DECLARATIONS,
   composeDeterministic,
   effectiveThinking,
   ensureAnswerDeclaration,
@@ -30,6 +31,7 @@ import {
   verdictTone,
   webUsageNote,
 } from "@/components/tutor-logic";
+import { findBannedPhrases, parseAnswerSections } from "@/lib/tutorPersona";
 
 const DOCS: readonly RetrievedDoc[] = [
   { kcId: "c09", title: "栈", snippet: "栈是后进先出的线性表", score: 2.1 },
@@ -400,5 +402,95 @@ describe("materialForAnswer", () => {
     ]);
     expect(material.excerpts.get("c09")?.text).toContain("栈");
     expect(material.conflicts).toEqual([]);
+  });
+});
+
+describe("提示词复用 tutorPersona", () => {
+  it("用户消息带上与 persona 一致的回答结构、禁语与不确定协议", () => {
+    const prompt = buildTutorUserPrompt({
+      question: "栈是什么",
+      docs: DOCS,
+      mastery: MASTERY,
+      materialContext: "[教材·《A》·第1章]\n栈顶是允许插入和删除的一端。",
+      uploadContext: "",
+      webContext: "",
+    });
+
+    expect(prompt).toContain("【回答结构】");
+    expect(prompt).toContain("声明必须排在结论之前");
+    expect(prompt).toContain("【禁语与改写】");
+    expect(prompt).toContain("【不确定时】");
+    // 结构与禁语补在资料之后：原有口径与四块资料的顺序不变。
+    expect(prompt.indexOf("学生的问题")).toBeLessThan(prompt.indexOf("【回答结构】"));
+    expect(prompt.indexOf("教材 / 讲义摘录")).toBeLessThan(prompt.indexOf("【回答结构】"));
+  });
+});
+
+describe("composeDeterministic 的回答结构与人格一致", () => {
+  const groundedInput = {
+    question: "栈是什么",
+    docs: DOCS,
+    mastery: MASTERY,
+    excerpts: new Map([["c09", EXCERPT]]),
+    uploads: [] as const,
+    web: [] as const,
+  };
+
+  it("按声明 → 结论 → 解释 → 例子 → 下一步排列，附录不并进正文", () => {
+    const composed = composeDeterministic(groundedInput);
+    const parsed = parseAnswerSections(composed.text);
+
+    expect(parsed.order).toEqual(["conclusion", "explanation", "example", "nextStep"]);
+    expect(parsed.declaration).toBe("");
+    expect(parsed.sections.nextStep).not.toContain("参考材料");
+    expect(composed.text).toContain("\n——\n参考材料（原文，未改写）");
+  });
+
+  it("只有知识点摘要时，声明在最前且在结论之前", () => {
+    const composed = composeDeterministic({
+      ...groundedInput,
+      excerpts: new Map(),
+    });
+
+    expect(composed.text.startsWith(COMPOSED_DECLARATIONS.knowledgeOnly)).toBe(true);
+    expect(composed.text.indexOf(COMPOSED_DECLARATIONS.knowledgeOnly)).toBeLessThan(
+      composed.text.indexOf("结论："),
+    );
+    expect(parseAnswerSections(composed.text).declaration).toBe(
+      COMPOSED_DECLARATIONS.knowledgeOnly,
+    );
+  });
+
+  it("教材命中时不写通用知识声明，结论不超过 40 字", () => {
+    const composed = composeDeterministic(groundedInput);
+    expect(composed.text).not.toContain("不是来自你的教材");
+    const conclusion = parseAnswerSections(composed.text).sections.conclusion ?? "";
+    expect(Array.from(conclusion).length).toBeLessThanOrEqual(40);
+  });
+
+  it("两说并存写进解释，保留两边说法，不替学生选边", () => {
+    const composed = composeDeterministic({
+      ...groundedInput,
+      conflicts: ["「栈顶位置」尚未选定口径：《A》称「栈顶在表尾」，讲义《B》称「栈顶在表头」"],
+    });
+    expect(composed.text).toContain("两说并存");
+    expect(composed.text).toContain("《A》称「栈顶在表尾」");
+    expect(composed.text).toContain("《B》称「栈顶在表头」");
+  });
+
+  it("三种拼装路径都不命中禁语", () => {
+    const variants = [
+      composeDeterministic(groundedInput).text,
+      composeDeterministic({ ...groundedInput, excerpts: new Map() }).text,
+      composeDeterministic({
+        question: "量子纠缠",
+        docs: [],
+        mastery: [],
+        excerpts: new Map(),
+        uploads: [],
+        web: [],
+      }).text,
+    ];
+    for (const text of variants) expect(findBannedPhrases(text)).toEqual([]);
   });
 });

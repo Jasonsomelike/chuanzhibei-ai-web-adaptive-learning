@@ -25,5 +25,9 @@
 | 账号 | 邮箱注册即登录；登录后进度、记忆卡（`memories` 表）、上传知识库（`kb_docs`/`kb_chunks`）写服务端，换设备能继续；换账号清本机资料与密钥 | [login.png](../screenshots/login.png) |
 | 调用模式 | 设置页切换「服务端 / 本机」：服务端模式密钥加密存账号、模型/搜索/语音由本项目代发；本机模式回到浏览器直连 BYOK；未登录强制本机 | 设置页顶部「调用模式」，无独立截图 |
 | 设置 | 8 个供应商预设、两种协议、连通性测试；思考强度三档 + 依据核对开关；TTS 引擎 / 音色 / 语速 / 两种协议；搜索供应商与 Tavily / DeepSeek key；账号配置只显示掩码；5 套配色 × 明暗（+ 跟随系统） | [浅色](../screenshots/settings-light.png)、[深色](../screenshots/settings-dark.png)、[校验提示](../screenshots/settings-validation.png) |
-| MCP 端点 | `POST /api/mcp`：tools 5 / resources 18 / prompts 2 | 无界面，见 `app/api/mcp/route.ts:57` |
+| 智能体 | 导师页开关「智能体（服务端工具循环）」；回答上方显示步骤数、工具调用数与每次调用的名字 / 参数预览 / 结果预览；失败时显示 notice 并自动退回普通流式回答 | 导师页输入区与「工具轨迹」折叠块，无独立截图（`app/tutor/page.tsx`） |
+| MCP 服务器 | 设置页新增「MCP」分区：可添加 / 启用 / 删除自建服务器，填 URL 与工具白名单；鉴权头只写不读，保存后只显示末 4 位掩码 | 设置页，无独立截图（`app/settings/sections.tsx`） |
+| 向量语义检索 | 上传资料检索状态显示「本地模型 + /api/kb/similar」或「已降级 BM25」；知识库面板显示向量同步进度（待嵌入 / 已同步 / 失败原因） | 导师页检索状态、方向页知识库面板 |
+| 图片与语音输入 | 输入区可粘贴 / 选择 / 拍照最多 3 张图，显示压缩后体积与移除按钮；语音输入点击后显示「正在听…」与临时转写，结果只填入输入框 | 导师页输入区，无独立截图（`src/components/image-input.tsx`、`src/lib/speech.ts`） |
+| MCP 端点 | `POST /api/mcp`：tools 5 / resources 18 / prompts 2，支持版本协商与 notification 202 | 无界面，见 `app/api/mcp/route.ts` |
 | 主题 | 5 套配色 × 明暗，210 对对比度 0 失败 | [深色首页](../screenshots/home-dark.png) |

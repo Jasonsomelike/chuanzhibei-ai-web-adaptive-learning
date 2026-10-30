@@ -7,7 +7,7 @@ flowchart LR
   A["诊断出题<br/>app/diagnose/page.tsx"] --> B["Beta 后验<br/>src/lib/mastery.ts:78"]
   B --> C["排序：深度→ZPD→sd→兜底<br/>src/lib/plan.ts:128"]
   C --> D["预算装包<br/>src/lib/plan.ts:169"]
-  D --> E["手动改写<br/>app/path/page.tsx:260"]
+  D --> E["手动改写<br/>app/path/page.tsx:316"]
   E --> F["先修校验<br/>src/lib/plan.ts:375"]
   F -->|改预算 / 再答题| C
   D --> G["路径指纹 pathHash<br/>src/lib/plan.ts:296"]
@@ -22,10 +22,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  Q["导师提问<br/>app/tutor/page.tsx"] --> R["BM25 / 混合检索<br/>rag.ts · hybrid.ts · vector.ts"]
+  Q["导师提问<br/>app/tutor/page.tsx"] --> R["BM25 / 混合检索<br/>rag.ts · hybrid.ts · embedLocal.ts"]
   Q --> S["流式 + 思考<br/>chat.ts · reasoning.ts → /api/llm/chat"]
+  Q --> A["服务端 Agent<br/>agent.ts · tools.ts → /api/agent"]
+  A --> MC["MCP Streamable HTTP<br/>mcpClient.ts · mcpStore.ts"]
   Q --> W["联网检索<br/>websearch.ts · searchClient.ts → /api/search"]
   Q --> U["上传资料检索<br/>knowledge.ts · kbStore.ts · kbRemote.ts"]
+  U --> VEC["512 维向量<br/>embedLocal.ts · /api/kb/similar · kbVector.ts"]
+  Q --> IMG["图片输入<br/>image.ts · OpenAI 兼容 content parts"]
+  Q --> SP["语音输入<br/>speech.ts（Web Speech）"]
   S --> V["引用核对<br/>verify.ts · verifyClient.ts"]
   D["方向出题<br/>src/lib/directionItems.ts"] --> L6["L6 依据核对<br/>verify.ts · verifyClient.ts"]
   V -. "只标注，不改写回答" .-> Q
@@ -52,7 +57,7 @@ flowchart LR
 
 ```
 ┌─ 数据层 ──────────────────────────────────────────────┐
-│ 9 学科图谱与题库（静态 TS 模块）· Postgres/内存 10 张表   │
+│ 9 学科图谱与题库（静态 TS 模块）· Postgres/内存 12 张表   │
 │ 方向上传知识库（IndexedDB 本机 + 账号 kb_docs/kb_chunks） │
 │ 职责：只存数据，不含规则                                  │
 ├─ 决策层（纯函数）─────────────────────────────────────┤
@@ -65,10 +70,11 @@ flowchart LR
 │ + searchClient + external + upstream + ssrfGuard       │
 │ + tts + kbStore/kbLocal/kbRemote/vectorCache           │
 │ + embeddingClient/hybridSearchClient + server* 适配     │
-│ + materials + pdf + textFile                           │
+│ + materials + pdf + textFile + image + speech          │
+│ + agent + tools + mcpClient + mcpStore + kbVector      │
 │ 职责：检索、模型调用、浏览器/账号存储与语音；失败必须降级   │
 ├─ 表现层 ──────────────────────────────────────────────┤
-│ app/ 9 个页面 + 14 个 API 路由                          │
+│ app/ 9 个页面 + 18 个 API 路由                          │
 │ 职责：读写状态、展示数值理由、把纯函数结果画出来             │
 └───────────────────────────────────────────────────────┘
 ```
@@ -92,14 +98,16 @@ flowchart LR
         │
         ├──► [pathHash plan.ts:296]
         ▼
-[手动改写 path/page.tsx] ──► [checkPrereqOrder plan.ts:375] ──► 违规提示
+[手动改写 path/page.tsx:316] ──► [checkPrereqOrder plan.ts:375] ──► 违规提示
         ▲
         └── 改预算 / 再答题，回到排序
 
 可选能力层（都不阻塞核心路径）：
 [导师提问] ─► BM25 / 混合检索 ─┬─► 流式回答 + 思考 ─► 引用核对（只标注）
                          ├─► 联网检索 [网络n]（外部网页，未核对；server 模式经 /api/search）
-                         ├─► 上传资料检索 [资料n]（本机 IndexedDB + 登录后账号同步）
+                         ├─► 上传资料检索 [资料n]（本机 IndexedDB + 账号同步 + 512 维向量）
+                         ├─► 服务端 Agent（/api/agent，本地 5 工具 + 用户 MCP 工具）
+                         ├─► 图片输入（OpenAI 兼容）· 语音输入（Web Speech）
                          └─► 朗读（浏览器 / 在线语音；server 模式经 /api/tts）
 [方向出题] ─► L1 → L2 → L3 → L4 → L6 依据核对 ─► 落库
 [诊断作答] ─► 记忆卡（不更新 α/β）· 预测校准（只读 attempts）
@@ -107,7 +115,7 @@ flowchart LR
 
 </details>
 
-**一个具体的学生。** 小王在操作系统里想学第 3 章（`o10`–`o14` 五个知识点，`src/data/subjects/os.ts:28`）。按诊断页同一套选题规则模拟（全部答对）：候选点按「先修深度升序 → 掌握度均值升序」出题，两个会话共 24 题（每次上限 15 题，`app/diagnose/page.tsx:72`）测完 8 个点——`o01`–`o05` 是第 3 章的传递先修，`o34`–`o36` 属于文件系统方向、深度只有 0–2 所以也排在前面（诊断不限于目标点的先修闭包）。8 个点各 3 题全对，掌握度 0.700–0.740，`sd` 0.179–0.187。
+**一个具体的学生。** 小王在操作系统里想学第 3 章（`o10`–`o14` 五个知识点，`src/data/subjects/os.ts:28`）。按诊断页同一套选题规则模拟（全部答对）：候选点按「先修深度升序 → 掌握度均值升序」出题，两个会话共 24 题（每次上限 15 题，`app/diagnose/page.tsx:74`）测完 8 个点——`o01`–`o05` 是第 3 章的传递先修，`o34`–`o36` 属于文件系统方向、深度只有 0–2 所以也排在前面（诊断不限于目标点的先修闭包）。8 个点各 3 题全对，掌握度 0.700–0.740，`sd` 0.179–0.187。
 
 - **90 分钟预算、目标 `o10`–`o14`** → 6 步：`o06` 进程控制块与进程控制 → `o07` 进程上下文切换 → `o08` 线程与多线程模型 → `o10` 处理机调度的层次与目标 → `o11` 先来先服务与短作业优先 → `o12` 优先级调度与时间片轮转，正好 90 分钟；`o13`、`o14` 进 `deferred`，`blocked` 为 0，`pathHash = 5c51a690…`。
 - **改成 60 分钟** → 4 步（`o06`→`o07`→`o08`→`o10`，60 分钟），`o11` 进 `deferred`，另外 3 个点因先修被推迟进入 `blocked`，`pathHash = 0ec9da69…`。这就是界面上的「反事实」：不是换一条算法，而是同一算法换一个预算。
@@ -119,11 +127,11 @@ flowchart LR
 
 | 维度 | 常见推荐系统 | 本项目 |
 | --- | --- | --- |
-| 约束 | 按相似度或热度排序，不建模先修关系 | 先修 DAG 是硬约束：目标点的先修闭包全部进入候选，未掌握的先修排在后继之前；先修被预算推迟时，后继进 `blocked` 而不是照排（`src/lib/plan.ts:110`、`:170`） |
+| 约束 | 按相似度或热度排序，不建模先修关系 | 先修 DAG 是硬约束：目标点的先修闭包全部进入候选，未掌握的先修排在后继之前；先修被预算推迟时，后继进 `blocked` 而不是照排（`src/lib/plan.ts:111`、`:170`） |
 | 可解释 | 一个分数，说不清为什么 | 每一步一句带数值的理由（「尚无作答记录，先修深度 6，先建立基线（当前掌握度 10% ±17）」；复习步骤写成「已掌握 57%（±23），距目标还差 3 个百分点」，`src/lib/plan.ts:212`）+ 输入/路径双指纹 |
-| 不确定性 | 点估计 | Beta 后验：界面显示 `70% ±19` 与 `P(已掌握)`，条带宽度就是 `±sd`（`src/components/ui.tsx:48`） |
-| 方案数 | 单一结果 | 反事实预算对比：选一个对照预算，标出哪些步骤会被推迟或因先修阻塞（`app/path/page.tsx:92`） |
-| 可改写 | 不可改 | 可上移/下移/移除，实时标违规；顺序只存在当前页面状态（`app/path/page.tsx:103`），刷新即丢 |
+| 不确定性 | 点估计 | Beta 后验：界面显示 `70% ±19` 与 `P(已掌握)`，条带宽度就是 `±sd`（`src/components/ui.tsx:279`） |
+| 方案数 | 单一结果 | 反事实预算对比：选一个对照预算，标出哪些步骤会被推迟或因先修阻塞（`app/path/page.tsx:99`） |
+| 可改写 | 不可改 | 可上移/下移/移除，实时标违规；顺序按目标存 `localStorage`（`alp.path.manual.v1`，`src/lib/manualPath.ts:16`），刷新可读回 |
 
 这张表里最关键的是第一行：**先修约束让「推荐」变成「能不能学」的判断**，而不是「想不想学」的猜测。第二行是它的直接后果——既然排序规则是显式的，就能把每一步的数值理由打印出来，也能对同样的输入复现同样的输出。
 
@@ -134,9 +142,9 @@ flowchart LR
 ## ① 出题：下一个测哪个知识点、出哪道题
 
 - **输入**：当前掌握度快照、每点已做过的题、图谱深度。
-- **规则**：候选点按 `depth` 升序 → 掌握度均值升序 → `id` 排序；选中点里再选 `|predictCorrect(mean, d) − 0.65|` 最小的那道题（`app/diagnose/page.tsx:326`、`:341`）。0.65 是信息量较大的区间：太低多半在猜，太高测不出上限。
+- **规则**：候选点按 `depth` 升序 → 掌握度均值升序 → `id` 排序；选中点里再选 `|predictCorrect(mean, d) − 0.65|` 最小的那道题（`app/diagnose/page.tsx:396`）。0.65 是信息量较大的区间：太低多半在猜，太高测不出上限。
 - **输出**：下一道题 + 所属知识点 + 难度。
-- **证据门槛**：内置题每点 3 题、生成题 4 题（`src/lib/mastery.ts:123`），达到即换下一个点；全局上限 15 题（`app/diagnose/page.tsx:72` 的 `HARD_CAP`）。
+- **证据门槛**：内置题每点 3 题、生成题 4 题（`src/lib/mastery.ts:123`），达到即换下一个点；全局上限 15 题（`app/diagnose/page.tsx:74` 的 `HARD_CAP`）。
 
 实测效果：`o01`（depth 0，先验 0.35）三道题依次选 `d=1`（预测 0.641）、`d=2`（0.670）、`d=3`（0.653），全对后均值 0.740；`o10`（depth 6，先验 0.10）单独模拟时出题序列同样是 1→2→3，全对后均值只到 0.640。**出题序列相同、结果不同**——差别来自先验，不是难度标签。
 
@@ -151,9 +159,9 @@ flowchart LR
 
 ## ③ 预算反事实 + 手动改写
 
-- **输入**：同一份掌握度快照 + 两个预算（30/60/90/120/180/240 分钟，`app/path/page.tsx:39`）。
-- **规则**：对两个预算各跑一次 `planPath`，把对照预算下会被推迟或阻塞的步骤标灰并加「对照预算下会被推迟」标签（`app/path/page.tsx:184`、`:547`）。
-- **手动改写**：上移/下移/移除按钮（`app/path/page.tsx:598-623`）改的是当前页面状态；每次改动后用 `checkPrereqOrder(graph, steps, { mastered: masteredSet(mastery) })` 严格模式重算违规（`app/path/page.tsx:251`、`src/lib/plan.ts:375`）。严格模式要求「先修既不在路径、也未标记已掌握」必须报违规；不传 `mastered` 的宽松模式只查顺序。
+- **输入**：同一份掌握度快照 + 两个预算（30/60/90/120/180/240 分钟，`app/path/page.tsx:41`）。
+- **规则**：对两个预算各跑一次 `planPath`，把对照预算下会被推迟或阻塞的步骤标灰并加「对照预算下会被推迟」标签（`app/path/page.tsx:221`、`:636`）。
+- **手动改写**：上移/下移/移除按钮（`app/path/page.tsx:672-693`）改的是当前页面状态；每次改动后用 `checkPrereqOrder(graph, steps, { mastered: masteredSet(mastery) })` 严格模式重算违规（`app/path/page.tsx:305`、`src/lib/plan.ts:375`）。严格模式要求「先修既不在路径、也未标记已掌握」必须报违规；不传 `mastered` 的宽松模式只查顺序。
 - **输出**：违规条数与逐条文案；无违规时显示「当前顺序仍满足全部先修约束」。
 
 界面上的三个闭环对应三张图：[诊断](../screenshots/diagnose.png)、[路径与指纹](../screenshots/path.png)、[自定义方向诊断](../screenshots/diagnose-direction.png)。
@@ -313,7 +321,7 @@ src/lib/mastery.ts     Beta 后验、sd、P(已掌握)、预测正确率
 src/lib/graph.ts       DAG 校验、深度、拓扑序、先修闭包
 src/lib/direction.ts   描述 → 图谱草稿 + 八条硬门禁 + 标题校验
 src/lib/itemgen.ts     生成题 L1–L5 校验 + contentHash + 批解解析
-src/lib/db.ts          Postgres / 内存双实现，10 张表
+src/lib/db.ts          Postgres / 内存双实现，12 张表
 
 src/lib/rag.ts         BM25 bigram、单字降权、域外门控、MIN_SCORE（标题加权仅评测用；纯函数）
 src/lib/hybrid.ts      RRF k=60、候选 20、top3、余弦 0.25、相邻去重（纯函数）
@@ -328,11 +336,21 @@ src/lib/materials.ts   资料包、冲突检测、上下文裁剪（纯函数）
 src/lib/kbStore.ts     存储契约 + useKnowledgeBase hook + 重新导出解析器
 src/lib/kbLocal.ts     IndexedDB 适配器（docs / chunks）
 src/lib/kbRemote.ts    远端适配器 + 本地/远端复合存储 + getKbStorageForUser
-src/lib/kbServer.ts    行映射、上传校验、文档级 CAS、向量分页（服务端）
+src/lib/kbServer.ts    行映射、上传校验、文档级 CAS、片段分页（服务端）
+src/lib/kbVector.ts    kb_chunk_vectors 读写、精确余弦查询（服务端）
+src/lib/vectorContracts.ts 512 维向量上传 / 相似查询契约（zod）
 src/lib/vectorCache.ts 片段向量缓存（IndexedDB，按 model+FNV 键）
 src/lib/embeddingClient.ts /api/llm/embeddings 客户端、LRU 50 条
 src/lib/hybridSearchClient.ts 检索适配层：BM25 + 向量 + RRF + 降级说明
+src/lib/embedLocal.ts  浏览器本地 bge-small-zh-v1.5 嵌入（Worker，失败降级）
 src/lib/pdf.ts         pdfjs-dist 抽文本；无文本层如实拒绝（不做 OCR）
+src/lib/image.ts       图片格式 / 压缩 / 体积 / 张数限制（纯逻辑）
+src/lib/speech.ts      Web Speech 可用性检测、转写拼接、错误翻译（纯逻辑）
+src/lib/tools.ts       5 个只读工具定义与实现（MCP 与 Agent 共用）
+src/lib/agent.ts       服务端有界工具循环（纯状态机）
+src/lib/agentContracts.ts Agent 请求体、事件、运行上限（zod）
+src/lib/mcpClient.ts   MCP 2025-06-18 Streamable HTTP 客户端
+src/lib/mcpStore.ts    用户 MCP 服务器配置与鉴权头加密
 src/lib/textFile.ts    File → Uint8Array，解码复用 knowledge.ts
 src/lib/verify.ts      逐字 quote 校验、L6 整批解析、引用核对判定（纯函数）
 src/lib/verifyClient.ts 核对请求：每 KC 一次 / 每回答一次，失败 fail-open
@@ -351,17 +369,18 @@ src/lib/serverEmbedding.ts / serverSearch.ts / serverTts.ts  服务端代发适�
 src/lib/upstream.ts    LLM 配置解密、端点拼装、SSE 代理、错误脱敏
 src/lib/ssrf.ts / ssrfGuard.ts  出站地址形状、DNS、钉 IP 三层判定
 src/lib/routeAuth.ts / origin.ts  登录校验、同源校验、统一 JSON 错误
-src/lib/apiContracts.ts 7 组请求契约（config / llm / embeddings / search / tts / kb / memories，zod strictObject）
+src/lib/apiContracts.ts 请求契约（config / llm / embeddings / search / tts / kb / memories / agent / kb 向量，zod strictObject）
 
 app/diagnose/page.tsx  诊断出题、记忆复习、预测校准、生成轨迹
 app/path/page.tsx      路径、章节范围、反事实、手动改写、指纹
-app/tutor/page.tsx     流式回答、思考面板、联网、上传混合检索、引用核对、朗读
+app/tutor/page.tsx     流式回答、思考面板、联网、上传混合检索、引用核对、朗读、智能体轨迹、图片 / 语音输入
 app/directions/page.tsx + market/page.tsx  自定义方向、知识库上传/同步、市场
-app/settings/page.tsx  调用模式、账号配置（掩码）、TTS / 搜索 / 配色
-app/api/*              14 个路由：auth、progress、directions(×3)、config、llm(×2)、
-                       search、tts、kb、memories、mcp、health
+app/settings/page.tsx  调用模式、账号配置（掩码）、MCP 服务器、模型文件自检、TTS / 搜索 / 配色
+app/api/*              18 个路由：auth、progress、directions(×3)、config、llm(×2)、
+                       search、tts、kb、kb/vectors、kb/similar、memories、mcp、
+                       mcp/servers、agent、health
 ```
 
 知识口径的纯函数在 `src/lib/materials.ts`，localStorage 读写与订阅在 `src/lib/materialStore.ts`；章节聚合与候选范围在 `src/lib/chapters.ts`；反事实汇总在 `src/lib/planDiff.ts`；方向题目的 IO 与流程轨迹在 `src/lib/directionItems.ts`。
 
-学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **69 个非测试模块 + 67 个测试文件**；`src/components/` 另有 7 个测试文件（`calibration-card`、`knowledge-upload`、`market-status`、`memory-review`、`mini-markdown`、`nav-links`、`tutor-logic`），合计 **74 个测试文件、1723 条用例**（`npm run test` 本轮实测）。
+学科注册表在 `src/data/subjects/index.ts`，数据集校验在 `scripts/validate-kg.ts`。`src/lib/` 现有 **81 个非测试模块 + 84 个测试文件**；`src/components/` 另有 9 个测试文件（`calibration-card`、`image-input`、`knowledge-upload`、`market-status`、`memory-review`、`mini-markdown`、`motion`、`nav-links`、`tutor-logic`），`src/` 根目录另有 1 个（`settings-page`），合计 **94 个测试文件、1996 条用例**（`npm run test` 2026-10-30 实测）。

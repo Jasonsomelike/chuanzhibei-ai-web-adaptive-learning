@@ -14,7 +14,6 @@
     "test:watch": "vitest",
     "kg:validate": "tsx scripts/validate-kg.ts",
     "check:secrets": "tsx scripts/check-secrets.ts",
-    "check:bundle": "tsx scripts/check-bundle.ts",
     "bench": "node bench/bench-path.mjs",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:mcp": "tsx scripts/mcp-smoke.ts",

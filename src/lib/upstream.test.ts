@@ -189,6 +189,180 @@ describe("buildUpstreamChatBody", () => {
     });
     expect(body["response_format"]).toBeUndefined();
   });
+
+  it("OpenAI 兼容：保留 role:tool 与 assistant.tool_calls 的完整 history", () => {
+    const messages = [
+      {
+        role: "system" as const,
+        content: [{ type: "text" as const, text: "规则一" }, { type: "text" as const, text: "规则二" }],
+      },
+      { role: "user" as const, content: "查北京天气" },
+      {
+        role: "assistant" as const,
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function" as const,
+            function: { name: "get_weather", arguments: '{"city":"北京"}' },
+          },
+        ],
+      },
+      { role: "tool" as const, content: "晴，24°C", tool_call_id: "call_1" },
+      { role: "user" as const, content: "那要带伞吗" },
+    ];
+
+    const body = buildUpstreamChatBody("openai-compatible", "deepseek-chat", {
+      messages,
+      stream: true,
+    });
+
+    expect(body["messages"]).toEqual([
+      // system 里的 parts 用文本拼接，不能出现 [object Object]
+      { role: "system", content: "规则一规则二" },
+      { role: "user", content: "查北京天气" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "get_weather", arguments: '{"city":"北京"}' },
+          },
+        ],
+      },
+      { role: "tool", content: "晴，24°C", tool_call_id: "call_1" },
+      { role: "user", content: "那要带伞吗" },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("[object Object]");
+  });
+
+  it("Anthropic：parts 转成 image block，且 history 保持原顺序", () => {
+    const messages = [
+      { role: "system" as const, content: "你是助教" },
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: "图里是什么" },
+          {
+            type: "image_url" as const,
+            image_url: { url: "data:image/jpeg;base64,AAAA" },
+          },
+        ],
+      },
+      { role: "assistant" as const, content: "是一只猫" },
+      { role: "user" as const, content: "再仔细看看" },
+    ];
+
+    const body = buildUpstreamChatBody("anthropic", "claude", {
+      messages,
+      maxTokens: 256,
+      stream: false,
+    });
+
+    expect(body["system"]).toBe("你是助教");
+    expect(body["messages"]).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "图里是什么" },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/jpeg", data: "AAAA" },
+          },
+        ],
+      },
+      { role: "assistant", content: "是一只猫" },
+      { role: "user", content: "再仔细看看" },
+    ]);
+  });
+
+  it("Anthropic：system 的 parts 用文本拼接，不出现 [object Object]", () => {
+    const body = buildUpstreamChatBody("anthropic", "claude", {
+      messages: [
+        {
+          role: "system",
+          content: [{ type: "text", text: "规则一" }, { type: "text", text: "规则二" }],
+        },
+        { role: "user", content: "问" },
+      ],
+      stream: false,
+    });
+    expect(body["system"]).toBe("规则一规则二");
+    expect(JSON.stringify(body)).not.toContain("[object Object]");
+  });
+
+  it("OpenAI 兼容：tools 与 toolChoice 写进上游请求体", () => {
+    const tools = [
+      {
+        type: "function" as const,
+        function: { name: "get_weather", parameters: { type: "object" } },
+      },
+    ];
+    const body = buildUpstreamChatBody("openai-compatible", "deepseek-chat", {
+      messages: MESSAGES,
+      stream: false,
+      tools,
+      toolChoice: "auto",
+    });
+    expect(body["tools"]).toEqual(tools);
+    expect(body["tool_choice"]).toBe("auto");
+  });
+
+  it("Anthropic 收到 tools 时显式报错，不静默丢弃", () => {
+    expect(() =>
+      buildUpstreamChatBody("anthropic", "claude", {
+        messages: MESSAGES,
+        stream: false,
+        tools: [{ type: "function", function: { name: "get_weather" } }],
+      }),
+    ).toThrow(/不支持工具调用/);
+  });
+
+  it("Anthropic 收到 role:tool 或 assistant.tool_calls 时显式报错", () => {
+    expect(() =>
+      buildUpstreamChatBody("anthropic", "claude", {
+        messages: [
+          { role: "user", content: "查天气" },
+          { role: "tool", content: "晴", tool_call_id: "call_1" },
+        ],
+        stream: false,
+      }),
+    ).toThrow(/不支持工具消息/);
+
+    expect(() =>
+      buildUpstreamChatBody("anthropic", "claude", {
+        messages: [
+          { role: "user", content: "查天气" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              { id: "call_1", type: "function", function: { name: "get_weather", arguments: "{}" } },
+            ],
+          },
+        ],
+        stream: false,
+      }),
+    ).toThrow(/不支持工具消息/);
+  });
+
+  it("Anthropic：http 图片 URL 被拒绝（防上游替我们抓取）", () => {
+    expect(() =>
+      buildUpstreamChatBody("anthropic", "claude", {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+            ],
+          },
+        ],
+        stream: false,
+      }),
+    ).toThrow(/data:image/);
+  });
 });
 
 // ── filterExtraHeaders ────────────────────────────────────────────

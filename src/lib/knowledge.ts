@@ -13,20 +13,42 @@ import { buildIndex, search, type Bm25Index, type KbDocument } from "@/lib/rag";
 
 // ── 上限 ──────────────────────────────────────────────────────────
 
-/** 单个上传文件的大小上限（20MB）。 */
-export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+/**
+ * 安全上限，不是产品配额。
+ *
+ * 这些值只用于防止单次上传把浏览器/服务端内存打爆；账号同步没有
+ * 「每个方向只能 800 段」之类的产品限制。需要按部署收紧/放宽时用
+ * ALP_MAX_* 覆盖（服务端与构建时读取；浏览器构建读不到时用默认值）。
+ */
+function envPositiveInt(name: string, fallback: number): number {
+  try {
+    const raw = typeof process === "undefined" ? undefined : process.env?.[name];
+    if (typeof raw !== "string" || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return Math.max(1, Math.floor(value));
+  } catch {
+    return fallback;
+  }
+}
 
-/** 单份 PDF 的页数上限；超过时整体拒绝，不导入半份。 */
-export const MAX_PDF_PAGES = 300;
+/** 单个上传文件的大小安全上限（默认 64MB）。 */
+export const MAX_FILE_BYTES = envPositiveInt("ALP_MAX_KB_FILE_BYTES", 64 * 1024 * 1024);
 
-/** 单个文件的正文上限（按码点计，20 万字）。 */
-export const MAX_FILE_CHARS = 200_000;
+/** 单份 PDF 的页数安全上限（默认 2000 页）；超过时整体拒绝，不导入半份。 */
+export const MAX_PDF_PAGES = envPositiveInt("ALP_MAX_KB_PDF_PAGES", 2_000);
 
-/** 单个方向累计片段上限。 */
-export const MAX_DIRECTION_CHUNKS = 800;
+/** 单个文件的正文安全上限（按码点计，默认 100 万字）。 */
+export const MAX_FILE_CHARS = envPositiveInt("ALP_MAX_KB_FILE_CHARS", 1_000_000);
 
-/** 单个方向累计正文字符上限（40 万字）。 */
-export const MAX_DIRECTION_CHARS = 400_000;
+/**
+ * 单个方向累计片段的安全上限（默认 5 万段）。
+ * 仅防 OOM：正常课程资料远低于这个量级，超过时按容量不足明确拒绝。
+ */
+export const MAX_DIRECTION_CHUNKS = envPositiveInt("ALP_MAX_KB_DIRECTION_CHUNKS", 50_000);
+
+/** 单个方向累计正文字符的安全上限（默认 1000 万字）。 */
+export const MAX_DIRECTION_CHARS = envPositiveInt("ALP_MAX_KB_DIRECTION_CHARS", 10_000_000);
 
 /** 常规块的目标长度（按码点计）。 */
 export const CHUNK_SIZE = 500;

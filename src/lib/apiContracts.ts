@@ -25,7 +25,13 @@ import {
   MAX_PROMPT_CHARS,
   type MemoryItem,
 } from "@/lib/memory";
-import type { ProviderKind, ThinkingStatus } from "@/lib/provider";
+import type {
+  ChatContent,
+  ChatToolChoice,
+  ChatToolDefinition,
+  ProviderKind,
+  ThinkingStatus,
+} from "@/lib/provider";
 import type { ThinkingStrength } from "@/lib/reasoning";
 import {
   RATE_MAX,
@@ -164,10 +170,149 @@ export type TtsConfigPut = z.infer<typeof ttsConfigPut>;
  */
 export const CHAT_MESSAGE_MAX_CHARS = 16_000;
 
-export const chatMessage = z.strictObject({
-  role: z.enum(["system", "user", "assistant"]),
-  content: z.string().min(1).max(CHAT_MESSAGE_MAX_CHARS),
+/** 一条消息最多 4 个 parts；图片再多也装不下，别把请求体撑爆。 */
+export const CHAT_MESSAGE_MAX_PARTS = 4;
+
+/** 单条消息的图片数上限。与 ADR 的「一次 ≤3 张」一致，第 4 段通常是提示文本。 */
+export const CHAT_MESSAGE_MAX_IMAGES = 3;
+
+/**
+ * 单张图片 base64 字符串的上限（约 600KB 原始字节）。
+ * ADR 要求前端压到 ≤400KB；契约留一点余量，但必须挡住把整份 PDF 当图片塞进来的情况。
+ */
+export const CHAT_IMAGE_MAX_DATA_CHARS = 800_000;
+
+/**
+ * 图片只接受 data:image/(jpeg|png|webp|gif);base64。
+ *
+ * 拒绝 http(s) URL 是安全边界：若放行，上游会替我们抓取任意地址，
+ * 等于把服务端变成一个可被提示词触发的 SSRF 跳板，也无法保证图片不被落盘。
+ */
+const DATA_IMAGE_URL =
+  /^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/u;
+
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
+
+/** 一条消息正文：旧字符串，或「文本 / 图片」片段数组。 */
+export const chatContentPart = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("text"),
+    text: z.string().min(1).max(CHAT_MESSAGE_MAX_CHARS),
+  }),
+  z.strictObject({
+    type: z.literal("image_url"),
+    image_url: z.strictObject({
+      url: z
+        .string()
+        .max(CHAT_IMAGE_MAX_DATA_CHARS)
+        .regex(DATA_IMAGE_URL, "图片只接受 data:image/(jpeg|png|webp|gif);base64，不接受 http(s) URL"),
+      detail: z.enum(["auto", "low", "high"]).optional(),
+    }),
+  }),
+]);
+
+/** assistant 消息里的一条函数调用。arguments 是 JSON 字符串（可为空串）。 */
+export const chatToolCall = z.strictObject({
+  id: z.string().trim().min(1).max(120),
+  type: z.literal("function"),
+  function: z.strictObject({
+    name: z.string().regex(TOOL_NAME, "工具名只允许字母、数字、下划线与连字符"),
+    arguments: z.string().max(CHAT_MESSAGE_MAX_CHARS),
+  }),
 });
+
+/** 工具定义（OpenAI Chat Completions 形状）。 */
+export const chatToolDefinition = z.strictObject({
+  type: z.literal("function"),
+  function: z.strictObject({
+    name: z.string().regex(TOOL_NAME, "工具名只允许字母、数字、下划线与连字符"),
+    description: z.string().max(2000).optional(),
+    parameters: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+/** auto / none / required，或指定某个函数。 */
+export const chatToolChoice = z.union([
+  z.enum(["auto", "none", "required"]),
+  z.strictObject({
+    type: z.literal("function"),
+    function: z.strictObject({
+      name: z.string().regex(TOOL_NAME, "工具名只允许字母、数字、下划线与连字符"),
+    }),
+  }),
+]);
+
+export const chatMessage = z
+  .strictObject({
+    role: z.enum(["system", "user", "assistant", "tool"]),
+    content: z.union([
+      z.string().max(CHAT_MESSAGE_MAX_CHARS),
+      z.array(chatContentPart).min(1).max(CHAT_MESSAGE_MAX_PARTS),
+    ]),
+    /** 只有 assistant 消息允许带工具调用；参数是流式分片拼好的完整 JSON 串。 */
+    tool_calls: z.array(chatToolCall).min(1).max(8).optional(),
+    /** tool 消息必须回指某次调用；assistant 消息不能带这个字段。 */
+    tool_call_id: z.string().trim().min(1).max(120).optional(),
+  })
+  .superRefine((message, ctx) => {
+    if (message.role === "tool") {
+      if (message.tool_call_id === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["tool_call_id"],
+          message: "tool 消息必须带 tool_call_id",
+        });
+      }
+      if (message.tool_calls !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["tool_calls"],
+          message: "tool 消息不能带 tool_calls",
+        });
+      }
+    } else if (message.tool_call_id !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["tool_call_id"],
+        message: "只有 tool 消息允许 tool_call_id",
+      });
+    }
+
+    if (message.role !== "assistant" && message.tool_calls !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["tool_calls"],
+        message: "只有 assistant 消息允许 tool_calls",
+      });
+    }
+
+    /*
+     * assistant 的工具轮正文可以是空串（OpenAI 实测就是 content="" + tool_calls）；
+     * 其它角色仍然拒绝空正文——空 user 消息没有提问内容，不该被当成有效请求。
+     */
+    if (
+      typeof message.content === "string" &&
+      message.content.length === 0 &&
+      !(message.role === "assistant" && message.tool_calls !== undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["content"],
+        message: "消息正文不能为空",
+      });
+    }
+
+    if (Array.isArray(message.content)) {
+      const images = message.content.filter((part) => part.type === "image_url").length;
+      if (images > CHAT_MESSAGE_MAX_IMAGES) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["content"],
+          message: `一条消息最多 ${CHAT_MESSAGE_MAX_IMAGES} 张图片`,
+        });
+      }
+    }
+  });
 
 /**
  * 服务端代发的对话请求。
@@ -192,8 +337,17 @@ export const llmChat = z.strictObject({
    * 缺省 false，与本轮之前的请求体完全一致。
    */
   jsonMode: z.boolean().default(false),
+  /**
+   * 函数工具定义。只对 OpenAI 兼容 kind 有效；Anthropic 收到非空 tools 时
+   * 服务端会明确报错，而不是静默丢掉（静默丢会让工具轮看起来像普通回答）。
+   */
+  tools: z.array(chatToolDefinition).max(32).optional(),
+  /** 工具选择策略；缺省交给上游默认（auto）。 */
+  toolChoice: chatToolChoice.optional(),
 });
 
+export type ChatContentPart = z.infer<typeof chatContentPart>;
+export type ChatToolCall = z.infer<typeof chatToolCall>;
 export type ChatMessage = z.infer<typeof chatMessage>;
 export type LlmChat = z.infer<typeof llmChat>;
 
@@ -526,3 +680,13 @@ export type MemoryItemContractCheck = AssignableTo<MemoryItem, z.infer<typeof me
 export type TtsConfigContractCheck = AssignableTo<TtsConfig, z.infer<typeof ttsConfigPut>>;
 /** websearch.ts 新增供应商而这里没跟上时编译失败，避免 /api/search 漏分支。 */
 export type SearchProviderContractCheck = AssignableTo<WebProvider, SearchProvider>;
+/** 请求构造层（provider.ts）与 HTTP 契约的 content/tools 形状必须一致。 */
+export type ChatContentContractCheck = AssignableTo<ChatContent, ChatMessage["content"]>;
+export type ChatToolContractCheck = AssignableTo<
+  ChatToolDefinition,
+  z.infer<typeof chatToolDefinition>
+>;
+export type ChatToolChoiceContractCheck = AssignableTo<
+  ChatToolChoice,
+  z.infer<typeof chatToolChoice>
+>;

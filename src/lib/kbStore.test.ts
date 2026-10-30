@@ -446,6 +446,20 @@ describe("知识库视图状态", () => {
     expect(failed.vectorsLoading).toBe(false);
     expect(failed.syncWarning).toBe("读取向量失败");
   });
+
+  it("本地向量同步状态进入视图；reset 回到 idle", () => {
+    const embedding = kbViewReducer(initialKbViewState(), {
+      type: "vectorSync",
+      state: { status: "embedding", done: 16, total: 64, message: null },
+    });
+    expect(embedding.vectorSync.status).toBe("embedding");
+    expect(embedding.vectorSync.done).toBe(16);
+    expect(embedding.vectorSync.total).toBe(64);
+
+    const reset = kbViewReducer(embedding, { type: "reset" });
+    expect(reset.vectorSync.status).toBe("idle");
+    expect(reset.vectorSync.done).toBe(0);
+  });
 });
 
 // ── 409 冲突的文案 ────────────────────────────────────────────────

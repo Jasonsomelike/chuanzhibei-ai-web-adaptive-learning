@@ -1,10 +1,27 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
 import {
   getDb,
   __resetMemoryDbForTests,
   dbBackend,
   __setDbBackendForTests,
+  __ensureSchemaForTests,
+  KB_VECTOR_SQL,
+  MCP_SERVER_SQL,
+  PGVECTOR_EXTENSION,
+  SCHEMA,
+  listKbChunkVectorsByDirection,
+  type Db,
 } from "@/lib/db";
+import {
+  MIGRATIONS_DIR,
+  assertNoConcurrently,
+  loadPendingMigrations,
+  pendingMigrations,
+  splitSqlStatements,
+} from "../../scripts/db-migrate";
 
 /**
  * 内存实现的查询分支测试。
@@ -699,5 +716,365 @@ describe("dbBackend", () => {
       if (original === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = original;
     }
+  });
+});
+
+// ── kb_chunk_vectors / mcp_servers ────────────────────────────────
+
+const VECTOR_MODEL = "bge-small-zh-v1.5-q8";
+
+/**
+ * 这里的参数顺序必须与 KB_VECTOR_SQL / MCP_SERVER_SQL 一致：
+ * 内存实现按列名 upsert、按参数位置过滤，两处分叉会抛错或读错行。
+ */
+function vectorParams(over: Partial<Record<string, string | number>> = {}): unknown[] {
+  return [
+    over.user_id ?? "u1",
+    over.chunk_id ?? "c1",
+    over.model ?? VECTOR_MODEL,
+    over.dim ?? 512,
+    over.vec ?? "[0.1,0.2]",
+    over.updated_at ?? "2026-10-30T00:00:00.000Z",
+  ];
+}
+
+function mcpParams(over: Partial<Record<string, string | number | boolean>> = {}): unknown[] {
+  return [
+    over.user_id ?? "u1",
+    over.server_id ?? "s1",
+    over.label ?? "只读工具",
+    over.url ?? "https://mcp.example.com/mcp",
+    over.enabled ?? true,
+    over.allowed_tools_json ?? JSON.stringify(["list_docs"]),
+    over.auth_ct ?? "ct",
+    over.auth_iv ?? "iv",
+    over.auth_tag ?? "tag",
+    over.auth_kid ?? "v1",
+    over.auth_hint ?? "••••1234",
+    over.created_at ?? "2026-10-30T00:00:00.000Z",
+    over.updated_at ?? "2026-10-30T00:00:00.000Z",
+  ];
+}
+
+async function seedVectorFixture(db: TestDb) {
+  await seedUser("u1");
+  await seedUser("u2");
+  await seedDoc(db, { user_id: "u1", doc_id: "doc1", direction_id: "d1" });
+  await seedDoc(db, { user_id: "u2", doc_id: "doc2", direction_id: "d2" });
+  await seedChunk(db, { user_id: "u1", chunk_id: "c1", doc_id: "doc1", direction_id: "d1" });
+  await seedChunk(db, { user_id: "u1", chunk_id: "c2", doc_id: "doc1", direction_id: "d1" });
+  await seedChunk(db, { user_id: "u2", chunk_id: "c1", doc_id: "doc2", direction_id: "d2" });
+}
+
+describe("kb_chunk_vectors 内存实现", () => {
+  it("upsert 后按方向 JOIN 读回：不跨方向、不跨用户、不跨模型", async () => {
+    const db = await getDb();
+    await seedVectorFixture(db);
+
+    expect(await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c1" }))).toBe(1);
+    expect(await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c2" }))).toBe(1);
+    expect(
+      await db.run(KB_VECTOR_SQL.upsert, vectorParams({ user_id: "u2", chunk_id: "c1" })),
+    ).toBe(1);
+    // 同一个片段在另一个模型下再写一行：读取时必须被 model 过滤掉
+    expect(
+      await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c1", model: "m2" })),
+    ).toBe(1);
+
+    const mine = await listKbChunkVectorsByDirection(db, "u1", "d1", VECTOR_MODEL);
+    expect(mine.map((r) => r.chunk_id)).toEqual(["c1", "c2"]);
+    expect(mine[0].model).toBe(VECTOR_MODEL);
+    expect(mine[0].dim).toBe(512);
+
+    // direction_id 不在 kb_chunk_vectors 里：d2 的过滤来自 JOIN kb_chunks
+    expect(await listKbChunkVectorsByDirection(db, "u1", "d2", VECTOR_MODEL)).toEqual([]);
+
+    const otherUser = await listKbChunkVectorsByDirection(db, "u2", "d2", VECTOR_MODEL);
+    expect(otherUser.map((r) => r.chunk_id)).toEqual(["c1"]);
+
+    const otherModel = await listKbChunkVectorsByDirection(db, "u1", "d1", "m2");
+    expect(otherModel.map((r) => r.chunk_id)).toEqual(["c1"]);
+  });
+
+  it("同一 (user_id, chunk_id, model) 重复写入是更新：行数不变、updated_at 取新值", async () => {
+    const db = await getDb();
+    await seedVectorFixture(db);
+
+    expect(
+      await db.run(
+        KB_VECTOR_SQL.upsert,
+        vectorParams({ chunk_id: "c1", updated_at: "2026-10-30T00:00:00.000Z" }),
+      ),
+    ).toBe(1);
+    expect(
+      await db.run(
+        KB_VECTOR_SQL.upsert,
+        vectorParams({ chunk_id: "c1", vec: "[0.3,0.4]", updated_at: "2026-10-30T02:00:00.000Z" }),
+      ),
+    ).toBe(1);
+
+    const rows = await listKbChunkVectorsByDirection(db, "u1", "d1", VECTOR_MODEL);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].updated_at).toBe("2026-10-30T02:00:00.000Z");
+  });
+
+  it("删除形状 kb_chunk_vectors(user_id,chunk_id)：删该片段的全部模型行", async () => {
+    const db = await getDb();
+    await seedVectorFixture(db);
+    await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c1" }));
+    await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c1", model: "m2" }));
+    await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c2" }));
+
+    expect(await db.run(KB_VECTOR_SQL.deleteByChunk, ["u1", "c1"])).toBe(2);
+    expect(await db.run(KB_VECTOR_SQL.deleteByChunk, ["u1", "c1"])).toBe(0);
+
+    const model1 = await listKbChunkVectorsByDirection(db, "u1", "d1", VECTOR_MODEL);
+    expect(model1.map((r) => r.chunk_id)).toEqual(["c2"]);
+    expect(await listKbChunkVectorsByDirection(db, "u1", "d1", "m2")).toEqual([]);
+  });
+
+  it("删片段/删文档级联删向量（对齐外键 ON DELETE CASCADE）", async () => {
+    const db = await getDb();
+    await seedVectorFixture(db);
+    await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c1" }));
+    await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c2" }));
+
+    expect(
+      await db.run("DELETE FROM kb_chunks WHERE user_id = $1 AND chunk_id = $2", ["u1", "c1"]),
+    ).toBe(1);
+    // 用同一个 chunk_id 重新写入片段：旧向量若还在，JOIN 会把它带出来
+    await seedChunk(db, { user_id: "u1", chunk_id: "c1", doc_id: "doc1", direction_id: "d1" });
+    expect(
+      (await listKbChunkVectorsByDirection(db, "u1", "d1", VECTOR_MODEL)).map((r) => r.chunk_id),
+    ).toEqual(["c2"]);
+
+    // 删文档 -> 删片段 -> 级联删向量；重新写入片段后旧向量不应复活
+    expect(await db.run("DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2", ["u1", "doc1"])).toBe(
+      1,
+    );
+    await seedDoc(db, { user_id: "u1", doc_id: "doc1", direction_id: "d1" });
+    await seedChunk(db, { user_id: "u1", chunk_id: "c2", doc_id: "doc1", direction_id: "d1" });
+    expect(await listKbChunkVectorsByDirection(db, "u1", "d1", VECTOR_MODEL)).toEqual([]);
+  });
+
+  it("相似度查询在内存实现里返回空数组（没有 pgvector），未知形状直接抛错", async () => {
+    const db = await getDb();
+    await seedVectorFixture(db);
+    await db.run(KB_VECTOR_SQL.upsert, vectorParams({ chunk_id: "c1" }));
+
+    // 内存实现没有 pgvector：不使用应用层余弦冒充 <=> 的结果
+    expect(
+      await db.all(KB_VECTOR_SQL.similar, ["u1", "d1", VECTOR_MODEL, "[0.1,0.2]", 3]),
+    ).toEqual([]);
+
+    // 写错的形状不能被静默当成空结果——ADR 里的 direction_id 缺陷正是这样来的
+    await expect(
+      db.all("SELECT * FROM kb_chunk_vectors WHERE user_id = $1", ["u1"]),
+    ).rejects.toThrow(/不支持/);
+    await expect(
+      db.run("DELETE FROM kb_chunk_vectors WHERE user_id = $1 AND model = $2", ["u1", VECTOR_MODEL]),
+    ).rejects.toThrow(/不支持/);
+  });
+});
+
+describe("mcp_servers 内存实现", () => {
+  it("upsert 同键不新增行：label/enabled 更新、created_at 保留", async () => {
+    const db = await seedUser();
+
+    expect(await db.run(MCP_SERVER_SQL.upsert, mcpParams())).toBe(1);
+    expect(
+      await db.run(
+        MCP_SERVER_SQL.upsert,
+        mcpParams({
+          label: "新标签",
+          enabled: false,
+          allowed_tools_json: JSON.stringify(["list_docs", "search_docs"]),
+          updated_at: "2026-10-30T01:00:00.000Z",
+        }),
+      ),
+    ).toBe(1);
+
+    const rows = await db.all<{
+      label: string;
+      enabled: boolean;
+      allowed_tools_json: string;
+      created_at: string;
+      updated_at: string;
+    }>(MCP_SERVER_SQL.list, ["u1"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].label).toBe("新标签");
+    expect(rows[0].enabled).toBe(false);
+    expect(JSON.parse(rows[0].allowed_tools_json)).toEqual(["list_docs", "search_docs"]);
+    expect(rows[0].created_at).toBe("2026-10-30T00:00:00.000Z");
+    expect(rows[0].updated_at).toBe("2026-10-30T01:00:00.000Z");
+  });
+
+  it("按 user_id 隔离，one 按 (user_id, server_id) 取单条", async () => {
+    const db = await seedUser("u1");
+    await seedUser("u2");
+    await db.run(MCP_SERVER_SQL.upsert, mcpParams({ server_id: "s2", label: "二号" }));
+    await db.run(MCP_SERVER_SQL.upsert, mcpParams({ server_id: "s1" }));
+    await db.run(MCP_SERVER_SQL.upsert, mcpParams({ user_id: "u2", server_id: "s1", label: "别人的" }));
+
+    const list = await db.all<{ server_id: string }>(MCP_SERVER_SQL.list, ["u1"]);
+    expect(list.map((r) => r.server_id)).toEqual(["s1", "s2"]);
+
+    const one = await db.one<{ label: string }>(MCP_SERVER_SQL.byId, ["u1", "s2"]);
+    expect(one?.label).toBe("二号");
+    expect(await db.one(MCP_SERVER_SQL.byId, ["u1", "s9"])).toBeNull();
+  });
+
+  it("删除形状 mcp_servers(user_id,server_id)：只删该行并返回真实数量", async () => {
+    const db = await seedUser();
+    await db.run(MCP_SERVER_SQL.upsert, mcpParams({ server_id: "s1" }));
+    await db.run(MCP_SERVER_SQL.upsert, mcpParams({ server_id: "s2", label: "二号" }));
+
+    expect(await db.run(MCP_SERVER_SQL.deleteById, ["u1", "s1"])).toBe(1);
+    expect(await db.run(MCP_SERVER_SQL.deleteById, ["u1", "s1"])).toBe(0);
+
+    const rows = await db.all<{ server_id: string }>(MCP_SERVER_SQL.list, ["u1"]);
+    expect(rows.map((r) => r.server_id)).toEqual(["s2"]);
+  });
+});
+
+// ── ensureSchema 的 pgvector 降级 ────────────────────────────────
+
+function fakeDb(run: (sql: string) => Promise<number>): Db {
+  return {
+    run,
+    async all<T>() {
+      return [] as T[];
+    },
+    async one<T>() {
+      return null as T | null;
+    },
+  };
+}
+
+describe("ensureSchema 与 pgvector", () => {
+  it("扩展不可用：跳过 kb_chunk_vectors、其余表照建，只告警一次", async () => {
+    const executed: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const db = fakeDb(async (sql) => {
+        if (/create extension/i.test(sql)) {
+          throw new Error('permission denied to create extension "vector"');
+        }
+        executed.push(sql);
+        return 0;
+      });
+
+      await expect(__ensureSchemaForTests(db)).resolves.toBeUndefined();
+      // 再跑一次（模拟重启/重连）仍然不抛错，且不重复告警
+      await expect(__ensureSchemaForTests(db)).resolves.toBeUndefined();
+
+      expect(executed.some((sql) => /kb_chunk_vectors/i.test(sql))).toBe(false);
+      expect(executed.some((sql) => /create table if not exists mcp_servers/i.test(sql))).toBe(true);
+      expect(executed.some((sql) => /create table if not exists users/i.test(sql))).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("扩展可用但向量表建表失败：只告警，不让应用起不来", async () => {
+    const executed: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const db = fakeDb(async (sql) => {
+        if (/create table if not exists kb_chunk_vectors/i.test(sql)) {
+          throw new Error('type "vector" does not exist');
+        }
+        executed.push(sql);
+        return 0;
+      });
+
+      await expect(__ensureSchemaForTests(db)).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(executed.some((sql) => /create table if not exists mcp_servers/i.test(sql))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("先建扩展再建向量表（顺序不能反，否则 vector 类型不存在）", async () => {
+    const executed: string[] = [];
+    const db = fakeDb(async (sql) => {
+      executed.push(sql);
+      return 0;
+    });
+
+    await __ensureSchemaForTests(db);
+    const extensionAt = executed.findIndex((sql) => /create extension/i.test(sql));
+    const tableAt = executed.findIndex((sql) => /create table if not exists kb_chunk_vectors/i.test(sql));
+    expect(extensionAt).toBeGreaterThanOrEqual(0);
+    expect(tableAt).toBeGreaterThan(extensionAt);
+  });
+});
+
+// ── 迁移文件与迁移执行器 ─────────────────────────────────────────
+
+const MIGRATION_FILE = "0001_capability.sql";
+const migrationSql = readFileSync(
+  new URL(`../../db/migrations/${MIGRATION_FILE}`, import.meta.url),
+  "utf8",
+);
+
+const normalizeSql = (sql: string): string => sql.replace(/\s+/g, " ").trim().toLowerCase();
+
+describe(`${MIGRATION_FILE}`, () => {
+  const statements = splitSqlStatements(migrationSql);
+
+  it("逐条覆盖 SCHEMA，且 CREATE EXTENSION 是单独的第一条", () => {
+    const normalized = statements.map(normalizeSql);
+    expect(normalized[0]).toBe(normalizeSql(PGVECTOR_EXTENSION));
+    expect(statements.filter((stmt) => /create extension/i.test(stmt))).toHaveLength(1);
+    for (const stmt of SCHEMA) {
+      expect(normalized).toContain(normalizeSql(stmt));
+    }
+  });
+
+  it("不含 CONCURRENTLY（迁移在事务里执行）", () => {
+    expect(() => assertNoConcurrently(MIGRATION_FILE, statements)).not.toThrow();
+  });
+});
+
+describe("scripts/db-migrate 纯函数", () => {
+  it("splitSqlStatements 忽略注释、保留字符串与美元引用里的分号", () => {
+    const source = [
+      "-- 注释里的分号 ; 不算语句",
+      "CREATE TABLE a (x TEXT DEFAULT 'a;b');",
+      "/* 块注释 ; */",
+      "INSERT INTO a VALUES ($tag$ ; $tag$);",
+    ].join("\n");
+
+    const statements = splitSqlStatements(source);
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain("'a;b'");
+    expect(statements[1]).toContain("$tag$ ; $tag$");
+  });
+
+  it("pendingMigrations 按文件名排序并跳过已应用", () => {
+    const all = ["0003_c.sql", "0001_a.sql", "0002_b.sql"];
+    expect(pendingMigrations(all, [])).toEqual(["0001_a.sql", "0002_b.sql", "0003_c.sql"]);
+    expect(pendingMigrations(all, ["0001_a.sql", "0002_b.sql"])).toEqual(["0003_c.sql"]);
+  });
+
+  it("assertNoConcurrently 拒绝事务里的并发建索引", () => {
+    expect(() => assertNoConcurrently("x.sql", ["CREATE INDEX CONCURRENTLY i ON t(c)"])).toThrow(
+      /CONCURRENTLY/,
+    );
+    expect(() =>
+      assertNoConcurrently("x.sql", ["CREATE INDEX IF NOT EXISTS i ON t(c)"]),
+    ).not.toThrow();
+  });
+
+  it("loadPendingMigrations 读取真实迁移目录，已应用的不再返回", () => {
+    const plans = loadPendingMigrations(MIGRATIONS_DIR, []);
+    const files = plans.map((plan) => plan.file);
+    expect(files).toContain(MIGRATION_FILE);
+    expect(files).toEqual([...files].sort());
+
+    expect(loadPendingMigrations(MIGRATIONS_DIR, files)).toEqual([]);
   });
 });

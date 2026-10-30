@@ -9,8 +9,8 @@ flowchart TD
   Q["用户提问"] --> KP["知识点检索<br/>buildIndex(concepts) → BM25 top3"]
   Q --> UP["上传资料检索（本方向 chunks）"]
   UP --> B1["BM25 top20<br/>rag.ts search()"]
-  UP --> V1["向量 top20<br/>vector.ts topKNormalized()"]
-  V1 --> VS["向量来源<br/>kb.vectors（账号，游标分页）<br/>→ vectorCache（IndexedDB）<br/>→ /api/llm/embeddings 补算"]
+  UP --> V1["向量 top20<br/>/api/kb/similar 精确余弦"]
+  V1 --> VS["查询向量来源<br/>浏览器 bge-small-zh-v1.5（512 维）<br/>→ POST /api/kb/similar（只发向量）"]
   B1 --> RRF["RRF 融合<br/>k=60, weights 1:1, candidates 20"]
   V1 --> RRF
   RRF --> TOP["top3 + 相邻切块去重"]
@@ -31,7 +31,7 @@ flowchart TD
       BM25 top20 ─┐
                    ├─ RRF(k=60, 1:1, candidates=20) → top3 → 相邻去重
       向量 top20 ──┘
-      向量：kb.vectors（账号）→ vectorCache（IndexedDB）→ /api/llm/embeddings
+      向量：浏览器本地 512 维模型 → POST /api/kb/similar（精确余弦）
  → 注入 [kcId]/[资料n] → 模型流式回答
  → extractCitedKcIds（回复里出现 ∩ 检索结果）→ verifyClaims（逐字，只标注）
 ```
@@ -42,8 +42,8 @@ flowchart TD
 
 | 检索对象 | 路径 | 是否用向量 | 代码 |
 | --- | --- | --- | --- |
-| 内置 / 自定义方向的**知识点文档** | 现建 BM25 索引 → `search(index, question, 3)` | **否**，纯 BM25 | `app/tutor/page.tsx:338`、`:399` |
-| 用户**上传片段** | BM25 top20 + 向量 top20 → RRF → top3 → 相邻去重 | 有 embedding 时是；否则只 BM25 | `app/tutor/page.tsx:488-494`、`src/lib/hybridSearchClient.ts:104` |
+| 内置 / 自定义方向的**知识点文档** | 现建 BM25 索引 → `search(index, question, 3)` | **否**，纯 BM25 | `app/tutor/page.tsx:801`、`:1280` |
+| 用户**上传片段** | BM25 top20 + 向量 top20 → RRF → top3 → 相邻去重 | 登录且本地模型可用时是；否则只 BM25 | `app/tutor/page.tsx:875-1000`、`src/lib/hybrid.ts:40-52` |
 
 所以「RAG 是核心」指的是**证据链是核心**，不是「所有检索都已接向量」。内置知识点接向量仍是缺口（[§11](limits.md) 第 27 条）。
 
@@ -53,19 +53,21 @@ flowchart TD
 
 | 参数 | 值 | 位置 | 说明 |
 | --- | --- | --- | --- |
-| BM25 `K1` / `B` | 1.5 / 0.75 | `src/lib/rag.ts:89-90` | 词频饱和 / 长度归一化 |
+| BM25 `K1` / `B` | 1.5 / 0.75 | `src/lib/rag.ts:94-95` | 词频饱和 / 长度归一化 |
 | 单字 token 权重 | 0.35 | `src/lib/rag.ts:61` | 中文单字区分度低，压住跨领域误命中 |
 | BM25 最低分 `MIN_SCORE` | 0.5 | `src/lib/rag.ts:64` | 低于它不返回；宁可不给依据 |
-| 标题加权 `titleBoost` | 默认 1（生产不启用）；评测用 2 | `src/lib/rag.ts:179-207`、`scripts/eval-rag.ts:85` | 1 表示整段标题分支不执行，分数与旧实现逐位一致 |
+| 标题加权 `titleBoost` | 默认 1（生产不启用）；评测用 2 | `src/lib/rag.ts:178-207`、`scripts/eval-rag.ts:85` | 1 表示整段标题分支不执行，分数与旧实现逐位一致 |
 | 每路候选 | 20 | `src/lib/hybrid.ts:43`、`src/lib/hybridSearchClient.ts:30-33` | BM25 与向量各取 20 再融合 |
 | RRF 平滑常数 `k` | 60 | `src/lib/hybrid.ts:40` | 原论文默认值；rank1 与 rank3 相对差约 3.2% |
-| 两路权重 | 1 : 1 | `src/lib/hybridSearchClient.ts:140` | 缺省权重 1；非正数按 0 计（该路不参与） |
+| 两路权重 | 1 : 1 | `app/tutor/page.tsx:974` | 缺省权重 1；非正数按 0 计（该路不参与） |
 | 融合后注入条数 | 3 | `src/lib/hybrid.ts:46` | 3 条依据足够回答，再多稀释提示词 |
 | 向量余弦阈值 | 0.25 | `src/lib/hybrid.ts:49` | 低于它不进融合，不凑满 k 条 |
 | 相邻切块去重 | ≥20 码点重叠 | `src/lib/hybrid.ts:52` | 切块本身有 50 码点重叠 |
 | 嵌入输入上限 | 2000 码点 | `src/lib/embedding.ts:49` | 标题 + 空行 + 正文，按码点截断 |
-| 已知 embedding 维度 | OpenAI 1536 / 百炼 1024 | `src/lib/embedding.ts:27-46` | 模型名认不出来返回 null，宁可退回 BM25 |
-| 切块 | 500 字 + 50 字重叠 | `src/lib/knowledge.ts:17-38` | 常规块 ≤500，只有边界尾块可能 <80 |
+| 已知 embedding 维度 | 本地 512 / OpenAI 1536 / 百炼 1024 | `src/lib/embedding.ts:27-46`、`src/lib/vectorContracts.ts:24` | 只有 512 维本地模型会写进 `kb_chunk_vectors`；模型名认不出来返回 null，宁可退回 BM25 |
+| 向量批大小 | 每批 ≤32 条、≤512KB | `src/lib/vectorContracts.ts:27-30` | `POST /api/kb/vectors`；文档 PUT 不生成向量 |
+| 相似查询 | ≤64KB、默认 8 条、最多 50 条 | `src/lib/vectorContracts.ts:33-36` | `POST /api/kb/similar`；服务端精确余弦，向量表按 `user_id + direction_id + model` 过滤 |
+| 切块 | 500 字 + 50 字重叠 | `src/lib/knowledge.ts:30-54` | 常规块 ≤500，只有边界尾块可能 <80 |
 
 RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只按名次不看原始分数，所以 BM25 与余弦的尺度差异不影响融合；同一路重复 id 只计第一次，同分按 id 升序（`src/lib/hybrid.ts:81-114`）。检索结果必须带 `kcId` / `资料n`，否则回答无法引用到具体出处。
 
@@ -73,16 +75,16 @@ RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只�
 
 | 条件 | 检索行为 | 界面 / 响应 |
 | --- | --- | --- |
-| 未配置 embedding（llm 行无 `embeddingModel`） | 只走 BM25 | `retrievalNotice(false)`：「本次未使用语义检索（未配置 embedding 模型）」 |
-| `/api/llm/embeddings` 返回 404 / 503 | 本次只用 BM25，并把 `embeddingStatus` 记为 `unsupported` | 不弹错误框；显示「本次未使用语义检索」提示；后续不再请求 |
-| embedding 网络 / 5xx / 超时 | 本次只用 BM25，`embeddingStatus` 不变 | 显示同一提示；不把一次抖动永久记成「不支持」 |
-| 查询向量与索引模型不一致 | 放弃向量路 | 只 BM25；不把两种模型的向量混进同一索引 |
+| 未登录 | 上传片段只走 BM25；`/api/kb/similar` 需要会话 | 状态写「未登录：… 本次只用 BM25」 |
+| 本地模型缺失 / Worker 不可用 / 超时 | 本次只用 BM25 | 显示「本地向量不可用（原因），本次只用 BM25」 |
+| `/api/kb/similar` 返回非 2xx / 超时 | 本次只用 BM25 | 显示「相似检索失败（HTTP …），本次只用 BM25」 |
+| 没有 `DATABASE_URL`（内存后端） | 相似查询返回空数组 | 状态写「服务端暂无本方向向量」；BM25 仍可用 |
+| Postgres 未装 pgvector / 建表失败 | `kb_chunk_vectors` 被跳过，其余表照建 | 相似查询为空；BM25 仍可用 |
 | 向量维度不符 / 含非有限值 / 零范数 | 该片段跳过，不当作 0 分 | 无提示（逐条提示会刷屏） |
-| 所有向量分数 < 0.25 | 向量路为空，RRF 只剩 BM25 一路 | 同「未使用语义检索」的说明 |
+| 所有向量分数 < 0.25 | 向量路为空，RRF 只剩 BM25 一路 | 同「以 BM25 为主」的说明 |
 | BM25 分数 < 0.5 | 该文档不返回 | 可能 0 条依据，按「未找到依据」渲染 |
 | 两路皆空 | 返回 `[]`，不注入检索依据 | 导师回答没有检索片段；教材 / 上传 / 网络摘录与掌握度 / 题库解析仍可能拼装，界面必须把「有依据」与「无依据」分开 |
-| KB 远端不可用 / 未登录 | 只用本机片段；向量表为空 | `syncWarning` 说明「仅显示本机资料」 |
-| 片段补嵌入失败（单批超时） | 该批片段 `embedding` 落 null，BM25 仍可命中 | 无提示；不把坏向量写进索引 |
+| KB 远端不可用 | 只用本机片段；向量表为空 | `syncWarning` 说明「仅显示本机资料」 |
 | 引用校验失败（模型引了不存在的 id） | 引用列表为空 | 「本次回复未包含可核对的引用」 |
 
 **「两路皆空 → 拒答」的准确含义**：检索层不生成答案，也不伪造依据；它返回空列表，导师页按「没有检索到可引用的知识点」渲染，模型仍可能按自身知识回答——界面必须让「有依据」与「无依据」可区分。真正的「拒答」只发生在没有模型、走 `composeDeterministic` 且没有命中片段时：它不会编造出处。
@@ -90,18 +92,18 @@ RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只�
 ## 13.4 存储链路（一次上传到哪里）
 
 1. 浏览器解析文件（`pdf.ts` / `textFile.ts`）→ `knowledge.ts` 切块（500 + 50 重叠）。
-2. `getKbStorageForUser(userId)` 解析存储（`src/lib/kbRemote.ts:512`）：
+2. `getKbStorageForUser(userId)` 解析存储（`src/lib/kbRemote.ts:822`）：
    - 未登录 → `kbLocal.ts` 的 IndexedDB `alp-kb-v1`（`docs` / `chunks`，按 `directionId` 建索引）；
    - 已登录 → 复合存储：**本地先写**（单事务），成功后 `PUT /api/kb`；远端失败只记 `syncWarning`，不回滚本地（409 例外：会抛 `KbConflictError`，让界面提示刷新后重试）。
-3. 服务端 `putKbDocument`（`src/lib/kbServer.ts:450`）：CAS → upsert `kb_docs` → 补向量 → upsert `kb_chunks` → 删本次列表外的旧片段。向量以 JSON 文本存 `kb_chunks.embedding`，不引 pgvector；`embedding_dim` 校验维度。
-4. 读取：`GET /api/kb?directionId=` 回 docs + chunks（**不含向量**）；`?vectors=1&after=&limit=` 按 `chunk_id` 游标分页取向量（`src/lib/kbServer.ts:623`）。
-5. 检索时向量缓存：`useKnowledgeBase.ensureVectors()`（`src/lib/kbStore.ts:539`）→ `vectorCache.ensureVectors`（`src/lib/vectorCache.ts:111`）→ 缺失的经 `/api/llm/embeddings` 补算并写回 IndexedDB `alp-vectors-v1`。
+3. 服务端 `putKbDocument`（`src/lib/kbServer.ts:417`）：CAS → upsert `kb_docs` → upsert `kb_chunks` → 删本次列表外的旧片段。**文档 PUT 不再生成或补齐向量**；`kb_chunks.embedding` 的 TEXT 列只为旧数据 / 外部显式嵌入保留，新的 512 维向量走下一步。
+4. 向量写入：浏览器本地 Worker 用 `embedLocal` 生成 512 维向量，按每批 ≤32 条 `POST /api/kb/vectors`，服务端写 `kb_chunk_vectors`（`vector(512)`，按 `(user_id, chunk_id, model)` 主键，外键级联删除）。读取时浏览器只发查询向量到 `POST /api/kb/similar`，服务端 `JOIN kb_chunks` 过滤方向后按 `vec <=> $4::vector(512)` 精确排序，回 `chunkId + score`。
+5. 旧版 `GET /api/kb?directionId=&vectors=1&after=&limit=` 仍可按 `chunk_id` 游标分页读 `kb_chunks` 里的 TEXT 向量，供旧客户端 / 外部嵌入使用；新的本地 512 维检索不依赖它，也不再经过 `/api/llm/embeddings` 补算。
 
-**为什么不装向量数据库**：知识点文档只有几十 KB，上传片段最多 800 段 / 方向；进程内 BM25 与 `Float32Array` 余弦足够，且不增加运维与迁移成本。代价是向量检索在应用层做，跨方向不能共享索引，也没有 ANN 加速——这是当前规模下的取舍，不是通用方案。
+**为什么用 pgvector 窄表而不是给 `kb_chunks` 加列**：默认方向上限 50,000 段（`src/lib/knowledge.ts:48` 的 `MAX_DIRECTION_CHUNKS`，可用 `ALP_MAX_KB_DIRECTION_CHUNKS` 收紧）、查询必须带 `user_id + direction_id` 过滤；在常见课程资料的数百到数千段规模下，精确扫描远快于一次 HNSW 检索，且过滤选择性低时 HNSW 会降召回。窄表不动热表、删表即回滚，TEXT 列仍是旧数据的真相。代价是多一张表与一次 JOIN；只有 512 维本地模型享受 pgvector，外部 1024 / 1536 维没有收益。
 
 ## 数据表
 
-10 张表全部在 `src/lib/db.ts:781` 的 `SCHEMA` 常量里，进程首次 `getDb()` 时幂等执行。Postgres 与内存实现共用同一套 SQL 形状；内存实现的删除 / 分页分支必须逐条精确匹配（否则会静默返回 0 / `[]`）。
+12 张表全部在 `src/lib/db.ts:1014` 的 `SCHEMA` 常量里，进程首次 `getDb()` 时幂等执行；`db/migrations/0001_capability.sql` 是同一套 DDL 的可执行迁移版本。Postgres 与内存实现共用同一套 SQL 形状；内存实现的删除 / 分页分支必须逐条精确匹配（否则会静默返回 0 / `[]`）。
 
 | 表 | 用途 | 主键 | 关键列 / 加密 | 跨设备语义 |
 | --- | --- | --- | --- | --- |
@@ -113,7 +115,9 @@ RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只�
 | `direction_items` | 方向题目缓存 | `id`，`UNIQUE(direction_id, content_hash)` | `stem` / `options_json` / `answer_index` / `checks_json` / `source` / `status` | 服务端；公开方向题目匿名可读 |
 | `user_secrets` | 账号级供应商配置 | `(user_id, kind)` | **密文字段**：`secret_ct` / `secret_iv` / `secret_tag` / `secret_kid`；`secret_hint` 只存掩码；`options_json` 只存白名单字段 | 服务端；浏览器永远拿不到明文 |
 | `kb_docs` | 上传文档元数据 | `(user_id, doc_id)` | `title` / `file_name` / `kind` / `size` / `page_count` / `char_count` / `chunk_count` / `kc_ids_json` | 登录后本地 + 账号副本；不公开 / 不复制 |
-| `kb_chunks` | 上传片段 | `(user_id, chunk_id)`，外键 `(user_id, doc_id)` 级联 | `text` / 页码 / `embedding`（JSON 文本）/ `embedding_model` / `embedding_dim` | 同上；向量按游标分页取 |
+| `kb_chunks` | 上传片段 | `(user_id, chunk_id)`，外键 `(user_id, doc_id)` 级联 | `text` / 页码 / `embedding`（旧 TEXT 列，新路径不再写入）/ `embedding_model` / `embedding_dim` | 同上；旧向量仍可按游标分页取 |
+| `kb_chunk_vectors` | 512 维本地向量 | `(user_id, chunk_id, model)`，外键 `(user_id, chunk_id)` 级联 | `dim` / `vec vector(512)` / `updated_at`；不存 `direction_id`，方向过滤 JOIN `kb_chunks` | 登录后随片段写入；精确余弦查询；无 pgvector 时该表被跳过 |
+| `mcp_servers` | 用户自建 MCP 服务器 | `(user_id, server_id)` | `label` / `url` / `enabled` / `allowed_tools_json` / **鉴权头密文** `auth_ct/auth_iv/auth_tag/auth_kid/auth_hint` | 服务端；公开响应只回 `authHint` |
 | `memories` | 记忆卡 | `(user_id, mem_id)` | `payload`（整张卡 JSON）/ `kind` / `kc_id` / `status` / `updated_at` | 登录后 LWW 同步；`PUT` 不删行，删除显式 `DELETE` |
 
 ## 14.1 `user_secrets`：只回掩码，密钥 AES-256-GCM
@@ -135,7 +139,7 @@ RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只�
 | 教材 / 讲义 | `alp.materials.v1` | 仍只在本机（浏览器级键） | 换账号时清空；不随账号同步 |
 | 供应商密钥 | local `alp.*.v1` | `user_secrets` 密文 | 换账号清本机；服务端行保留 |
 
-**账号切换**：`planAccountTransition` 对「A→B / A→匿名」清空 learner、本机 KB、搜索 / 语音密钥、教材讲义；「匿名→B」保留并登记归属；登出无条件清空并删调用模式键（`src/lib/useAuth.ts:73-116`、`:239`）。服务端已保存的配置不会因切换被删除。
+**账号切换**：`planAccountTransition` 对「A→B / A→匿名」清空 learner、本机 KB、搜索 / 语音密钥、教材讲义；「匿名→B」保留并登记归属；登出无条件清空并删调用模式键（`src/lib/authStore.ts:177-218`、`:371`）。服务端已保存的配置不会因切换被删除。
 
 ## 14.3 内存实现的精确分支
 
@@ -154,7 +158,7 @@ RRF 公式：`score(id) = Σ weight_i / (k + rank_i)`，`rank` 从 1 起，只�
 | 向量分页 | `SELECT chunk_id, embedding, ... WHERE user_id = $1 AND direction_id = $2 AND chunk_id > $3 ORDER BY chunk_id LIMIT $4` | **先判 `chunk_id >`**，参数顺序固定 | 升序切片 |
 | 按文档列片段 | `SELECT ... WHERE user_id = $1 AND doc_id = $2 ORDER BY chunk_id` | 方向过滤可选，`order by chunk_id` 单独分支 | 行数组 |
 
-两个顺序是硬要求：`kb_docs` 先判 `doc_id` 再判 `direction_id`，否则「删一篇」会被当成「删整个方向」；`kb_chunks` 先判 `chunk_id` 再 `doc_id` 再 `direction_id`，三种键都含 `id =`，顺序错了会把「删一段」当成「删整篇」。分页必须先于方向过滤，否则游标永远推不动（`src/lib/db.ts:545-575`）。
+两个顺序是硬要求：`kb_docs` 先判 `doc_id` 再判 `direction_id`，否则「删一篇」会被当成「删整个方向」；`kb_chunks` 先判 `chunk_id` 再 `doc_id` 再 `direction_id`，三种键都含 `id =`，顺序错了会把「删一段」当成「删整篇」。分页必须先于方向过滤，否则游标永远推不动（`src/lib/db.ts:793-800`）。
 
 「静默成功」的四个出口是 `run` 末尾 `return 0`、`all` 末尾 `return []`、`one` 末尾 `return null`，以及 `ensureSchema` 吞掉「内存实现不认 CREATE TABLE」。这四处都靠 `db.test.ts` 的「写 → 读」成对断言与每条删除形状的返回值断言兜住，不靠肉眼。
 
@@ -212,7 +216,7 @@ ALP_EMBED_BASE_URL=... ALP_EMBED_API_KEY=... ALP_EMBED_MODEL=... \
 
 向量文件形状：`{ "documents": { "c01": [数字...] }, "queries": { "lit-01": [数字...] } }`；`queries` 可省略，缺的会用 embedding 端点补算。脚本同时校验总数、分类、语料与向量维度；缺向量时**不会**偷偷跳过，而是报错。
 
-## 15.4 本轮实跑
+## 15.4 本轮实跑（2026-10-30）
 
 ```text
 $ npm run eval:rag
@@ -266,9 +270,10 @@ EXIT=0
 3. **`outOfDomainEmpty = 1.000`**：注入前的域外门控（`passesRelevanceGate`，`src/lib/rag.ts:138-163`）把 10 条域外查询全部清空，`falseContextRate = 0`，同时 answer-absent 的 relatedHit 保持 1.000——门控只清「没有任何主题词」的查询。这是本轮修复的缺陷（上一轮 10 条域外查询全部返回了文档）。门控只覆盖内置知识点检索，上传资料的混合检索仍未测。
 4. **混合检索未测**：没有 `--vectors` 文件，也没有 `ALP_EMBED_*`。脚本如实打印「未测」并以 0 退出——没测就是没测，不编数字。原因写在这里，不写成「效果与 BM25 相当」。
 5. **发布门槛**（口径定义）：`recallAt3 ≥ 0.90`、`goldPhraseInFullText ≥ 0.95`、`outOfDomainEmpty ≥ 0.80`、`answerAbsentRelatedHit ≥ 0.90` 本轮均满足（四项均为 1.000）。
-6. **评测对象不是上传资料**：50 条跑的是 `kbDocuments` 40 篇知识点；生产里接 RRF 的是用户上传片段。上传资料的混合检索目前没有评测集，只有单测覆盖 `createRetriever` / `retrieveUploadsHybrid` 的排序与降级。
+6. **评测对象不是上传资料**：50 条跑的是 `kbDocuments` 40 篇知识点；生产里接 RRF 的是用户上传片段。上传资料的混合检索目前没有评测集，只有单测覆盖本地嵌入失败降级、`/api/kb/similar` 契约与 RRF 排序。
+7. **硬集未做**：chunk 级 hard 集（约 40 条、500 字切块）、四臂对照（无检索 / BM25 / 纯向量 / RRF）、nDCG@10、recall@20、词面覆盖率与配对 bootstrap 区间都还没有落地。因此本节的 1.000 只能当回归门槛，不能当「向量 / RRF 有收益」的证据。
 
-## 15.6 外部端点真机探测（2026-10-29）
+## 15.6 外部端点真机探测（2026-10-29，上一轮）
 
 脚本：`scripts/probe-external.ts`，入口 `npm run probe:external`；单端点开关 `--deepseek-search` / `--mimo` / `--embedding`。输出纪律：只打印 status、content-type、顶层 keys、结果数、音频字节数与首 4 字节；不打印密钥、Authorization、base64 或完整响应正文。退出码：0 = 跑完（含「未验证」），1 = 有凭据但探测失败，2 = 参数错误。
 
@@ -295,4 +300,4 @@ POST https://api.deepseek.com/v1/tools/search
 EXIT=0
 ```
 
-结论：**三个端点本轮都没有完成带凭据的成功调用**，所以不能写「DeepSeek 搜索已验证」「mimo 已验证」「embedding 已验证」。`.env.local` 里的 `ALP_E2E_LLM_*` 指向中转域 `api.jasonsome.cn`，脚本坚持「只有 base_url 主机是 `api.deepseek.com` 才把该 key 当 DeepSeek 搜索密钥」，不拿中转密钥请求官方端点。完整记录（含无凭据 curl 的 401、MiMo 假凭据失败路径）在 `docs/verification/2026-10-29-external-endpoints.md`。
+结论：**三个端点上一轮都没有完成带凭据的成功调用**，所以不能写「DeepSeek 搜索已验证」「mimo 已验证」「embedding 已验证」。`.env.local` 里的 `ALP_E2E_LLM_*` 指向中转域 `api.jasonsome.cn`，脚本坚持「只有 base_url 主机是 `api.deepseek.com` 才把该 key 当 DeepSeek 搜索密钥」，不拿中转密钥请求官方端点。完整记录（含无凭据 curl 的 401、MiMo 假凭据失败路径）在 `docs/verification/2026-10-29-external-endpoints.md`。

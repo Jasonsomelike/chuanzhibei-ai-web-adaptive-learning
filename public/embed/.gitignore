@@ -1,0 +1,5 @@
+# 本地嵌入静态资产（约 46MB）由 scripts/fetch-model.mjs 下载并校验 SHA-256。
+# 按 ADR-0002 阶段 3：不进 Next bundle，也不进 git；部署前跑一次预取即可。
+*
+!.gitignore
+!README.md

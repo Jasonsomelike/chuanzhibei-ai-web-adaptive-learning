@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { useHoverLift, useStaggerIn } from "@/components/motion";
 import { MARKET_RETRY_LABEL, marketStatusOf } from "@/components/market-status";
 import { useAuth } from "@/lib/useAuth";
 
@@ -37,6 +38,15 @@ export default function MarketPage() {
   const [q, setQ] = useState("");
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [copying, setCopying] = useState<string | null>(null);
+
+  /*
+   * 展示层动效：列表是异步来的，useStaggerIn 每帧只给「还没播过」的卡片
+   * 组一批入场；useHoverLift 在 hover 设备上给卡片 2px 抬升，移出即回落。
+   * 两者都在 reduced-motion 下直接跳过，不注册任何 tween / 监听。
+   */
+  const mainRef = useRef<HTMLElement>(null);
+  useStaggerIn(mainRef);
+  useHoverLift(mainRef);
 
   const load = useCallback(async (query: string) => {
     setLoading(true);
@@ -96,8 +106,8 @@ export default function MarketPage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6">
+      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+        <div className="mb-6" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">方向市场</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
             其他人公开的学习方向。选用后会复制一份到你名下，可以自己改。
@@ -105,7 +115,7 @@ export default function MarketPage() {
         </div>
 
         {/* 搜索 */}
-        <Card className="mb-5">
+        <Card className="mb-5" motion="search">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -146,6 +156,7 @@ export default function MarketPage() {
 
         {message ? (
           <Card
+            motion="notice"
             className={`mb-5 ${
               message.kind === "ok"
                 ? "border-[var(--good)] bg-[var(--good-soft)]"
@@ -174,7 +185,8 @@ export default function MarketPage() {
           {items.length > 0 ? (
             <div className="space-y-2">
               {items.map((d) => (
-                <Card key={d.id}>
+                <div key={d.id} data-motion="market-card" data-motion-hover>
+                <Card>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -198,10 +210,11 @@ export default function MarketPage() {
                     </button>
                   </div>
                 </Card>
+                </div>
               ))}
             </div>
           ) : status.kind === "error" ? (
-            <Card className="border-[var(--bad)] bg-[var(--bad-soft)]">
+            <Card motion="state" className="border-[var(--bad)] bg-[var(--bad-soft)]">
               <p role="alert" className="text-sm text-[var(--bad)]">
                 {status.message}
               </p>
@@ -216,7 +229,7 @@ export default function MarketPage() {
               ) : null}
             </Card>
           ) : status.kind === "empty" ? (
-            <Card>
+            <Card motion="state">
               <p className="text-sm text-[var(--ink-soft)]">{status.message}</p>
               {status.showCreate ? (
                 <Link
@@ -228,7 +241,7 @@ export default function MarketPage() {
               ) : null}
             </Card>
           ) : (
-            <Card>
+            <Card motion="state">
               <p role="status" className="text-sm text-[var(--ink-soft)]">
                 {status.message}
               </p>
@@ -236,7 +249,7 @@ export default function MarketPage() {
           )}
         </section>
 
-        <div className="mt-6 flex flex-wrap items-center gap-3 text-sm">
+        <div className="mt-6 flex flex-wrap items-center gap-3 text-sm" data-motion="links">
           {user ? (
             <Link href="/directions" className="underline">
               管理我的方向

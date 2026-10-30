@@ -30,6 +30,7 @@ import type { ProviderConfig } from "@/lib/provider";
 import type { ThinkingStrength } from "@/lib/reasoning";
 import type { Claim, ClaimVerdict, Verdict } from "@/lib/verify";
 import { stripNonEvidenceBlocks } from "@/lib/verify";
+import { answerShapeBlock, bannedPhrasesBlock, uncertaintyBlock } from "@/lib/tutorPersona";
 
 export interface CitationRef {
   readonly kcId: string;
@@ -329,6 +330,13 @@ export function buildTutorUserPrompt(input: TutorPromptInput): string {
   const web = input.webContext.trim();
   if (web !== "") blocks.push(web);
 
+  /*
+   * 回答结构与禁语放在消息末尾：页面即使还在用旧 system 提示词，
+   * 模型也能看到与 tutorPersona 同一份结构。页面把 system 换成
+   * tutorSystemPrompt 后这两块只是重复一次，口径不会分叉。
+   */
+  blocks.push(answerShapeBlock(), bannedPhrasesBlock(), uncertaintyBlock());
+
   return blocks.join("\n\n");
 }
 
@@ -385,6 +393,11 @@ export interface ComposeInput {
   readonly excerpts: ReadonlyMap<string, MaterialExcerpt>;
   readonly uploads: readonly UploadHit[];
   readonly web: readonly WebHit[];
+  /**
+   * 未决口径分歧的现成说明（describeConflict 的输出）。
+   * 有值时按「两说并存」写进解释段：无模型路径同样不替学生选边。
+   */
+  readonly conflicts?: readonly string[];
 }
 
 function clipText(text: string, maxChars: number): string {
@@ -392,11 +405,39 @@ function clipText(text: string, maxChars: number): string {
   return points.length <= maxChars ? points.join("") : `${points.slice(0, maxChars).join("")}…`;
 }
 
+/** 按码点裁剪，省略号算在预算内——结论必须真的落在 40 字以内。 */
+function clipChars(text: string, maxChars: number): string {
+  const points = Array.from(text.trim());
+  if (points.length <= maxChars) return points.join("");
+  return `${points.slice(0, Math.max(0, maxChars - 1)).join("")}…`;
+}
+
+/** 取第一句（句末标点保留），再按码点裁剪。 */
+function firstSentenceOf(text: string, maxChars: number): string {
+  const clean = text.trim().replace(/\s+/g, " ");
+  const match = clean.match(/[^。！？!?；;\n]+[。！？!?]?/);
+  return clipChars(match?.[0] ?? clean, maxChars);
+}
+
+/** 没有教材依据时的三种声明，与 grounding 的口径一致：都要说明「不是来自你的教材」。 */
+const KNOWLEDGE_ONLY_DECLARATION = "以下内容不是来自你的教材，只是课程知识点摘要。";
+const WEB_ONLY_DECLARATION = "以下内容不是来自你的教材，网络结果也未经核对。";
+const ABSENT_DECLARATION = "你的教材 / 资料里没有找到相关内容，无法据此回答。";
+
+/** 无模型路径实际写出的声明句；评测要拿它核对「声明是否在结论之前」。 */
+export const COMPOSED_DECLARATIONS = {
+  knowledgeOnly: KNOWLEDGE_ONLY_DECLARATION,
+  webOnly: WEB_ONLY_DECLARATION,
+  absent: ABSENT_DECLARATION,
+} as const;
+
 /**
- * 无模型时的回答：检索结果 + 教材摘录 + 上传片段 + 网络摘录 + 掌握度数值。
+ * 无模型时的回答：结构、声明、例子与下一步与模型路径共用一套。
  *
  * 每一类来源都单独成段并标清「是否核对」：教材摘录优先，
  * 上传资料只在本浏览器可见，网络结果未核对，三者不能混成一种口径。
+ * 正文按 tutorPersona 的回答结构写（声明 → 结论 → 解释 → 例子 → 下一步），
+ * 原文清单放进「——」之后的附录，避免把参考材料读成回答本身。
  */
 export function composeDeterministic(input: ComposeInput): {
   readonly text: string;
@@ -404,10 +445,10 @@ export function composeDeterministic(input: ComposeInput): {
 } {
   const byId = new Map(input.mastery.map((state) => [state.kcId, state] as const));
   const sources: string[] = [];
-  const sections: string[] = [];
+  const appendix: string[] = [];
 
   if (input.docs.length === 0) {
-    sections.push(`课程知识库没有检索到与「${input.question}」直接相关的知识点。`);
+    // 没有知识点时不放「参考材料」：正文已经说明资料没有，重复一遍只会像凑字数。
   } else {
     for (const doc of input.docs) {
       const state = byId.get(doc.kcId);
@@ -429,7 +470,7 @@ export function composeDeterministic(input: ComposeInput): {
       }
       const body = excerpt ? excerpt.text : doc.snippet;
 
-      sections.push(`**${doc.title}** [${doc.kcId}]\n${sourceLine}\n${body}\n${mastery}`);
+      appendix.push(`**${doc.title}** [${doc.kcId}]\n${sourceLine}\n${body}\n${mastery}`);
     }
   }
 
@@ -438,7 +479,7 @@ export function composeDeterministic(input: ComposeInput): {
       (hit, index) =>
         `[资料${index + 1}] ${uploadCitationLabel(hit)}\n${clipText(hit.chunk.text, 400)}`,
     );
-    sections.push(`**上传资料（本浏览器，未核对）**\n${blocks.join("\n\n")}`);
+    appendix.push(`**上传资料（本浏览器，未核对）**\n${blocks.join("\n\n")}`);
   }
 
   if (input.web.length > 0) {
@@ -447,24 +488,120 @@ export function composeDeterministic(input: ComposeInput): {
         ? `[网络${hit.ref}] ${hit.label}`
         : `[网络${hit.ref}] ${hit.label}\n${hit.snippet}`,
     );
-    sections.push(`**网络检索结果（外部网页，未核对）**\n${blocks.join("\n\n")}`);
+    appendix.push(`**网络检索结果（外部网页，未核对）**\n${blocks.join("\n\n")}`);
   }
 
-  const hasMaterial = input.docs.some((doc) => input.excerpts.has(doc.kcId));
+  const hasExcerpt = input.docs.some((doc) => input.excerpts.has(doc.kcId));
+  const hasUpload = input.uploads.length > 0;
+  const hasWeb = input.web.length > 0;
+  // 与 buildAnswerPlan 的 materialHits 口径一致：教材摘录或上传资料命中才算有依据。
+  const grounded = hasExcerpt || hasUpload;
+
+  const declaration = grounded
+    ? null
+    : input.docs.length > 0
+      ? KNOWLEDGE_ONLY_DECLARATION
+      : hasWeb
+        ? WEB_ONLY_DECLARATION
+        : ABSENT_DECLARATION;
+
+  const names = input.docs
+    .slice(0, 2)
+    .map((doc) => doc.title)
+    .join("、");
+  const conclusion = clipChars(
+    input.docs.length > 0
+      ? hasExcerpt
+        ? `找到 ${input.docs.length} 个知识点，附教材摘录：${names}。`
+        : `找到 ${input.docs.length} 个知识点，只有摘要：${names}。`
+      : hasUpload
+        ? `上传资料里有 ${input.uploads.length} 段可用原文。`
+        : hasWeb
+          ? `资料里没有，只有 ${input.web.length} 条未核对网络线索。`
+          : "资料里没有这条的答案，我不确定。",
+    40,
+  );
+
+  const explanationParts: string[] = [];
+  if (input.docs.length > 0) {
+    explanationParts.push(
+      hasExcerpt
+        ? "下面按知识点列出出处、原文与你的掌握度；摘录是教材口径，检索摘要只是知识点文档。"
+        : "下面按知识点列出摘要与你的掌握度；教材 / 讲义里没有对应摘录，这些不是教材原文。",
+    );
+  } else if (hasUpload) {
+    explanationParts.push("这些片段只在本浏览器可见，不是公开教材；页码以上传解析为准。");
+  } else if (hasWeb) {
+    explanationParts.push("网络结果只是外部线索，未核对，不能当成教材结论。");
+  } else {
+    explanationParts.push(
+      `课程知识库没有检索到与「${input.question}」直接相关的知识点，这里不编造教材内容。`,
+    );
+  }
+  const conflictNotes = (input.conflicts ?? []).filter((note) => note.trim() !== "");
+  if (conflictNotes.length > 0) {
+    explanationParts.push(`两说并存：${conflictNotes.join("；")}。`);
+  }
+
+  const excerptDoc = input.docs.find((doc) => input.excerpts.has(doc.kcId));
+  let example: string;
+  if (excerptDoc) {
+    const excerpt = input.excerpts.get(excerptDoc.kcId) as MaterialExcerpt;
+    example = `${citationLabel(excerpt)}：「${firstSentenceOf(excerpt.text, 60)}」`;
+  } else if (input.docs.length > 0) {
+    const doc = input.docs[0];
+    example = `知识点「${doc.title}」的摘要：「${firstSentenceOf(doc.snippet, 60)}」`;
+  } else if (hasUpload) {
+    const hit = input.uploads[0];
+    const body = firstSentenceOf(hit.chunk.text, 60);
+    const label = `[资料1] ${uploadCitationLabel(hit)}`;
+    example = body === "" ? label : `${label}：「${body}」`;
+  } else if (hasWeb) {
+    const hit = input.web[0];
+    const body = firstSentenceOf(hit.snippet, 60);
+    const label = `[网络${hit.ref}] ${hit.label}`;
+    example = body === "" ? `${label}（未核对）` : `${label}：「${body}」（未核对）`;
+  } else {
+    example = "本次没有可引用的原文，不给例子。";
+  }
+
+  const nextStep =
+    input.docs.length > 0
+      ? `先读上面摘录，再去「诊断」做 3 道${input.docs[0].title}的题，检验是不是真会了。`
+      : hasUpload
+        ? "回到上传讲义对应页核对这段原文，再把例题第 2 步自己重写一遍。"
+        : hasWeb
+          ? "拿这页和教材同一主题对照，确认后再采用。"
+          : "换成更具体的知识点名再问，或去「诊断」做一次测评定位薄弱点。";
+
+  const answerLines: string[] = [];
+  if (declaration !== null) answerLines.push(declaration);
+  answerLines.push(
+    `结论：${conclusion}`,
+    `解释：${explanationParts.join("")}`,
+    `例子：${example}`,
+    `下一步：${nextStep}`,
+  );
+
   const origins = ["课程知识库"];
-  if (input.uploads.length > 0) origins.push("上传资料");
-  if (input.web.length > 0) origins.push("网络检索");
+  if (hasUpload) origins.push("上传资料");
+  if (hasWeb) origins.push("网络检索");
   const originText =
     origins.length === 1
       ? origins[0]
       : `${origins.slice(0, -1).join("、")}与${origins[origins.length - 1]}`;
   const footer =
     `（以上内容由${originText}直接拼装，没有经过模型改写。` +
-    (hasMaterial ? "教材 / 讲义摘录优先；" : "") +
-    (input.web.length > 0 ? "网络结果未核对，不能当成教材结论。" : "") +
+    (hasExcerpt ? "教材 / 讲义摘录优先；" : "") +
+    (hasWeb ? "网络结果未核对，不能当成教材结论。" : "") +
     "）";
 
-  return { text: `${sections.join("\n\n")}\n\n${footer}`, sources };
+  const appendixText =
+    appendix.length > 0
+      ? `\n\n——\n参考材料（原文，未改写）\n${appendix.join("\n\n")}`
+      : "";
+
+  return { text: `${answerLines.join("\n")}${appendixText}\n\n${footer}`, sources };
 }
 
 // ── 流式失败与思考状态 ────────────────────────────────────────────

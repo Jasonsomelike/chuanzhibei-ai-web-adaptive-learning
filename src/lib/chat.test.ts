@@ -162,6 +162,78 @@ describe("callChatStream", () => {
     expect(result.finishReason).toBe("length");
   });
 
+  it("纯 tool_calls 流不判空，arguments 跨 chunk 分片按 index 拼好", async () => {
+    const full =
+      sse({
+        choices: [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_weather", arguments: "" },
+                },
+              ],
+            },
+          },
+        ],
+      }) +
+      sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"city"' } }] } }] }) +
+      sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ":" } }] } }] }) +
+      sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"北京"}' } }] } }] }) +
+      sse({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }) +
+      "data: [DONE]\n\n";
+    stubFetch(() => sseResponse(full));
+
+    const fragments: string[] = [];
+    const result = await callChatStream(provider(), { user: "查天气" }, {
+      onToolCall: (delta) => {
+        expect(delta.index).toBe(0);
+        if (delta.arguments !== undefined) fragments.push(delta.arguments);
+      },
+    });
+
+    expect(result.text).toBe("");
+    expect(result.reasoning).toBe("");
+    expect(result.finishReason).toBe("tool_calls");
+    expect(result.toolCalls).toEqual([
+      { id: "call_1", name: "get_weather", arguments: '{"city":"北京"}' },
+    ]);
+    expect(fragments.join("")).toBe('{"city":"北京"}');
+  });
+
+  it("文本与工具调用混合的流：正文照常返回，工具调用同时可用", async () => {
+    const full =
+      sse({
+        choices: [
+          {
+            delta: {
+              content: "我先查一下",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_2",
+                  type: "function",
+                  function: { name: "get_time", arguments: "{}" },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }) + "data: [DONE]\n\n";
+    stubFetch(() => sseResponse(full));
+
+    const result = await callChatStream(provider(), { user: "现在几点" });
+
+    expect(result.text).toBe("我先查一下");
+    expect(result.finishReason).toBe("tool_calls");
+    expect(result.toolCalls).toEqual([{ id: "call_2", name: "get_time", arguments: "{}" }]);
+  });
+
   it("思考字段被 400 拒绝时只降级一次，降级请求恢复 temperature 且不再带思考字段", async () => {
     const calls = stubFetch((_url, init) => {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -335,6 +407,52 @@ describe("callChat", () => {
     expect((err as ChatError).responseBody).toBe("bad request");
     // 没带思考字段被 400，归因是 other（不是思考参数的锅）
     expect((err as ChatError).downgradeReason).toBe("other");
+  });
+
+  it("非流式响应取出 tool_calls，正文为空也不判 empty", async () => {
+    stubFetch(() =>
+      jsonResponse({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_weather", arguments: '{"city":"北京"}' },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+    );
+
+    const result = await callChat(provider(), { user: "查天气" });
+
+    expect(result.text).toBe("");
+    expect(result.finishReason).toBe("tool_calls");
+    expect(result.toolCalls).toEqual([
+      { id: "call_1", name: "get_weather", arguments: '{"city":"北京"}' },
+    ]);
+  });
+
+  it("Anthropic 直连收到 tools 时抛 unsupported，且不发出请求", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "不应该到这里" } }] }),
+    );
+
+    const err = await callChat(provider({ kind: "anthropic" }), {
+      user: "查天气",
+      tools: [{ type: "function", function: { name: "get_weather" } }],
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatError);
+    expect((err as ChatError).kind).toBe("unsupported");
+    expect((err as ChatError).message).toContain("不支持工具调用");
+    expect(calls).toHaveLength(0);
   });
 
   it("忽略 provider.thinking：只有请求显式指定档位才发送思考字段", async () => {
@@ -619,6 +737,38 @@ describe("server 模式请求形状", () => {
     const bare = bodyOf(calls[1]);
     expect(bare.jsonMode).toBeUndefined();
     expect(bare.purpose).toBeUndefined();
+  });
+
+  it("server 模式把 tools 与 toolChoice 写进请求体，缺省不写", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "好" }, finish_reason: "stop" }] }),
+    );
+    const tools = [{ type: "function" as const, function: { name: "get_weather" } }];
+
+    await callChat(serverProvider(), { user: "查天气", tools, toolChoice: "auto" });
+    const withTools = bodyOf(calls[0]);
+    expect(withTools.tools).toEqual(tools);
+    expect(withTools.toolChoice).toBe("auto");
+
+    await callChat(serverProvider(), { user: "问" });
+    const bare = bodyOf(calls[1]);
+    expect(bare.tools).toBeUndefined();
+    expect(bare.toolChoice).toBeUndefined();
+  });
+
+  it("server 模式 Anthropic + tools 明确报 unsupported，且不发出请求", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ choices: [{ message: { content: "不应该到这里" } }] }),
+    );
+
+    const err = await callChat(serverProvider({ kind: "anthropic" }), {
+      user: "查天气",
+      tools: [{ type: "function", function: { name: "get_weather" } }],
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatError);
+    expect((err as ChatError).kind).toBe("unsupported");
+    expect(calls).toHaveLength(0);
   });
 });
 

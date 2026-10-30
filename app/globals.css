@@ -228,9 +228,19 @@ body {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /*
+   * GSAP 的动效容器统一带 data-motion。JS 侧在 reduce 命中时根本不建 tween，
+   * 这里再兜一层：即使动画跑到一半用户切到「减少动态效果」，位移也立刻归零，
+   * 元素停在终态（transform: none 即布局位置）。只碰 transform，不改尺寸与可点区域。
+   */
+  [data-motion] {
+    transform: none !important;
   }
 }
 

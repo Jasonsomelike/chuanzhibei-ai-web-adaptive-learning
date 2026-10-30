@@ -15,8 +15,17 @@
  */
 
 import { getDefaultKbStorage } from "@/lib/kbLocal";
+import { embeddingInput } from "@/lib/embedding";
+import {
+  LOCAL_EMBED_DIM,
+  LOCAL_EMBED_MODEL,
+  embedLocal,
+  type EmbedLocalResult,
+} from "@/lib/embedLocal";
 import type { UploadChunk, UploadDoc } from "@/lib/knowledge";
 import type { DirectionKb, KbStorage, KbStorageEstimate, KbWriteOptions } from "@/lib/kbStore";
+// 只导入类型：vectorContracts 的 zod schema 不应进入客户端 chunk
+import type { KbVectorItem } from "@/lib/vectorContracts";
 
 // ── 常量与类型 ────────────────────────────────────────────────────
 
@@ -40,6 +49,60 @@ export interface KbVectorField {
   readonly embeddingDim: number;
 }
 
+/**
+ * 本地向量同步状态。UI 直接展示，不需要知道 Worker / 批大小 / 路由细节：
+ *   idle      还没触发
+ *   loading   正在读远端已有的 chunkId
+ *   embedding 本地模型正在算缺失向量
+ *   uploading 正在分批 POST /api/kb/vectors
+ *   ready     本方向已有的 + 新上传的向量都可用
+ *   unavailable 任何一步失败；检索只用 BM25，文本功能不受影响
+ */
+export type KbVectorSyncStatus =
+  | "idle"
+  | "loading"
+  | "embedding"
+  | "uploading"
+  | "ready"
+  | "unavailable";
+
+export interface KbVectorSyncState {
+  readonly status: KbVectorSyncStatus;
+  /** 已完成的条数（embedding 阶段为已算完，uploading 阶段为已上传）。 */
+  readonly done: number;
+  /** 本次需要处理的条数；loading 阶段为 0。 */
+  readonly total: number;
+  /** 降级原因或部分成功的说明；ready 且无异常时为 null。 */
+  readonly message: string | null;
+}
+
+export const IDLE_VECTOR_SYNC: KbVectorSyncState = Object.freeze({
+  status: "idle",
+  done: 0,
+  total: 0,
+  message: null,
+});
+
+/** 可注入的本地嵌入函数；默认走 Worker，单测注入假实现。 */
+export type KbEmbedFn = (
+  texts: readonly string[],
+  signal?: AbortSignal,
+) => Promise<EmbedLocalResult>;
+
+/** 与 vectorContracts.KB_VECTOR_BATCH_MAX 对齐；客户端不引 zod 契约层。 */
+const VECTOR_UPLOAD_BATCH_MAX = 32;
+
+/** 本地推理单批条数；比上传批更小，避免一次性占用过多内存。 */
+const VECTOR_EMBED_BATCH_MAX = 16;
+
+function vectorBatches(items: readonly KbVectorItem[]): KbVectorItem[][] {
+  const out: KbVectorItem[][] = [];
+  for (let start = 0; start < items.length; start += VECTOR_UPLOAD_BATCH_MAX) {
+    out.push(items.slice(start, start + VECTOR_UPLOAD_BATCH_MAX));
+  }
+  return out;
+}
+
 export type KbFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface RemoteKbStorageOptions {
@@ -47,10 +110,14 @@ export interface RemoteKbStorageOptions {
   readonly fetchImpl?: KbFetch;
 }
 
-/** 远端适配器多出来的能力：整方向快照、向量分页、可返回服务端版本的写入。 */
+/** 远端适配器多出来的能力：整方向快照、向量读取/写入、可返回服务端版本的写入。 */
 export interface KbRemoteStorage extends KbStorage {
   loadDirection(directionId: string): Promise<DirectionKb>;
   loadVectors(directionId: string): Promise<readonly KbVectorField[]>;
+  /** 已写入 kb_chunk_vectors 的 chunkId；用于跳过重复本地嵌入。 */
+  loadVectorChunkIds(directionId: string): Promise<readonly string[]>;
+  /** 分批上传本地向量；一批 ≤32 条由调用方保证。 */
+  putVectors(vectors: readonly KbVectorItem[]): Promise<void>;
   /** 与 putDocWithChunks 相同，但返回服务端回写的文档（updatedAt 是下一次 CAS 的基准）。 */
   putDoc(
     doc: UploadDoc,
@@ -59,9 +126,20 @@ export interface KbRemoteStorage extends KbStorage {
   ): Promise<UploadDoc>;
 }
 
-/** 复合存储多出来的能力：向量读取与同步告警。 */
+/** 复合存储多出来的能力：向量读取、本地嵌入同步与同步告警。 */
 export interface KbSyncedStorage extends KbStorage {
   loadVectors(directionId: string): Promise<readonly KbVectorField[]>;
+  /**
+   * 读取远端已有 chunkId → 本地嵌入缺口 → 分批上传。
+   * 永不抛异常：任何失败都变成 status="unavailable" 的状态对象。
+   */
+  syncVectors(directionId: string): Promise<KbVectorSyncState>;
+  /** 当前方向最近一次的同步状态；没有触发过时是 idle。 */
+  vectorSyncState(directionId: string): KbVectorSyncState;
+  /** 订阅状态变化；返回取消函数。UI 用它显示 loading/embedding/uploading。 */
+  onVectorSync(
+    listener: (directionId: string, state: KbVectorSyncState) => void,
+  ): () => void;
   /** 最近一次远端操作的失败说明；null 表示没有失败。 */
   syncWarning(): string | null;
 }
@@ -175,6 +253,18 @@ function parseVectors(raw: unknown): KbVectorField[] {
     out.push({ id, embedding, embeddingModel: model, embeddingDim: dim });
   }
   return out;
+}
+
+/** GET /api/kb/vectors 的 chunkIds；非字符串与空串直接丢弃。 */
+function parseVectorChunkIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const ids: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (id !== "") ids.push(id);
+  }
+  return [...new Set(ids)];
 }
 
 // ── 远端适配器 ────────────────────────────────────────────────────
@@ -307,6 +397,23 @@ export function createRemoteKbStorage(options: RemoteKbStorageOptions = {}): KbR
       }
       return out;
     },
+
+    /** 已写入 pgvector 的 chunkId；方向过滤由服务端 JOIN kb_chunks 完成。 */
+    async loadVectorChunkIds(directionId) {
+      const params = new URLSearchParams({ directionId, model: LOCAL_EMBED_MODEL });
+      const res = await request(`/api/kb/vectors?${params.toString()}`, { cache: "no-store" });
+      const body = await readJson(res as Response);
+      return parseVectorChunkIds(isRecord(body) ? body.chunkIds : null);
+    },
+
+    /** 一批 ≤32 条；这里不自行切分，调用方负责 vectorBatches。 */
+    async putVectors(vectors) {
+      await request("/api/kb/vectors", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: LOCAL_EMBED_MODEL, vectors }),
+      });
+    },
   };
 }
 
@@ -333,14 +440,25 @@ function mergeChunks(
   return [...byId.values()];
 }
 
+export interface SyncedKbStorageOptions {
+  /** 覆盖本地嵌入实现；单测注入假函数，浏览器里缺省走 embedLocal。 */
+  readonly embed?: KbEmbedFn;
+}
+
 export function createSyncedKbStorage(
   local: KbStorage,
   remote: KbRemoteStorage,
+  options: SyncedKbStorageOptions = {},
 ): KbSyncedStorage {
   let warning: string | null = null;
   /** 已经完成首次回传的方向；同一会话不再重复推。 */
   const firstSynced = new Set<string>();
   const inflight = new Map<string, Promise<DirectionKb>>();
+  /** 方向 → 最近一次本地向量同步状态。 */
+  const vectorStates = new Map<string, KbVectorSyncState>();
+  const vectorInflight = new Map<string, Promise<KbVectorSyncState>>();
+  const vectorListeners = new Set<(directionId: string, state: KbVectorSyncState) => void>();
+  const embed: KbEmbedFn = options.embed ?? ((texts, signal) => embedLocal(texts, signal));
 
   function markWarning(err: unknown): void {
     warning = remoteWarning(err);
@@ -348,6 +466,190 @@ export function createSyncedKbStorage(
 
   function clearWarning(): void {
     warning = null;
+  }
+
+  function setVectorState(directionId: string, state: KbVectorSyncState): KbVectorSyncState {
+    vectorStates.set(directionId, state);
+    for (const listener of vectorListeners) {
+      try {
+        listener(directionId, state);
+      } catch {
+        // UI 订阅抛错不能影响同步本身
+      }
+    }
+    return state;
+  }
+
+  function unavailable(directionId: string, message: string): KbVectorSyncState {
+    return setVectorState(directionId, {
+      status: "unavailable",
+      done: 0,
+      total: 0,
+      message,
+    });
+  }
+
+  async function syncVectorsInner(directionId: string): Promise<KbVectorSyncState> {
+    setVectorState(directionId, { status: "loading", done: 0, total: 0, message: null });
+
+    let chunks: readonly UploadChunk[];
+    try {
+      const snapshot = await loadDirection(directionId);
+      chunks = snapshot.chunks.filter((chunk) => chunk.directionId === directionId);
+    } catch (err) {
+      return unavailable(directionId, `读取片段失败：${messageOf(err)}。检索退化为 BM25。`);
+    }
+
+    if (chunks.length === 0) {
+      return setVectorState(directionId, { status: "ready", done: 0, total: 0, message: null });
+    }
+
+    let existingIds: readonly string[];
+    try {
+      existingIds = await remote.loadVectorChunkIds(directionId);
+    } catch (err) {
+      return unavailable(
+        directionId,
+        `读取已有向量失败：${messageOf(err)}。检索退化为 BM25。`,
+      );
+    }
+
+    const existing = new Set(existingIds);
+    const missing = chunks.filter((chunk) => !existing.has(chunk.id));
+    if (missing.length === 0) {
+      return setVectorState(directionId, {
+        status: "ready",
+        done: chunks.length,
+        total: chunks.length,
+        message: null,
+      });
+    }
+
+    setVectorState(directionId, {
+      status: "embedding",
+      done: 0,
+      total: missing.length,
+      message: null,
+    });
+
+    const items: KbVectorItem[] = [];
+    /*
+     * 本地推理也要分批：一次把几千段塞给 pipeline 会吃满内存与超时。
+     * 16 条一批是经验值；任何一批失败都整体降级为 unavailable，
+     * 不把「一半向量已上传」伪装成 ready。
+     */
+    for (let start = 0; start < missing.length; start += VECTOR_EMBED_BATCH_MAX) {
+      const batch = missing.slice(start, start + VECTOR_EMBED_BATCH_MAX);
+      let result: EmbedLocalResult;
+      try {
+        result = await embed(
+          batch.map((chunk) => embeddingInput({ title: chunk.title, text: chunk.text })),
+        );
+      } catch (err) {
+        return unavailable(directionId, `本地嵌入失败：${messageOf(err)}。检索退化为 BM25。`);
+      }
+
+      if (!result.ok) {
+        return unavailable(
+          directionId,
+          `${result.message}（${result.reason}）。检索退化为 BM25。`,
+        );
+      }
+
+      for (let index = 0; index < batch.length; index += 1) {
+        const vector = result.vectors[index];
+        if (!Array.isArray(vector) || vector.length !== LOCAL_EMBED_DIM) continue;
+        if (!vector.every((value) => typeof value === "number" && Number.isFinite(value))) {
+          continue;
+        }
+        items.push({ chunkId: batch[index].id, vec: [...vector] });
+      }
+
+      setVectorState(directionId, {
+        status: "embedding",
+        done: Math.min(missing.length, start + batch.length),
+        total: missing.length,
+        message: null,
+      });
+    }
+
+    if (items.length === 0) {
+      return unavailable(
+        directionId,
+        "本地模型没有返回可用的 512 维向量。检索退化为 BM25。",
+      );
+    }
+
+    let uploaded = 0;
+    setVectorState(directionId, {
+      status: "uploading",
+      done: 0,
+      total: items.length,
+      message: null,
+    });
+
+    try {
+      for (const batch of vectorBatches(items)) {
+        await remote.putVectors(batch);
+        uploaded += batch.length;
+        setVectorState(directionId, {
+          status: "uploading",
+          done: uploaded,
+          total: items.length,
+          message: null,
+        });
+      }
+    } catch (err) {
+      return unavailable(directionId, `上传向量失败：${messageOf(err)}。检索退化为 BM25。`);
+    }
+
+    const skipped = missing.length - items.length;
+    return setVectorState(directionId, {
+      status: "ready",
+      done: uploaded,
+      total: items.length,
+      message: skipped > 0 ? `${skipped} 条向量维度异常，已跳过。` : null,
+    });
+  }
+
+  /**
+   * 触发一次本地向量同步。同一方向并发调用共享同一个 Promise；
+   * 成功/失败都落在状态对象里，不向调用方抛异常。
+   */
+  function syncVectors(directionId: string): Promise<KbVectorSyncState> {
+    const key = directionId.trim();
+    if (key === "") return Promise.resolve(IDLE_VECTOR_SYNC);
+    const running = vectorInflight.get(key);
+    if (running !== undefined) return running;
+
+    let promise: Promise<KbVectorSyncState>;
+    promise = syncVectorsInner(key)
+      .catch((err: unknown) =>
+        unavailable(key, `向量同步异常：${messageOf(err)}。检索退化为 BM25。`),
+      )
+      .finally(() => {
+        if (vectorInflight.get(key) === promise) vectorInflight.delete(key);
+      });
+    vectorInflight.set(key, promise);
+    return promise;
+  }
+
+  function vectorSyncState(directionId: string): KbVectorSyncState {
+    return vectorStates.get(directionId.trim()) ?? IDLE_VECTOR_SYNC;
+  }
+
+  function onVectorSync(
+    listener: (directionId: string, state: KbVectorSyncState) => void,
+  ): () => void {
+    vectorListeners.add(listener);
+    return () => {
+      vectorListeners.delete(listener);
+    };
+  }
+
+  /** 文档内容变化后，旧的 ready 状态不再作数；下一次读片段会重新算缺口。 */
+  function invalidateVectorState(directionId: string): void {
+    vectorStates.delete(directionId);
   }
 
   /**
@@ -457,6 +759,8 @@ export function createSyncedKbStorage(
       try {
         const saved = await remote.putDoc(doc, chunks, base);
         clearWarning();
+        invalidateVectorState(doc.directionId);
+        void syncVectors(doc.directionId);
         try {
           await local.putDocWithChunks(saved, chunks);
         } catch {
@@ -489,6 +793,10 @@ export function createSyncedKbStorage(
         return [];
       }
     },
+
+    syncVectors,
+    vectorSyncState,
+    onVectorSync,
 
     syncWarning: () => warning,
   };

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, ButtonLink } from "@/components/ui";
+import { MotionScope } from "@/components/motion";
 import { TEAM, SCHEDULE } from "@/data/team";
 import { SUBJECTS, allSubjectsStats } from "@/data/subjects";
 import { ALGO_VERSION } from "@/lib/plan";
@@ -23,7 +24,8 @@ export default function AboutPage() {
     <>
       <Nav />
       <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-8">
+        <MotionScope>
+        <div className="mb-8" data-motion="hero">
           <Pill tone="accent">{TEAM.competition}</Pill>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">
             可解释的自适应学习路径
@@ -138,7 +140,7 @@ export default function AboutPage() {
             三个可验证的承诺
           </SectionTitle>
           <div className="grid gap-3 sm:grid-cols-3">
-            <Card>
+            <Card motion="promise">
               <h3 className="font-medium">路径可复现</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 排序是纯函数，不调大模型。同输入同版本 → 同指纹，
@@ -148,7 +150,7 @@ export default function AboutPage() {
                 src/lib/plan.ts · {ALGO_VERSION}
               </p>
             </Card>
-            <Card>
+            <Card motion="promise">
               <h3 className="font-medium">理由可追溯</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 每一步都写明为什么排在这，并引用具体掌握度数值。
@@ -158,7 +160,7 @@ export default function AboutPage() {
                 src/lib/direction.ts
               </p>
             </Card>
-            <Card>
+            <Card motion="promise">
               <h3 className="font-medium">大模型可缺席</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 不配置任何密钥，诊断、路径与自定义方向仍可用。
@@ -178,7 +180,7 @@ export default function AboutPage() {
           >
             学科覆盖
           </SectionTitle>
-          <Card>
+          <Card motion="section">
             <div className="space-y-3">
               {SUBJECTS.map((s) => {
                 const st = stats.find((x) => x.id === s.id)!;
@@ -208,7 +210,7 @@ export default function AboutPage() {
           <SectionTitle hint={`${TEAM.competition} · ${TEAM.track}（${TEAM.trackType}）`}>
             关于我们
           </SectionTitle>
-          <Card>
+          <Card motion="section">
             <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-3">
               <div>
                 <dt className="text-sm text-[var(--ink-soft)]">团队</dt>
@@ -266,7 +268,7 @@ export default function AboutPage() {
         {/* ── 技术栈 ── */}
         <section className="mb-10">
           <SectionTitle>技术栈</SectionTitle>
-          <Card>
+          <Card motion="section">
             <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
               {[
                 ["框架", "Next.js 16 App Router + React 19"],
@@ -295,7 +297,7 @@ export default function AboutPage() {
           <SectionTitle hint="预指导阶段如实列出，不粉饰。">
             已知限制
           </SectionTitle>
-          <Card>
+          <Card motion="section">
             <ul className="space-y-2 text-sm text-[var(--ink-soft)]">
               <li>· 题库与图谱未经任课教师逐条签字确认，是初始版本</li>
               <li>· 没有真实学生使用数据，掌握度数字来自自测</li>
@@ -308,7 +310,7 @@ export default function AboutPage() {
           </Card>
         </section>
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-3" data-motion="cta">
           <ButtonLink href="/diagnose">开始使用</ButtonLink>
           <Link
             href="/settings"
@@ -317,6 +319,7 @@ export default function AboutPage() {
             配置模型供应商
           </Link>
         </div>
+        </MotionScope>
       </main>
     </>
   );
@@ -332,7 +335,7 @@ function Feature({
   points: string[];
 }) {
   return (
-    <Card>
+    <Card motion="feature">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="font-medium">{title}</h3>
         <Link href={href} className="shrink-0 text-xs text-[var(--accent)] underline">

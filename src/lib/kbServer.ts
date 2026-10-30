@@ -12,19 +12,35 @@
 import type { Db } from "@/lib/db";
 import type { KbChunkInput, KbDocInput, KbPut } from "@/lib/apiContracts";
 import { MAX_EMBEDDING_DIM } from "@/lib/apiContracts";
-import { embeddingInput } from "@/lib/embedding";
 import type { UploadChunk, UploadDoc, UploadKind } from "@/lib/knowledge";
 
-/** 单次 PUT 的请求体上限（8MB）。整份文档 + 全部片段一次提交。 */
-export const MAX_KB_PUT_BYTES = 8 * 1024 * 1024;
+/** 单次 PUT 的默认请求体上限（32MB）。可用 ALP_MAX_KB_BYTES 覆盖。 */
+export const DEFAULT_MAX_KB_PUT_BYTES = 32 * 1024 * 1024;
+
+function envPositiveInt(name: string, fallback: number): number {
+  try {
+    const raw = process.env?.[name];
+    if (typeof raw !== "string" || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return Math.max(1, Math.floor(value));
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 文档 PUT 的请求体上限。
+ *
+ * 32MB 是应用自己的安全上限，不是平台限制：Vercel/反代的请求体上限另算，
+ * 超出平台限制的部署仍需把单次同步拆小。向量不再随文档 PUT 提交；
+ * 这份余量留给正文与元数据。
+ */
+export const MAX_KB_PUT_BYTES = envPositiveInt("ALP_MAX_KB_BYTES", DEFAULT_MAX_KB_PUT_BYTES);
 
 /** 向量分页上限；默认 100。 */
 export const KB_VECTOR_PAGE_DEFAULT = 100;
 export const KB_VECTOR_PAGE_MAX = 100;
-
-/** 生成缺失向量的总预算与单批条数。超时或失败都写 null，检索退回 BM25。 */
-export const KB_EMBED_BUDGET_MS = 25_000;
-export const KB_EMBED_BATCH = 64;
 
 // ── 数据库行 ──────────────────────────────────────────────────────
 
@@ -179,11 +195,6 @@ export function parseEmbedding(raw: unknown, dim: unknown): readonly number[] | 
   return out;
 }
 
-function isFiniteVector(value: unknown, dim: number): value is readonly number[] {
-  if (!Array.isArray(value) || value.length !== dim) return false;
-  return value.every((item) => typeof item === "number" && Number.isFinite(item));
-}
-
 export function rowToChunk(row: KbChunkRow): UploadChunk {
   const embedding = parseEmbedding(row.embedding, row.embedding_dim);
   const pageFrom = optionalInt(row.page_from);
@@ -288,7 +299,10 @@ export interface EmbeddingBatch {
 
 /**
  * 与 serverEmbedding.ts 的 embedTextsForUser 同形。
- * 这里只声明结构类型，避免 kbServer 依赖具体的密钥读取实现，单测可直接注入假函数。
+ *
+ * 文档 PUT 不再调用它：512 维本地向量走 POST /api/kb/vectors，
+ * 外部嵌入由客户端显式放进 chunks[].embedding。保留类型只为不破坏
+ * 仍传 {embedTexts} 的调用方。
  */
 export type EmbedTextsForUser = (
   userId: string,
@@ -296,6 +310,7 @@ export type EmbedTextsForUser = (
   signal?: AbortSignal,
 ) => Promise<EmbeddingBatch | null>;
 
+/** @deprecated 向量不再随文档 PUT 自动生成；字段仅用于兼容旧调用点。 */
 export interface KbPutDeps {
   readonly embedTexts?: EmbedTextsForUser;
 }
@@ -321,55 +336,6 @@ function toUploadChunk(input: KbChunkInput): UploadChunk {
         }
       : {}),
   };
-}
-
-/**
- * 缺向量的片段分批补齐。任何一批失败（未配置、超时、维度不符）都只影响该批：
- * 这些片段以 null 落库，检索自动退回 BM25，而不是让整次 PUT 失败。
- */
-async function fillEmbeddings(
-  userId: string,
-  chunks: readonly UploadChunk[],
-  embedTexts: EmbedTextsForUser | undefined,
-): Promise<UploadChunk[]> {
-  const missing = chunks.filter((chunk) => chunk.embedding === undefined);
-  if (embedTexts === undefined || missing.length === 0) return [...chunks];
-
-  const signal = AbortSignal.timeout(KB_EMBED_BUDGET_MS);
-  const filled = new Map<string, UploadChunk>();
-
-  for (let start = 0; start < missing.length; start += KB_EMBED_BATCH) {
-    if (signal.aborted) break;
-    const batch = missing.slice(start, start + KB_EMBED_BATCH);
-    try {
-      const result = await embedTexts(
-        userId,
-        batch.map((chunk) => embeddingInput({ title: chunk.title, text: chunk.text })),
-        signal,
-      );
-      if (result === null) continue;
-      const dim = toInt(result.dim, Number.NaN);
-      const model = typeof result.model === "string" ? result.model.trim() : "";
-      if (!Number.isFinite(dim) || dim < 1 || dim > MAX_EMBEDDING_DIM) continue;
-      if (!Array.isArray(result.vectors) || result.vectors.length !== batch.length) continue;
-      if (model === "") continue;
-
-      batch.forEach((chunk, index) => {
-        const vector = result.vectors[index];
-        if (!isFiniteVector(vector, dim)) return;
-        filled.set(chunk.id, {
-          ...chunk,
-          embedding: [...vector],
-          embeddingModel: model,
-          embeddingDim: dim,
-        });
-      });
-    } catch {
-      // 生成失败不阻塞写入：向量缺失是允许状态
-    }
-  }
-
-  return chunks.map((chunk) => filled.get(chunk.id) ?? chunk);
 }
 
 // ── 写入 ──────────────────────────────────────────────────────────
@@ -443,7 +409,8 @@ function chunkParams(row: KbChunkRow): unknown[] {
 /**
  * 写入一份文档及其全部片段。
  *
- * 顺序固定：CAS 检查 → upsert doc → 补齐向量 → upsert chunks → 删除本次列表外的旧片段。
+ * 顺序固定：CAS 检查 → upsert doc → upsert chunks → 删除本次列表外的旧片段。
+ * 向量不再在 PUT 里生成或补齐；512 维本地向量走 POST /api/kb/vectors。
  * CAS 在任何写操作之前，因此 409 时不会留下任何行；片段替换是「先 upsert 再删」，
  * 中途失败最多留下多余的旧片段，不会出现文档存在而片段全丢。
  */
@@ -451,7 +418,7 @@ export async function putKbDocument(
   db: Db,
   userId: string,
   body: KbPut,
-  deps: KbPutDeps = {},
+  _deps: KbPutDeps = {},
 ): Promise<PutKbResult> {
   const payloadError = validateUploadPayload(body.doc, body.chunks);
   if (payloadError !== null) {
@@ -512,7 +479,7 @@ export async function putKbDocument(
   );
 
   const inputChunks = body.chunks.map(toUploadChunk);
-  const chunks = await fillEmbeddings(userId, inputChunks, deps.embedTexts);
+  const chunks = inputChunks;
 
   for (const chunk of chunks) {
     const row = chunkToRow(userId, chunk, updatedAt);

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, ButtonLink } from "@/components/ui";
+import { MotionScope } from "@/components/motion";
 import { SUBJECTS, allSubjectsStats } from "@/data/subjects";
 import { ALGO_VERSION } from "@/lib/plan";
 import { TEAM, teamLine } from "@/data/team";
@@ -15,8 +16,9 @@ export default function HomePage() {
     <>
       <Nav />
       <main id="main" className="mx-auto max-w-5xl px-5 py-10">
+        <MotionScope>
         {/* 主张：一句话说清这个系统和普通推荐有什么区别 */}
-        <section className="mb-12">
+        <section className="mb-12" data-motion="hero">
           <Pill tone="accent">{TEAM.track} · {TEAM.group}</Pill>
           <h1 className="mt-4 text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
             给你一条
@@ -51,7 +53,7 @@ export default function HomePage() {
             三个可验证的承诺
           </SectionTitle>
           <div className="grid gap-4 sm:grid-cols-3">
-            <Card>
+            <Card motion="promise">
               <h3 className="font-medium">路径可复现</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 同一个 attempt 快照 + 同一算法版本 → 同一条路径。
@@ -62,7 +64,7 @@ export default function HomePage() {
                 src/lib/plan.ts · {ALGO_VERSION}
               </p>
             </Card>
-            <Card>
+            <Card motion="promise">
               <h3 className="font-medium">理由可追溯</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 每一步都写明为什么排在这里，并引用具体的掌握度数值。
@@ -72,7 +74,7 @@ export default function HomePage() {
                 app/tutor/page.tsx · 引用从回复里解析
               </p>
             </Card>
-            <Card>
+            <Card motion="promise">
               <h3 className="font-medium">大模型可缺席</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 不配置任何密钥时，导师回答退化为知识库检索 + 题库解析的结构化拼装，
@@ -94,7 +96,7 @@ export default function HomePage() {
             {SUBJECTS.map((s) => {
               const st = stats.find((x) => x.id === s.id)!;
               return (
-                <Card key={s.id}>
+                <Card key={s.id} motion="subject">
                   <div className="flex items-baseline justify-between gap-2">
                     <h3 className="font-medium">{s.name}</h3>
                     <span className="tabular shrink-0 text-xs text-[var(--ink-faint)]">
@@ -117,7 +119,7 @@ export default function HomePage() {
             个性化
           </SectionTitle>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Card>
+            <Card motion="personalize">
               <h3 className="font-medium">{THEMES.length} 套配色主题</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 {THEMES.map((t) => t.name).join(" · ")}
@@ -130,7 +132,7 @@ export default function HomePage() {
                 切换主题
               </Link>
             </Card>
-            <Card>
+            <Card motion="personalize">
               <h3 className="font-medium">自带模型供应商</h3>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">
                 地址、密钥、模型名自己填，支持 OpenAI 兼容与 Anthropic 两种协议。
@@ -151,7 +153,7 @@ export default function HomePage() {
           <SectionTitle hint={`${TEAM.competition} · ${TEAM.track}`}>
             参赛团队
           </SectionTitle>
-          <Card>
+          <Card motion="team">
             <div className="grid gap-x-6 gap-y-4 sm:grid-cols-3">
               <div>
                 <p className="text-sm text-[var(--ink-soft)]">团队</p>
@@ -182,12 +184,16 @@ export default function HomePage() {
           </Card>
         </section>
 
-        <footer className="mt-12 border-t border-[var(--line)] pt-6 text-sm text-[var(--ink-faint)]">
+        <footer
+          data-motion="footer"
+          className="mt-12 border-t border-[var(--line)] pt-6 text-sm text-[var(--ink-faint)]"
+        >
           <p>{teamLine()}</p>
           <p className="mt-1">
             {TEAM.competition} · {TEAM.track}
           </p>
         </footer>
+        </MotionScope>
       </main>
     </>
   );
