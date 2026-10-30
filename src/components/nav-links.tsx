@@ -35,13 +35,14 @@ export const NAV_LOGIN_CLASS =
   "ml-1 inline-flex min-h-11 items-center rounded-md bg-[var(--accent)] px-2.5 py-[0.25rem] text-xs font-medium text-[var(--on-accent)] touch-target sm:min-h-0";
 
 const LINKS = [
-  { href: "/diagnose", label: "诊断" },
-  { href: "/path", label: "路径" },
-  { href: "/tutor", label: "导师" },
-  { href: "/directions", label: "方向" },
-  { href: "/market", label: "市场" },
-  { href: "/settings", label: "设置" },
-  { href: "/about", label: "关于" },
+  { href: "/diagnose", label: "诊断测评" },
+  { href: "/path", label: "学习路径" },
+  { href: "/tutor", label: "课程导师" },
+  { href: "/directions", label: "我的方向" },
+  { href: "/market", label: "方向市场" },
+  { href: "/settings", label: "设置中心" },
+  { href: "/guide", label: "使用指南" },
+  { href: "/about", label: "关于项目" },
 ];
 
 export function NavLinks() {

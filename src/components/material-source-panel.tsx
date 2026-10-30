@@ -18,6 +18,7 @@ import { Panel, Pill } from "@/components/ui";
 import { chaptersOf } from "@/lib/chapters";
 import { useSubject } from "@/lib/subject";
 import { loadMaterials, saveMaterials, useMaterialPack } from "@/lib/materialStore";
+import { readingViewsOf } from "@/lib/materialReading";
 import {
   MAX_NOTE_CHARS,
   describeSelection,
@@ -153,6 +154,13 @@ export function MaterialSourcePanel() {
     }
     return map;
   }, [pack]);
+
+  /*
+   * 教材原文阅读视图：按来源 → 章节两级分组。
+   * 此前用户只能看到「覆盖章节」目录，看不到内置教材到底写了什么；
+   * 这里的文本就是出题与引用核对用的同一份 chunks，不是另起的摘要。
+   */
+  const readingViews = useMemo(() => readingViewsOf(pack), [pack]);
 
   // 页码只在两个输入都合法时才拼进正文；非法输入就地提示，不生成半截标注
   const pageFromNum = /^\d+$/.test(notePageFrom.trim()) ? Number(notePageFrom.trim()) : null;
@@ -515,6 +523,53 @@ export function MaterialSourcePanel() {
                           {source.note ? (
                             <p className="mt-1 text-xs text-[var(--ink-faint)]">{source.note}</p>
                           ) : null}
+
+                          {/*
+                            教材原文阅读：文本即出题与引用核对用的同一份 chunks。
+                            用 details 而不是 Collapse：这里嵌在列表项内部，
+                            原生 details 的键盘与无障碍行为足够，不额外引入状态。
+                          */}
+                          {(() => {
+                            const view = readingViews.find((v) => v.source.id === source.id);
+                            if (!view || view.chapters.length === 0) return null;
+                            return (
+                              <details className="mt-2 rounded-lg border border-[var(--line)] px-3 py-2">
+                                <summary className="cursor-pointer text-xs text-[var(--accent)]">
+                                  查看原文（{view.chapters.length} 章 ·{" "}
+                                  {view.totalChars.toLocaleString("zh-CN")} 字）
+                                </summary>
+                                <div className="mt-2 space-y-3">
+                                  {view.chapters.map((group) => (
+                                    <div key={group.chapter}>
+                                      <p className="text-xs font-medium text-[var(--ink-soft)]">
+                                        {group.chapter}
+                                      </p>
+                                      <ul className="mt-1 space-y-2">
+                                        {group.chunks.map((c) => (
+                                          <li
+                                            key={c.id}
+                                            className="rounded-md bg-[var(--canvas)] px-3 py-2"
+                                          >
+                                            {c.section !== "" ? (
+                                              <p className="text-xs text-[var(--ink-faint)]">
+                                                {c.section}
+                                                {c.pageFrom !== undefined
+                                                  ? `（第${c.pageFrom}${c.pageTo !== undefined && c.pageTo !== c.pageFrom ? `–${c.pageTo}` : ""}页）`
+                                                  : ""}
+                                              </p>
+                                            ) : null}
+                                            <p className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">
+                                              {c.text}
+                                            </p>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
+                            );
+                          })()}
                         </div>
 
                         {checked ? (

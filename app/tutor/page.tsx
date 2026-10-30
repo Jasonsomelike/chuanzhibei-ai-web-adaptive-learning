@@ -1968,10 +1968,13 @@ export default function TutorPage() {
                 ? `上传资料读取失败：${kb.error}`
                 : kbDocs.length > 0
                   ? `本方向已上传 ${kbDocs.length} 份资料（${kbChunks.length} 段），回答会检索这些片段；只在本浏览器可见。`
-                  : "本方向没有上传资料；可在方向页导入 md / txt / pdf，只在本浏览器可见。"}
+                  : "本方向还没有上传资料。上传教材、讲义或 PPT 文字稿（md / txt / pdf）后，回答会优先引用你自己的资料并标注出处。"}
             {" · "}
-            <Link href="/directions" className="underline">
-              管理上传资料
+            <Link
+              href={kbDocs.length === 0 ? "/directions?kb=open" : "/directions"}
+              className="underline"
+            >
+              {kbDocs.length === 0 ? "去上传教材讲义" : "管理上传资料"}
             </Link>
           </p>
         </Card>
