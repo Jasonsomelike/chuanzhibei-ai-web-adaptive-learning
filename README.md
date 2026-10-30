@@ -202,7 +202,7 @@ src/lib/image.ts         图片格式 / 压缩 / 体积 / 张数限制（纯逻�
 src/lib/speech.ts        Web Speech 可用性检测、转写拼接、错误翻译
 src/lib/kbServer.ts      知识库行映射、文档级 CAS、片段分页
 src/lib/secretCrypto.ts  AES-256-GCM、AAD、kid、掩码（服务端）
-app/                     9 个页面 + 18 个 API 路由
+app/                     10 个页面 + 18 个 API 路由
 scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / db-migrate / 三个 E2E
 ```
 
