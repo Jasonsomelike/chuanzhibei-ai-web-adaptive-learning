@@ -74,9 +74,25 @@ export default function DirectionsPage() {
    * 知识库面板只在展开时挂载：useKnowledgeBase 会读该方向的 docs 与 chunks，
    * 一次读全部方向会让首屏为每个方向付一次 IndexedDB 查询。
    * 计数由面板回传，收起后仍能显示上次读到的「N 份 · M 段」。
+   *
+   * ?kb=open 深链：首页「去上传教材」等入口直达第一个方向的知识库；
+   * 还没有方向时这个标记保持到列表加载完再消费一次。
    */
   const [kbOpen, setKbOpen] = useState<Record<string, boolean>>({});
   const [kbCounts, setKbCounts] = useState<Record<string, KbCounts>>({});
+  const kbDeepLinkConsumed = useRef(false);
+
+  useEffect(() => {
+    if (kbDeepLinkConsumed.current) return;
+    if (new URLSearchParams(window.location.search).get("kb") !== "open") return;
+    if (mine.length === 0) return;
+    kbDeepLinkConsumed.current = true;
+    setKbOpen({ [mine[0].id]: true });
+    // 清掉参数，刷新后不再自动展开
+    const url = new URL(window.location.href);
+    url.searchParams.delete("kb");
+    window.history.replaceState(null, "", url.toString());
+  }, [mine]);
 
   const handleKbCounts = useCallback((id: string, counts: KbCounts) => {
     setKbCounts((prev) => {

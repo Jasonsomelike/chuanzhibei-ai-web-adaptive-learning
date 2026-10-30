@@ -102,6 +102,26 @@ try {
     "9 个学科齐全",
   );
 
+  // ── 2b. 使用指南页 ──
+  await page.goto(`${BASE}/guide`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(300);
+  const guideText = await page.locator("body").innerText();
+  record(
+    "使用指南覆盖五步流程",
+    guideText.includes("使用指南") &&
+      guideText.includes("诊断") &&
+      guideText.includes("学习路径") &&
+      guideText.includes("课程导师") &&
+      guideText.includes("模型供应商") &&
+      guideText.includes("教材"),
+    "五步标题齐全",
+  );
+  record(
+    "使用指南有常见问题",
+    guideText.includes("常见问题") && guideText.includes("不配置任何 API key 能用吗"),
+    "FAQ 渲染",
+  );
+
   // 成员信息只保留姓名，不出现专业与年级
   const leakedProfile = ["计算机科学与技术", "2024 级本科"].filter((v) => aboutText.includes(v));
   record(
@@ -111,7 +131,8 @@ try {
   );
 
   // ── 3. 主题切换（关键：验证浅色真的生效） ──
-  await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+  // 用 ?panel=appearance 深链直达外观分区，顺带覆盖深链行为
+  await page.goto(`${BASE}/settings?panel=appearance`, { waitUntil: "networkidle" });
   await page.waitForTimeout(600);
 
   const readCanvas = async () =>
@@ -388,13 +409,24 @@ try {
     loginText.includes("PBKDF2") ? "已说明哈希方式" : "已说明存储内容",
   );
 
-  // 注册一个新账号
+  // 注册一个新账号（注册模式有「密码 + 确认密码」两个密码框，按 placeholder 区分）
   const uiEmail = `ui${Date.now()}@test.local`;
   await page.getByRole("button", { name: "注册", exact: true }).click();
   await page.waitForTimeout(300);
+
+  // 不一致时应就地提示且无法提交（确认密码校验）
   await page.locator('input[placeholder="例如：小李"]').fill("测试用户");
   await page.locator('input[type="email"]').fill(uiEmail);
-  await page.locator('input[type="password"]').fill("uitest1234");
+  await page.locator('input[placeholder="••••••••"]').fill("uitest1234");
+  await page.locator('input[placeholder="再输入一次密码"]').fill("uitest9999");
+  const confirmError = await page.locator("body").innerText();
+  record(
+    "注册两次密码不一致被拦截",
+    confirmError.includes("两次输入的密码不一致"),
+    "就地显示不一致提示",
+  );
+
+  await page.locator('input[placeholder="再输入一次密码"]').fill("uitest1234");
   await page.getByRole("button", { name: "创建账号" }).click();
   // 等真正离开登录页，而不是固定等 3 秒
   await page.waitForURL((u) => !u.pathname.startsWith("/login"), { timeout: 20000 }).catch(() => {});
@@ -810,7 +842,7 @@ try {
   );
 
   // ── 11. 截图（两套主题） ──
-  await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/settings?panel=appearance`, { waitUntil: "networkidle" });
   await page.waitForTimeout(400);
   await page.getByRole("button", { name: /^暖砂/ }).first().click();
   await page.getByRole("button", { name: "浅色" }).click();
