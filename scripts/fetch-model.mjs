@@ -5,6 +5,7 @@
  *   node scripts/fetch-model.mjs           # 缺什么下什么；已存在且哈希正确就跳过
  *   node scripts/fetch-model.mjs --check   # 只校验，不下载（缺文件/哈希不符 → exit 1）
  *   node scripts/fetch-model.mjs --force   # 全部重新下载
+ *   node scripts/fetch-model.mjs --optional # 构建期使用：失败只告警，不阻断构建（向量检索退化为 BM25）
  *
  * 产物（都在 public/ 下，不进 Next bundle，也不进 git）：
  *   public/embed/transformers.web.min.js              transformers.js 浏览器包
@@ -91,6 +92,7 @@ const MANIFEST = [
 const args = new Set(process.argv.slice(2));
 const checkOnly = args.has("--check");
 const force = args.has("--force");
+const optional = args.has("--optional");
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");

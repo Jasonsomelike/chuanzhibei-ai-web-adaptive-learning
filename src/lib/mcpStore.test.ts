@@ -30,7 +30,7 @@ import { UserSecretError } from "@/lib/userSecrets";
 const USER = "user-mcp-1";
 const OTHER = "user-mcp-2";
 const MASTER_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString("base64");
-const TOKEN = "fake-mcp-token-1234";
+const TOKEN = "fake-mcp-1234";
 const URL_A = "https://8.8.8.8/mcp";
 const URL_B = "https://9.9.9.9/mcp";
 

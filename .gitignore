@@ -84,3 +84,6 @@ screenshots/review-2026-10-29/
 
 # 评审报告：含内部证据与未脱敏细节，不入库（提交材料里另附脱敏版）
 docs/review/
+
+# 浏览器本地嵌入模型（由 scripts/fetch-model.mjs 预取，不进 git）
+public/models/

@@ -25,7 +25,7 @@ const USER = {
 };
 
 const MASTER_KEY = Buffer.from(new Uint8Array(32).fill(5)).toString("base64");
-const TOKEN = "fake-route-token-4321";
+const TOKEN = "fake-route-4321";
 const URL_A = "https://8.8.8.8/mcp";
 
 interface ServerBody {

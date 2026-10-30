@@ -82,7 +82,7 @@ const USER = {
 };
 
 const MASTER_KEY = Buffer.from(new Uint8Array(32).fill(9)).toString("base64");
-const API_KEY = "fake-agent-key-5678";
+const API_KEY = "fake-agent-5678";
 const BASE_URL = "https://8.8.8.8/v1";
 
 function setEnv(): void {
