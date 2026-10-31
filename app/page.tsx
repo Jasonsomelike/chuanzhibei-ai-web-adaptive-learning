@@ -15,36 +15,79 @@ export default function HomePage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-5xl px-5 py-10">
+      <main id="main" className="mx-auto max-w-6xl px-5 py-12">
         <MotionScope>
         {/* 主张：一句话说清这个系统和普通推荐有什么区别 */}
-        <section className="mb-12" data-motion="hero">
-          <Pill tone="accent">{TEAM.track} · {TEAM.group}</Pill>
-          <h1 className="mt-4 text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
-            给你一条
-            <span className="text-[var(--accent)]">算得出、说得清、改得动</span>
-            <br className="hidden sm:block" />
-            的学习路径
-          </h1>
-          <p className="mt-4 max-w-2xl text-[var(--ink-soft)]">
-            掌握度用难度加权的 Beta 后验建模，同时给出「你现在多会」和「我们有多确定」。
-            排序由先修图、掌握度与时间预算用纯函数算出——
-            <strong className="font-medium text-[var(--ink)]">大模型不参与排序</strong>，
-            所以同一条路径可以逐位复现，大模型不可用时路径照常生成。
-          </p>
-          <p className="mt-2 max-w-2xl text-sm text-[var(--ink-faint)]">
-            覆盖 {SUBJECTS.length} 个学科 · {totalKc} 个知识点 · {totalEdge} 条先修关系 ·{" "}
-            {totalQ} 道题
-          </p>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <ButtonLink href="/diagnose">开始诊断</ButtonLink>
-            <ButtonLink href="/path" variant="ghost">
-              直接看路径
-            </ButtonLink>
-            <ButtonLink href="/guide" variant="ghost">
-              使用指南
-            </ButtonLink>
+        <section className="mb-10 grid items-center gap-8 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-12">
+          <div data-motion="hero">
+            <Pill tone="accent">{TEAM.track} · {TEAM.group}</Pill>
+            <h1 className="mt-4 text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
+              给你一条
+              <span className="whitespace-nowrap text-[var(--accent)]">算得出、说得清、改得动</span>的
+              <br className="hidden sm:block" />
+              学习路径
+            </h1>
+            <p className="mt-4 max-w-2xl text-[var(--ink-soft)]">
+              掌握度用难度加权的 Beta 后验建模，同时给出「你现在多会」和「我们有多确定」。
+              排序由先修图、掌握度与时间预算用纯函数算出——
+              <strong className="font-medium text-[var(--ink)]">大模型不参与排序</strong>，
+              所以同一条路径可以逐位复现，大模型不可用时路径照常生成。
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <ButtonLink href="/diagnose">开始诊断</ButtonLink>
+              <ButtonLink href="/path" variant="ghost">
+                直接看路径
+              </ButtonLink>
+              <ButtonLink href="/guide" variant="ghost">
+                使用指南
+              </ButtonLink>
+            </div>
           </div>
+
+          <Card motion="hero-path" className="border-[var(--line-strong)]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-[var(--ink-faint)]">示例路径 · 操作系统 · 90 分钟</span>
+              <Pill tone="accent">纯函数</Pill>
+            </div>
+            <ol className="mt-4 space-y-3.5">
+              {[
+                { id: "o06", title: "进程控制块与进程控制", why: "先修深度 4 · 先建立基线" },
+                { id: "o07", title: "进程上下文切换", why: "先修 o06 已排在前 · 继续深入" },
+                { id: "o08", title: "线程与多线程模型", why: "ZPD 最近 · 下一步优先" },
+              ].map((step, i) => (
+                <li key={step.id} className="flex gap-3">
+                  <span className="tabular mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border border-[var(--line-strong)] text-[11px]">
+                    {i + 1}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium leading-snug">
+                      <span className="font-mono text-xs text-[var(--ink-faint)]">{step.id}</span>{" "}
+                      {step.title}
+                    </p>
+                    <p className="mt-0.5 text-xs text-[var(--ink-faint)]">{step.why}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-4 border-t border-[var(--line)] pt-3 font-mono text-[11px] text-[var(--ink-faint)]">
+              同输入 → 同 pathHash · 改预算只换取舍
+            </p>
+          </Card>
+        </section>
+
+        <section className="mb-12 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-5">
+          {[
+            { value: SUBJECTS.length, label: "学科" },
+            { value: totalKc, label: "知识点" },
+            { value: totalEdge, label: "先修边" },
+            { value: totalQ, label: "题" },
+            { value: "0", label: "必需密钥" },
+          ].map((item) => (
+            <div key={item.label} data-motion="stat" className="bg-[var(--surface)] px-4 py-3.5">
+              <p className="tabular text-xl font-semibold">{item.value}</p>
+              <p className="mt-0.5 text-xs text-[var(--ink-faint)]">{item.label}</p>
+            </div>
+          ))}
         </section>
 
         {/* 三个可验证的承诺 */}
@@ -108,7 +151,7 @@ export default function HomePage() {
           <SectionTitle hint="每个学科规模一致，是为了共用同一套模型参数与界面。">
             支持的学科
           </SectionTitle>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {SUBJECTS.map((s) => {
               const st = stats.find((x) => x.id === s.id)!;
               return (

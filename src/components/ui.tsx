@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
 import { NavLinks } from "@/components/nav-links";
+import { BrandMark } from "@/components/brand-mark";
 
 /* ── 表单与设置页的排版原语 ───────────────────────────────── */
 
@@ -411,9 +412,7 @@ export function Nav() {
     <header className="border-b border-[var(--line)] bg-[var(--surface)]">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
         <Link href="/" className="flex items-center gap-2 font-semibold">
-          <span className="grid h-7 w-7 place-items-center rounded-md bg-[var(--accent)] text-xs text-[var(--on-accent)]">
-            路
-          </span>
+          <BrandMark size={28} />
           <span className="hidden sm:inline">可解释的自适应学习路径</span>
           <span className="sm:hidden">学习路径</span>
         </Link>

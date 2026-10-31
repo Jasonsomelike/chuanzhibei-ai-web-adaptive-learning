@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="可解释的自适应学习路径">
+  <rect width="64" height="64" rx="15" fill="#9a4410"/>
+  <path d="M16 45c8 0 7-15 16-15s8-12 16-12" fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round"/>
+  <circle cx="16" cy="45" r="5.5" fill="#ffffff"/>
+  <circle cx="32" cy="30" r="5.5" fill="#ffffff"/>
+  <circle cx="48" cy="18" r="6.5" fill="#ffffff"/>
+  <path d="M45.2 18l2 2 4-4.6" fill="none" stroke="#9a4410" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

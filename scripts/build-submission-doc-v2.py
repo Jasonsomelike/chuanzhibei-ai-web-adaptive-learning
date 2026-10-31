@@ -6,9 +6,10 @@ from docx.enum.section import WD_SECTION
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "docs" / "submission" / "作品介绍文档.docx"
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "submission" / "作品介绍文档.docx"
 SHOTS = ROOT / "screenshots" / "2026-10-30"
 INK = RGBColor(0, 0, 0)
 
@@ -144,11 +145,78 @@ def shade(cell):
     tcPr.append(shd)
 
 
+def no_borders(t):
+    tblPr = t._tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = OxmlElement("w:" + edge)
+        el.set(qn("w:val"), "none")
+        el.set(qn("w:sz"), "0")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "auto")
+        borders.append(el)
+    tblPr.append(borders)
+
+
+def three_line(t):
+    tblPr = t._tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "bottom"):
+        el = OxmlElement("w:" + edge)
+        el.set(qn("w:val"), "single")
+        el.set(qn("w:sz"), "12")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "000000")
+        borders.append(el)
+    for edge in ("left", "right", "insideH", "insideV"):
+        el = OxmlElement("w:" + edge)
+        el.set(qn("w:val"), "none")
+        el.set(qn("w:sz"), "0")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "auto")
+        borders.append(el)
+    tblPr.append(borders)
+
+
+def header_bottom(cell):
+    tcPr = cell._tc.get_or_add_tcPr()
+    borders = OxmlElement("w:tcBorders")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "8")
+    bottom.set(qn("w:space"), "0")
+    bottom.set(qn("w:color"), "000000")
+    borders.append(bottom)
+    tcPr.append(borders)
+
+
+def figure_grid(items):
+    t = doc.add_table(rows=1, cols=len(items))
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    no_borders(t)
+    for i, (name, cap, width) in enumerate(items):
+        cell = t.rows[0].cells[i]
+        cell.width = Cm(7.5)
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.first_line_indent = Cm(0)
+        p.paragraph_format.space_before = Pt(4)
+        p.paragraph_format.space_after = Pt(2)
+        p.add_run().add_picture(str(SHOTS / name), width=Cm(width))
+        cp = cell.add_paragraph()
+        cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cp.paragraph_format.first_line_indent = Cm(0)
+        cp.paragraph_format.space_after = Pt(6)
+        run_font(cp.add_run(cap), 9, False)
+    trPr = t.rows[0]._tr.get_or_add_trPr()
+    trPr.append(OxmlElement("w:cantSplit"))
+
+
 def table(cap, headers, rows, widths):
     caption(cap, bold=True, keep_next=True)
     t = doc.add_table(rows=1, cols=len(headers))
-    t.style = "Table Grid"
     t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    three_line(t)
     for i, h in enumerate(headers):
         cell = t.rows[0].cells[i]
         cell.text = ""
@@ -156,7 +224,7 @@ def table(cap, headers, rows, widths):
         p.paragraph_format.first_line_indent = Cm(0)
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run_font(p.add_run(h), 10.5, bold=True)
-        shade(cell)
+        header_bottom(cell)
     trPr = t.rows[0]._tr.get_or_add_trPr()
     trPr.append(OxmlElement("w:tblHeader"))
     for row in rows:
@@ -663,13 +731,22 @@ body(
     "以下截图来自 2026-10-30 的本机构建，使用专用演示账号；页面上的个人信息已替换为演示值。"
     "截图只用于说明界面结构，具体数字以附录 A 的命令输出为准。"
 )
-figure("home.png", "图1  首页：诊断、路径、导师三条主入口，不需要任何密钥即可开始")
-figure("diagnose.png", "图2  诊断：按先修顺序出题，答完显示掌握度变化与解析")
-figure("path.png", "图3  路径：每步带数值理由、±sd 与双指纹，可改预算看反事实")
-figure("tutor.png", "图4  导师：智能体开关、工具轨迹、图片与语音入口、向量状态")
-figure("settings-agent.png", "图5  设置 · 智能体与工具：MCP 服务器由用户添加，鉴权头只回掩码")
-figure("settings-vector.png", "图6  设置 · 向量检索：本地模型状态、预取进度、重建索引与降级说明")
-figure("mobile-tutor.png", "图7  移动端导师页：390×844 下不横向溢出，点击目标满足触控尺寸", width=8.0)
+figure_grid([
+    ("home.png", "图1  首页：三条主入口与示例路径", 7.3),
+    ("diagnose.png", "图2  诊断：出题、预测概率与掌握度变化", 7.3),
+])
+figure_grid([
+    ("path.png", "图3  路径：数值理由、反事实与双指纹", 7.3),
+    ("tutor.png", "图4  导师：智能体、图片、语音与向量状态", 7.3),
+])
+figure_grid([
+    ("settings-agent.png", "图5  设置 · MCP 服务器由用户添加", 7.3),
+    ("settings-vector.png", "图6  设置 · 本地模型状态与向量索引", 7.3),
+])
+figure_grid([
+    ("mobile-tutor.png", "图7  移动端导师页：390×844 无横向溢出", 5.0),
+    ("guide.png", "图8  使用指南：五分钟上手路径", 7.3),
+])
 
 h1 = doc.add_paragraph("八、工程验证与复现", style="Heading 1")
 h2 = doc.add_paragraph("（一）门禁结果", style="Heading 2")
