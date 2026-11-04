@@ -53,5 +53,17 @@ jobs:
       - name: Scan for secrets
         run: npm run check:secrets
 
+      - name: Evaluate chunk retrieval
+        run: npm run eval:rag:hard
+
+      - name: Evaluate tutor responses
+        run: npm run eval:tutor
+
       - name: Build
         run: npm run build
+
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify learning journey
+        run: npm run test:e2e

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 可解释的自适应学习路径
+# 智慧学伴 · 可解释的自适应学习路径
 
 给高校硬课的学生一条**算得出、说得清、改得动**的学习路径。
 
@@ -8,7 +8,7 @@
 
 [在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [已知限制](docs/limits.md)
 
-![tests](https://img.shields.io/badge/tests-1996%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-2058%20passed-brightgreen)
 ![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
 ![subjects](https://img.shields.io/badge/subjects-9-blue)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -16,6 +16,8 @@
 </div>
 
 ![首页](screenshots/home-hero.png)
+
+**2026-11-04 更新**：首页已改为个人学习入口，路径首屏突出下一步，导师支持材料工作台与分层提示；Agent 接入服务端重算学情、自定义方向和账号上传资料。进度增加版本冲突合并，重测保留历史。当前截图目录中较早图片仅供历史参考，完整变更与最新验收见 [改进记录](docs/improvements-2026-11-04.md)。
 
 ## 评审入口
 
@@ -168,21 +170,21 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 
 ## 验证
 
-测试、图谱、构建与评测数字均为 2026-10-30 本机实测：
+下表为 2026-11-04 本机实测；更早的输出保留在验证记录中。
 
-| 命令 | 验证什么 | 最近实测（2026-10-30） |
+| 命令 | 验证什么 | 最近实测（2026-11-04） |
 | --- | --- | --- |
-| `npm run verify` | typecheck + 单测 + 图谱 + 密钥扫描 | **exit 1**：前三条通过，`check:secrets` 报 3 处测试占位符 |
-| `npm run test` | 94 个测试文件 | **1996 passed / 94 files**，exit 0 |
+| `npm run verify` | 类型 + 单测 + 图谱 + 密钥扫描 + 导师规则评测 | **exit 0** |
+| `npm run test` | 104 个测试文件 | **2058 passed / 104 files**，exit 0 |
 | `npm run kg:validate` | 9 学科图谱与题库 | **0 error**（360 点 / 540 边 / 1080 题） |
-| `npm run build` | Next 16 生产构建 | **exit 0**（28 个路由 = 9 页面 + 18 API + `_not-found`） |
-| `npm run eval:rag` | 50 条检索评测 | recall@3 `1.000`、MRR@10 `1.000`、goldPhrase `1.000`、OOD empty `1.000`、unanswerableEmpty `0.500`；混合检索打印「未测」 |
+| `npm run build` | Next 16 生产构建 | **exit 0**，30 个路由条目（含图标与 404） |
+| `npm run eval:rag:hard` | 22 条片段级查询 | BM25 nDCG@10 `0.955`；标题加权增益 `0.000`，向量 / RRF 未测 |
 | `npx tsx scripts/eval-tutor.ts --judge rules` | 10 条导师回答 rubric（8 维） | 10 条全部产出分数，硬门 R1≥1 / R5=2 / R7=2 全过，exit 0 |
-| `npm run check:secrets` | 仓库无真实密钥 | 扫 **309 个文件**，**3 处命中**（均为新增测试里的 `fake-*` 占位符），**exit 1** |
-| `npm run lint` | ESLint 9 扁平配置 | 0 error / 29 warning，exit 0 |
-| `auth-smoke` / `mcp-smoke` | 注册登录隔离 / MCP 协议 | **34/34** / **18/18**（`DATABASE_URL=` + 生产构建，内存库） |
+| `npm run check:secrets` | 当前工作树密钥扫描 | 未发现疑似密钥，**exit 0** |
+| `npm run lint` | ESLint 9 扁平配置 | 0 error，保留部分 hook 警告 |
+| `npm run test:e2e` | 学习闭环、4 种宽度、模型上下文、账号与 MCP | **152/152 + 36/36 + 18/18**，自动启动隔离内存服务 |
 
-仓库已有 `.github/workflows/ci.yml`，但当前 `check:secrets` 为红，CI 会在该步失败；把 3 个测试占位符改成非凭据形状后即可恢复绿。E2E 必须在命令前加 `DATABASE_URL=`，否则 `next dev` 会读到真实连接串并把测试账号写进线上库。原始终端输出、Mock 供应商的 19 项集成检查、可访问性对比度实测见 [验证记录](docs/verification.md)。
+先 `npm run build` 再 `npm run test:e2e`；测试启动器强制清空数据库地址、生成临时主密钥，并在结束后关闭自己的服务。CI 已加入新评测和浏览器流程，远端运行需推送后确认。详见 [最新改进与验收](docs/improvements-2026-11-04.md) 和 [历史验证记录](docs/verification.md)。
 
 ## 项目结构
 
@@ -211,15 +213,14 @@ scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / d
 ## 已知限制
 
 - **没有教师班级视图**，也不使用任何真实学生数据；4 个新增学科未经任课教师逐题复核。
-- **检索评测饱和**：recall@3 与全文金句已到 1.000，证明力有限；域外门控已加（OOD empty 1.000、falseContext 0），answer-absent relatedHit 1.000；chunk 级 hard 集、nDCG / recall@20 与配对区间都还没做。
+- **检索质量仍需扩大验证**：旧知识点级集已饱和；新片段级 22 条查询的 nDCG@10 为 0.955，但标题加权未带来收益，向量 / RRF 质量臂未测，也不能据此推断真实学习效果。
 - **内置知识点仍走纯 BM25**，向量混合检索只接上传资料，且这部分没有质量评测；向量只覆盖 512 维本地模型，没有 rerank。
 - **Agent 只在服务端模式可用**：local（BYOK）模式没有工具循环，Anthropic 协议不发 tools；单次 run 默认上限 8 步 / 180s，工具全部只读。
 - **MCP 只支持 Streamable HTTP**，不支持 stdio 与旧版 HTTP+SSE；本轮没有用真实第三方 MCP 服务器做端到端验证。
 - **pgvector DDL 与浏览器本地嵌入的端到端仍未验证**：迁移脚本、建表与相似查询的单元测试已通过，但 `CREATE EXTENSION` / `<=>` 未在真实 Neon 分支执行；首次使用要下载约 22.8MB 模型权重，模型缺失时退回 BM25。
 - **没有 OCR、没有服务端 ASR**；图片只走 OpenAI 兼容协议且不落库；Lighthouse / Core Web Vitals、真实 TTS、PDF worker 浏览器侧仍未验证。
-- **CI 已配置但当前为红**：`check:secrets` 在 3 个新增测试文件里命中 `fake-*` 占位符（不是真实凭据），`npm run verify` 因此 exit 1。
-- **知识库同步不承诺线性化**：删除无 tombstone、CAS 不是事务、远端读会覆盖本地未上传的修改。
-- **没有自建限流**，`/api/search` 与 `/api/tts` 没有请求体上限，公网部署需在代理层补。
+- **知识库尚非协同编辑系统**：版本争用与待上传修改保护已修复；文档及片段仍非整单事务，删除没有跨设备 tombstone。
+- **没有全站分布式限流**；搜索、语音、方向与进度已有解析前请求体限制，公网部署仍需配置流量保护。
 
 逐条边界与缺口（含原因、修法与「未验证」清单）见 [已知限制](docs/limits.md)；评分点逐项对照与「不可宣称」的措辞见 [评分对照](docs/scoring.md)。
 
@@ -227,6 +228,7 @@ scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / d
 
 | 文档 | 内容 |
 | --- | --- |
+| [2026-11-04 改进与验收](docs/improvements-2026-11-04.md) | 参考意见到实现的映射、最新测试、隔离 E2E 与当前边界 |
 | [架构与算法](docs/architecture.md) | 流程图、分层约束、Beta 后验公式、排序键、复杂度实测、模块清单 |
 | [AI 触点、硬门禁与降级](docs/ai.md) | AI 触点、Agent / MCP / 视觉与语音、只读核对、思考强度、联网、TTS、L1–L6、降级矩阵 |
 | [检索与存储](docs/rag.md) | 提问链路、参数表、降级矩阵、上传存储链路、12 张表、向量表、50 条评测 |
@@ -248,7 +250,7 @@ scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / d
 
 - **数据最小化**：注册只收邮箱、密码、显示名；当前工作树的源码与测试数据里没有真实手机号或邮箱（可用仓库内 `grep` 与测试数据复核）。该声明只覆盖代码与测试数据，不涉及 git 历史与仓库外的评审材料。
 - **密码**：PBKDF2-HMAC-SHA256 600,000 次，每用户随机盐，常量时间比较。
-- **密钥**：`npm run check:secrets` 本轮扫 309 个文件，3 处命中均为新增测试里的 `fake-*` 占位符（不是真实凭据），因此扫描当前 exit 1；用户密钥按模式存放，server 模式加密落库、只回掩码，local 模式仅存浏览器。
+- **密钥**：2026-11-04 `npm run check:secrets` 通过；server 模式加密落库、只回掩码，local 模式仅存浏览器。E2E 使用临时密钥与本机模型，不读取生产数据库。
 - **上传资料**：只保存抽取后的文本与切块，不保存原文件；按 `user_id` 隔离，不随方向公开或复制。
 
 许可：[MIT](LICENSE)（题库为教学演示用途，正式使用前须由任课教师逐题核对）。

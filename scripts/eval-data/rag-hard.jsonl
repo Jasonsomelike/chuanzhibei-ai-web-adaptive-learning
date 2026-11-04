@@ -1,0 +1,22 @@
+{"id":"hard-01","query":"栈顶指针是下一个空位时，空栈初值和出栈顺序是什么？","gold":["ds-c09-lect-1"]}
+{"id":"hard-02","query":"循环队列不想浪费一个位置，怎样判断存满了？","gold":["ds-c10-lect-1"]}
+{"id":"hard-03","query":"只能从尾部添加、从头部移除的数据结构是什么？","gold":["ds-c10-text-1"]}
+{"id":"hard-04","query":"括号扫描结束后栈里还剩元素，为什么不能判为匹配？","gold":["ds-c11-text-1"]}
+{"id":"hard-05","query":"函数递归结束后，返回地址和局部变量从哪里恢复？","gold":["ds-c11-lect-1"]}
+{"id":"hard-06","query":"同一模式串匹配不同主串时，next 数组需要重新算吗？","gold":["ds-c14-lect-1"]}
+{"id":"hard-07","query":"主串指针失配时不回退，模式串匹配为何能变成线性复杂度？","gold":["ds-c14-text-1"]}
+{"id":"hard-08","query":"数组容量为 MAXSIZE 的循环队列为什么只能装 MAXSIZE 减一个元素？","gold":["ds-c10-text-1","ds-c10-lect-1"]}
+{"id":"hard-09","query":"收到一次重复 ACK 就应该立即快重传吗？","gold":["net-n26-text-1","net-n26-lect-1"]}
+{"id":"hard-10","query":"不等待超时计时器到期，TCP 根据哪种重复确认信号重发？","gold":["net-n26-text-1","net-n26-lect-1"]}
+{"id":"hard-11","query":"对端接收缓存用完并通告零窗口后，发送方会永久不发数据吗？","gold":["net-n27-text-1"]}
+{"id":"hard-12","query":"通知窗口重新打开的报文丢了，怎样避免通信双方永远等待？","gold":["net-n27-text-1"]}
+{"id":"hard-13","query":"cwnd 到达 ssthresh 后，拥塞窗口还会每轮翻倍吗？","gold":["net-n28-text-1"]}
+{"id":"hard-14","query":"快恢复把 ssthresh 减半以后，cwnd 应设置到哪里？","gold":["net-n28-text-1"]}
+{"id":"hard-15","query":"建立 TCP 连接时服务器在第二个报文里回复什么？","gold":["net-n25-text-1"]}
+{"id":"hard-16","query":"关闭连接后主动关闭方为什么还要等两个最大报文寿命？","gold":["net-n25-text-1"]}
+{"id":"hard-17","query":"端到端通信中的端点是主机还是应用进程？","gold":["net-n23-text-1","net-n23-lect-1"]}
+{"id":"hard-18","query":"UDP 在发送数据报之前需要先建立连接吗？","gold":["net-n24-text-1"]}
+{"id":"ood-01","query":"明天北京会不会下雨？","gold":[]}
+{"id":"ood-02","query":"推荐一家附近的火锅店","gold":[]}
+{"id":"absent-01","query":"KMP 的发明者是哪一年获得了什么奖？","gold":[]}
+{"id":"absent-02","query":"TCP 在某银行内部系统的配置密码是什么？","gold":[]}

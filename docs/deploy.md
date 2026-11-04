@@ -1,5 +1,7 @@
 # 快速开始与部署
 
+2026-11-04 起，推荐验证顺序为 `npm run verify` → `npm run build` → `npm run test:e2e`。最后一项自动启动并关闭本机生产测试服务，强制内存数据库、临时加密主密钥与指定本机 mock 模型端口；它不会使用 `.env.local` 的数据库地址。默认测试端口 3218 / 3219，可用 `ALP_E2E_PORT` / `ALP_E2E_MOCK_PORT` 调整。本轮进度 revision 与 KB 条件写入复用既有列，无新增数据库迁移。实际部署与真实 Neon / 第三方模型验证未在本轮执行。
+
 环境要求：Node.js ≥ 22.13（推荐 22 或 24）、npm 10+。**Node 20 不支持**：PDF 解析用的 `pdfjs-dist@6.4.299` 的 `engines` 要求 ≥22.13，强行在 Node 20 上装会报 engine 警告、构建也可能失败；若必须保留 Node 20，需要改用 `pdfjs-dist` 5.x 并重新验证 worker，不在本轮已验证范围。它的 `@napi-rs/canvas` 只是 optionalDependency（Node 侧才可能用到），浏览器 bundle 不会引入。Vercel 项目需把 Node 版本设为 22.x。
 
 ```bash
