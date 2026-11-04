@@ -324,14 +324,14 @@ export function MasteryBar({
             : `掌握度 ${pct}%，不确定区间 ${low}% 到 ${high}%`
         }
       >
-        <div
+        {evidenceN > 0 ? <div
           className="absolute inset-y-0 bg-[var(--accent-soft)]"
           style={{ left: `${low}%`, width: `${Math.max(0, high - low)}%` }}
-        />
-        <div
+        /> : null}
+        {evidenceN > 0 ? <div
           className="absolute inset-y-0 left-0 bg-[var(--accent)]"
           style={{ width: `${pct}%` }}
-        />
+        /> : null}
       </div>
       {evidenceN > 0 ? (
         <p className="mt-1 text-xs text-[var(--ink-faint)]">

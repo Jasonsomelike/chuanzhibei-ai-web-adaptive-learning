@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useId, useMemo, useState } from "react";
 import Link from "next/link";
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps, type OnSelectionChangeParams, type ReactFlowInstance } from "@xyflow/react";
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeChange, type NodeProps, type OnSelectionChangeParams, type ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Icon } from "@/components/icons";
 import { AppDialog } from "@/components/primitives/dialog";
@@ -32,18 +32,36 @@ export default function LearningGraph({ graph, mastery, plan, steps, query }: {
   const [showAll, setShowAll] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [flow, setFlow] = useState<ReactFlowInstance<ConceptNode> | null>(null);
+  const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>({});
+  const onNodesChange = useCallback((changes: NodeChange<ConceptNode>[]) => {
+    setDimensions(previous => {
+      let next = previous;
+      for (const change of changes) if (change.type === "dimensions" && change.dimensions) {
+        const size = change.dimensions;
+        if (previous[change.id]?.width === size.width && previous[change.id]?.height === size.height) continue;
+        if (next === previous) next = { ...previous };
+        next[change.id] = { width: size.width, height: size.height };
+      }
+      return next;
+    });
+  }, []);
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams<ConceptNode>) => { if (selectedNodes[0]) setSelectedId(selectedNodes[0].id); }, []);
   const id = useId();
   const models = useMemo(() => learningGraphNodes(graph, mastery, plan, steps), [graph, mastery, plan, steps]);
   const selected = models.find(item => item.id === selectedId) ?? models.find(item => item.order === 1) ?? models[0];
   const related = useMemo(() => relatedLearningNodes(graph, steps), [graph, steps]);
-  const visibleModels = layoutLearningNodes(models.filter(item => showAll || related.size === 0 || related.has(item.id) || item.id === selected?.id));
-  const visible = new Set(visibleModels.map(item => item.id));
-  const byId = new Map(models.map(item => [item.id, item]));
-  const nodes: ConceptNode[] = visibleModels.map(item => ({ id: item.id, type: "concept", position: item.position, initialWidth: 210, initialHeight: 78, data: { concept: item }, selected: item.id === selected?.id, draggable: false, ariaLabel: `${item.name}，${LEARNING_STATUS_LABELS[item.status]}，${item.evidenceN ? `${item.evidenceN} 条作答证据` : "尚未测评"}` }));
+  const selectedNodeId = selected?.id;
+  const visibleModels = useMemo(() => layoutLearningNodes(models.filter(item => showAll || related.size === 0 || related.has(item.id) || item.id === selectedNodeId)), [models, showAll, related, selectedNodeId]);
+  const byId = useMemo(() => new Map(models.map(item => [item.id, item])), [models]);
+  // Controlled nodes must retain measured dimensions so React Flow preserves handle bounds.
+  // Recreating unmeasured nodes after a resize can otherwise erase every edge without an error.
+  const nodes = useMemo<ConceptNode[]>(() => visibleModels.map(item => ({ id: item.id, type: "concept", position: item.position, initialWidth: 210, initialHeight: 78, measured: dimensions[item.id], data: { concept: item }, selected: item.id === selectedNodeId, draggable: false, ariaLabel: `${item.name}，${LEARNING_STATUS_LABELS[item.status]}，${item.evidenceN ? `${item.evidenceN} 条作答证据` : "尚未测评"}` })), [visibleModels, dimensions, selectedNodeId]);
   const stepSignature = steps.map(step => step.kcId).join(",");
   useEffect(() => { if (flow) { const frame = requestAnimationFrame(() => { void flow.fitView({ padding: 0.14, maxZoom: 1, duration: prefersReducedMotion() ? 0 : 300 }); }); return () => cancelAnimationFrame(frame); } }, [flow, showAll, stepSignature]);
-  const edges = graph.edges.filter(edge => visible.has(edge.before) && visible.has(edge.after)).map(edge => ({ id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed, color: "var(--ink-faint)" }, style: { stroke: "var(--ink-faint)", strokeWidth: 1.3 }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识` }));
+  const edges = useMemo(() => {
+    const visible = new Set(visibleModels.map(item => item.id));
+    return graph.edges.filter(edge => visible.has(edge.before) && visible.has(edge.after)).map(edge => ({ id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed, color: "var(--ink-faint)" }, style: { stroke: "var(--ink-faint)", strokeWidth: 1.3 }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识` }));
+  }, [graph, visibleModels, byId]);
   const focus = (value: string) => {
     setSelectedId(value);
     const item = layoutLearningNodes(models.filter(item => showAll || related.has(item.id) || item.id === value)).find(item => item.id === value);
@@ -73,7 +91,7 @@ export default function LearningGraph({ graph, mastery, plan, steps, query }: {
     </div>
     <div className="knowledge-layout">
       <div className="knowledge-canvas" role="region" aria-label="可缩放的课程先修关系图">
-        <ReactFlow<ConceptNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodeClick={(_event, node) => { setSelectedId(node.id); if (window.matchMedia("(max-width: 1023px)").matches) setDetailsOpen(true); }} onSelectionChange={onSelectionChange} fitView fitViewOptions={{ padding: 0.14, maxZoom: 1 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} deleteKeyCode={null} panOnScroll={false} zoomOnScroll={false} preventScrolling={false} attributionPosition="bottom-right" ariaLabelConfig={{ "controls.zoomIn.ariaLabel": "放大图谱", "controls.zoomOut.ariaLabel": "缩小图谱", "controls.fitView.ariaLabel": "查看完整图谱", "controls.interactive.ariaLabel": "切换图谱交互" }}>
+        <ReactFlow<ConceptNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodeClick={(_event, node) => { setSelectedId(node.id); if (window.matchMedia("(max-width: 1023px)").matches) setDetailsOpen(true); }} onSelectionChange={onSelectionChange} onNodesChange={onNodesChange} fitView fitViewOptions={{ padding: 0.14, maxZoom: 1 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} deleteKeyCode={null} panOnScroll={false} zoomOnScroll={false} preventScrolling={false} attributionPosition="bottom-right" ariaLabelConfig={{ "controls.zoomIn.ariaLabel": "放大图谱", "controls.zoomOut.ariaLabel": "缩小图谱", "controls.fitView.ariaLabel": "查看完整图谱", "controls.interactive.ariaLabel": "切换图谱交互" }}>
           <Background color="var(--line-strong)" gap={20} size={0.7} />
           <Controls showInteractive={false} />
         </ReactFlow>
