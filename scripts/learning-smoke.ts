@@ -103,11 +103,12 @@ try {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await visit("/path?subject=data-structures&budget=60");
   await page.locator(".react-flow__node").first().waitFor();
+  await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
   await page.waitForFunction(() => {
     const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
     return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
   });
-  check(await page.locator(".react-flow__node").count() > 0, "图谱初始视野包含全部当前节点，无基础节点裁切");
+  check(await page.locator(".react-flow__node").count() > 0 && await page.locator(".react-flow__edge-path").count() > 0, "图谱先修连线已绘制，初始视野无基础节点裁切");
   await page.getByLabel("定位知识点", { exact: true }).selectOption("c05");
   check((await page.locator(".knowledge-desktop-inspector h3").innerText()) === "顺序表", "选择节点显示实际知识点详情");
   await page.locator(".knowledge-desktop-inspector").getByRole("link", { name: "开始练习", exact: true }).click();
@@ -130,6 +131,7 @@ try {
     await visit(`${route}?subject=data-structures`);
     if (route === "/path") {
       await page.locator(".react-flow__node").first().waitFor();
+      await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
       await page.waitForFunction(() => {
         const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
         return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
@@ -145,6 +147,7 @@ try {
       const bounds = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, width: document.documentElement.clientWidth }));
       check(bounds.scroll <= bounds.width + 1, `${route} ${width}px 无横向溢出`);
       check(!await page.locator("nextjs-portal [data-nextjs-dialog]").count(), `${route} 无框架错误遮罩`);
+      if (route === "/path") await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
       if (["/", "/path", "/tutor", "/settings"].includes(route)) await page.screenshot({ path: join(output, `${route === "/" ? "home" : route.slice(1)}-${width}.png`), fullPage: false });
     }
     if (width === 390) {
