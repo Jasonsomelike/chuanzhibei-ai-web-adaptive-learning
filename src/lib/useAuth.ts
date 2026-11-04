@@ -13,7 +13,8 @@
  */
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import type { LearnerState } from "@/lib/learner";
+import { sanitizeProgress, type SubjectProgress } from "@/lib/learner";
+import { pushProgress, rememberProgressRevisions } from "@/lib/progressClient";
 import { authStore } from "@/lib/authStore";
 
 export type { AuthUser } from "@/lib/authStore";
@@ -58,12 +59,14 @@ export function useAuth() {
 export function useServerProgress(enabled: boolean) {
   const [loaded, setLoaded] = useState(false);
 
-  const pull = useCallback(async (): Promise<Record<string, LearnerState> | null> => {
+  const pull = useCallback(async (): Promise<Record<string, SubjectProgress> | null> => {
     if (!enabled) return null;
     try {
       const res = await fetch("/api/progress", { cache: "no-store" });
       if (!res.ok) return null;
-      const data = (await res.json()) as { progress?: Record<string, LearnerState> };
+      const data = (await res.json()) as { progress?: Record<string, SubjectProgress>; revisions?: unknown };
+      const owner = authStore.getSnapshot().user?.id;
+      if (owner) rememberProgressRevisions(owner, data.revisions);
       setLoaded(true);
       return data.progress ?? {};
     } catch {
@@ -75,12 +78,10 @@ export function useServerProgress(enabled: boolean) {
     async (subjectId: string, progress: unknown): Promise<boolean> => {
       if (!enabled) return false;
       try {
-        const res = await fetch("/api/progress", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subjectId, progress }),
-        });
-        return res.ok;
+        const owner = authStore.getSnapshot().user?.id;
+        const clean = sanitizeProgress(progress);
+        if (!owner || !clean) return false;
+        return await pushProgress(owner, subjectId, clean, () => authStore.getSnapshot().user?.id === owner) !== null;
       } catch {
         return false;
       }

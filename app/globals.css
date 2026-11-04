@@ -194,6 +194,17 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+/*
+ * 横向兜底：任何宽度都不出现整页横向滚动。
+ * 用 clip 而不是 hidden —— hidden 会让 html 变成滚动容器，破坏 sticky 定位；
+ * clip 只裁掉溢出，不产生滚动、也不改变包含块。
+ * 真正的显示不全仍要由各处的换行/截断解决，这里只兜住漏网的长内容。
+ */
+html,
+body {
+  overflow-x: clip;
+}
+
 body {
   background: var(--canvas);
   color: var(--ink);

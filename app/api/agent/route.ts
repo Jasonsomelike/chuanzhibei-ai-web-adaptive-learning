@@ -24,7 +24,6 @@ import {
 import {
   buildAgentSystemPrompt,
   filterRemoteTools,
-  localAgentTools,
   remoteAgentToolSpec,
   runAgent,
   type AgentMessage,
@@ -47,7 +46,10 @@ import {
   isUpstreamRequestError,
   type AllowedTarget,
 } from "@/lib/ssrfGuard";
-import { callReadOnlyToolText, isReadOnlyToolName } from "@/lib/tools";
+import { isReadOnlyToolName } from "@/lib/tools";
+import { callLearningTool, learningAgentTools, loadLearningContext, LearningContextError } from "@/lib/learningContext";
+import { tutorSystemPrompt } from "@/lib/tutorPersona";
+import { tutoringPolicy } from "@/lib/tutorPreferences";
 import {
   buildUpstreamChatBody,
   endpointFor,
@@ -411,13 +413,21 @@ export async function POST(request: Request): Promise<Response> {
 
   const limits = parseAgentLimits();
   const notices: AgentEvent[] = [];
+  let learningContext;
+  try {
+    learningContext = await loadLearningContext(await getDb(), auth.user.id, body.directionId ?? body.subject, body.question, body.materialSourceIds);
+  } catch (error) {
+    return jsonError(error instanceof LearningContextError ? error.status : 500, apiErrorCodes.badRequest,
+      error instanceof LearningContextError ? error.message : "读取学习上下文失败");
+  }
 
   /*
    * Anthropic 不发 tools（协议不支持工具循环），只给 notice。
    * 这不是静默降级：notice 会明说「当前供应商未启用工具」。
    */
   const toolsSupported = config.api !== "anthropic";
-  const localTools = localAgentTools();
+  const localTools = learningAgentTools();
+  if (learningContext.uploadScanLimited) notices.push({ type: "notice", level: "warn", message: "本方向资料较多，本轮 Agent 只检索前 2000 段。可改用普通导师检索其他资料。" });
   const remoteSpecs: AgentToolSpec[] = [];
   const remoteCalls = new Map<string, RemoteCall>();
   const remoteServers: { serverId: string; label: string }[] = [];
@@ -516,12 +526,25 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const toolset: AgentToolSpec[] = toolsSupported ? [...localTools, ...remoteSpecs] : [];
-  const systemPrompt = buildAgentSystemPrompt({
+  const materialTexts = new Set<string>();
+  const materialSources = new Set<string>();
+  const executeLearningTool = (name: string, args: Record<string, unknown>): string => {
+    const text = callLearningTool(learningContext, name, args, body.budgetMinutes);
+    if (name === "search_knowledge") {
+      const result = JSON.parse(text) as { material?: string; materialSources?: string[] };
+      if (result.material) materialTexts.add(result.material);
+      for (const source of result.materialSources ?? []) materialSources.add(source);
+    }
+    return text;
+  };
+  const systemPrompt = tutorSystemPrompt({ tone: body.tone }) + "\n" + buildAgentSystemPrompt({
     ...(body.subject === undefined ? {} : { subject: body.subject }),
     ...(body.budgetMinutes === undefined ? {} : { budgetMinutes: body.budgetMinutes }),
     tools: toolset,
     remoteServers,
-  });
+  }) + `\n当前学习目标：${learningContext.course.name}（${learningContext.course.id}）。所有本地工具已绑定该目标与当前账号。` +
+    "\n无作答记录表示尚未观测，不得称为薄弱；少量记录只能称证据不足。先调用 get_learner_state，涉及课程问题再调用 search_knowledge；不要编造学生表现。" +
+    "\n" + tutoringPolicy(body.helpLevel ?? "explain");
 
   const secret: RedactSecret = {
     apiKey: config.payload.apiKey,
@@ -634,7 +657,7 @@ export async function POST(request: Request): Promise<Response> {
           return { ok: false, text: `未知工具：${call.name}` };
         }
         try {
-          return { ok: true, text: callReadOnlyToolText(call.name, args.value) };
+          return { ok: true, text: executeLearningTool(call.name, args.value) };
         } catch (err) {
           return { ok: false, text: err instanceof Error ? err.message : String(err) };
         }
@@ -652,11 +675,16 @@ export async function POST(request: Request): Promise<Response> {
       question: body.question,
       ...(body.images === undefined ? {} : { images: body.images }),
       systemPrompt,
+      initialToolResults: [
+        { name: "get_learner_state", text: executeLearningTool("get_learner_state", {}) },
+        { name: "search_knowledge", arguments: { query: body.question }, text: executeLearningTool("search_knowledge", { query: body.question }) },
+      ],
       tools: toolset,
       limits,
       callModel,
       callTool,
-      emit,
+      emit: (event) => emit(event.type === "done" ? { ...event, uploads: learningContext.uploadHits,
+        materialContext: [...materialTexts].join("\n\n"), materialSources: [...materialSources] } : event),
       signal,
     });
   }, request.signal);

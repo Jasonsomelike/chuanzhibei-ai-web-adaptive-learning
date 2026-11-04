@@ -303,9 +303,9 @@ export function buildTutorUserPrompt(input: TutorPromptInput): string {
       ? input.docs
           .map((doc) => {
             const state = byId.get(doc.kcId);
-            const mastery = state
+            const mastery = state && state.evidenceN > 0
               ? `学生当前：已测 ${state.evidenceN} 题，掌握度 ${Math.round(masteryMean(state) * 100)}%（±${Math.round(masterySd(state) * 100)}）`
-              : "学生当前：未测评";
+              : "学生当前：尚无作答记录，掌握情况未知；不能据先验判定薄弱。";
             return `[${doc.kcId}] ${doc.title}\n资料：${doc.snippet}\n${mastery}`;
           })
           .join("\n\n")
@@ -452,9 +452,9 @@ export function composeDeterministic(input: ComposeInput): {
   } else {
     for (const doc of input.docs) {
       const state = byId.get(doc.kcId);
-      const mastery = state
+      const mastery = state && state.evidenceN > 0
         ? `你目前在这个知识点上已测 ${state.evidenceN} 题，掌握度 ${Math.round(masteryMean(state) * 100)}%（±${Math.round(masterySd(state) * 100)}）。`
-        : "你还没有测过这个知识点。";
+        : "你还没有测过这个知识点，掌握情况未知。没有记录不代表不会。";
 
       /*
        * 每条都先给出处再给原文：摘录才是教材口径，

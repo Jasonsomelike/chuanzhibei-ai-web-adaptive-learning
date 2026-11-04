@@ -5,6 +5,8 @@ import { checkItem, type DirectionItem, type ItemStatus, type ItemSource } from 
 import { borrowItems } from "@/lib/borrow";
 import { MATERIAL_CHECK_PREFIX } from "@/lib/materials";
 import type { Difficulty } from "@/lib/mastery";
+import { assertMutationOrigin, readLimitedText } from "@/lib/routeAuth";
+import { MAX_DIRECTION_ITEMS_BODY_BYTES } from "@/lib/bodyLimit";
 
 export const runtime = "nodejs";
 
@@ -124,12 +126,17 @@ interface PostBody {
  * 服务端校验通过后仍保留 practice，不会被提升成 accepted。
  */
 export async function POST(request: Request) {
+  const origin = assertMutationOrigin(request);
+  if (origin) return origin;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
 
   let body: PostBody;
+  const limited = await readLimitedText(request, MAX_DIRECTION_ITEMS_BODY_BYTES);
+  if (!limited.ok) return limited.response;
   try {
-    body = (await request.json()) as PostBody;
+    body = JSON.parse(limited.text) as PostBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid");
   } catch {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }

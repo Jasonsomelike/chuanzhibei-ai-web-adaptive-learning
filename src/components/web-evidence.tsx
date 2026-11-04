@@ -68,7 +68,7 @@ export function WebEvidence({
                     href={hit.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs font-medium underline"
+                    className="max-w-full wrap-anywhere text-xs font-medium underline"
                   >
                     {hit.label}
                   </a>

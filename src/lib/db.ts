@@ -369,6 +369,11 @@ function createMemoryDb(): Db {
 
       if (q.startsWith("insert into progress")) {
         const [user_id, subject_id, data, updated_at] = params as string[];
+        if (q.includes("where progress.updated_at")) {
+          const existing = progress.get(`${user_id}:${subject_id}`);
+          if (existing && (params[4] === null || existing.updated_at !== params[4])) return 0;
+          if (!existing && params[4] !== null) return 0;
+        }
         progress.set(`${user_id}:${subject_id}`, { user_id, subject_id, data, updated_at });
         return 1;
       }
@@ -503,7 +508,12 @@ function createMemoryDb(): Db {
       }
 
       if (q.startsWith("insert into kb_docs")) {
-        return upsertRow(kbDocs, q, params, "kb_docs", ["user_id", "doc_id"], (row) =>
+        if (q.includes("where kb_docs.updated_at")) {
+          const existing = kbDocs.get(`${params[0]}|${params[1]}`);
+          if (existing && (params[13] === null || existing.updated_at !== params[13])) return 0;
+          if (!existing && params[13] !== null) return 0;
+        }
+        return upsertRow(kbDocs, q.split(" where kb_docs.updated_at")[0], q.includes("where kb_docs.updated_at") ? params.slice(0, 13) : params, "kb_docs", ["user_id", "doc_id"], (row) =>
           `${row.user_id}|${row.doc_id}`,
         );
       }

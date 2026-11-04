@@ -26,6 +26,7 @@ import {
 import type { KbVectorSyncState } from "@/lib/kbRemote";
 import type { PublicMcpServer } from "@/lib/mcpStore";
 import type { CallMode } from "@/lib/serverConfig";
+import { loadTutorTone, TUTOR_TONE_KEY } from "@/lib/tutorPreferences";
 import {
   DEFAULT_TUTOR_TONE,
   TONE_LABELS,
@@ -43,7 +44,7 @@ import {
  * 字段；userSecrets 的 options 白名单也不含 tone。要同步到账号，必须先扩展
  * src/lib/apiContracts.ts 与 src/lib/userSecrets.ts（不在设置页的改动范围）。
  */
-export const TUTOR_TONE_KEY = "alp.tutor.tone.v1";
+export { TUTOR_TONE_KEY } from "@/lib/tutorPreferences";
 
 export const TONE_NOTES: Readonly<Record<TutorTone, string>> = {
   companion: "先接住卡点，再讲知识；不夸「太棒了」，只指出具体做对的那一步。",
@@ -54,15 +55,6 @@ export const TONE_NOTES: Readonly<Record<TutorTone, string>> = {
 /** 未知值一律回落到默认语气，不让坏存档把界面卡在无选项状态。 */
 export function parseTutorTone(raw: string | null | undefined): TutorTone {
   return isTutorTone(raw) ? raw : DEFAULT_TUTOR_TONE;
-}
-
-function loadTutorTone(): TutorTone {
-  if (typeof window === "undefined") return DEFAULT_TUTOR_TONE;
-  try {
-    return parseTutorTone(window.localStorage.getItem(TUTOR_TONE_KEY));
-  } catch {
-    return DEFAULT_TUTOR_TONE;
-  }
 }
 
 function storeTutorTone(tone: TutorTone): void {

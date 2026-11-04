@@ -286,7 +286,7 @@ describe("按知识点清空证据", () => {
     return s;
   }
 
-  it("清空后掌握度回到先验、attempts 不含该 KC、该知识点的题重新可出", () => {
+  it("重测后掌握度回到先验、旧证据归档且历史保留、该知识点的题重新可出", () => {
     // 清空前先答满 c09 的三题（旧行为下这之后就冻结），再给 c10 留一条记录作对照
     let s = answerAllKc();
     s = recordAttempt(s, DS, otherQuestion, false, NOW);
@@ -301,15 +301,15 @@ describe("按知识点清空证据", () => {
     const after = progressOf(cleared, DS);
 
     expect(after.mastery.find((m) => m.kcId === "c09")).toEqual(expectedPrior);
-    expect(after.attempts.some((a) => a.kcId === "c09")).toBe(false);
+    expect(after.attempts.filter((a) => a.kcId === "c09").every((a) => a.retired)).toBe(true);
     expect(attemptedQuestionIds(cleared, DS, "c09").size).toBe(0);
 
     // 其它知识点逐字段不变；别的知识点的作答记录也保留
     expect(after.mastery.filter((m) => m.kcId !== "c09")).toEqual(
       before.mastery.filter((m) => m.kcId !== "c09"),
     );
-    expect(after.attempts).toHaveLength(1);
-    expect(after.attempts[0]).toMatchObject({ kcId: "c10", correct: false });
+    expect(after.attempts).toHaveLength(4);
+    expect(after.attempts.at(-1)).toMatchObject({ kcId: "c10", correct: false });
   });
 
   it("是纯函数：不修改原状态", () => {
@@ -333,17 +333,19 @@ describe("按知识点清空证据", () => {
     const again = recordAttempt(cleared, DS, kcQuestions[0], true, NOW);
     const m = progressOf(again, DS).mastery.find((x) => x.kcId === "c09")!;
     expect(m.evidenceN).toBe(1);
-    expect(progressOf(again, DS).attempts).toHaveLength(1);
-    expect(progressOf(again, DS).attempts[0].counted).toBeUndefined();
+    expect(progressOf(again, DS).attempts).toHaveLength(4);
+    expect(progressOf(again, DS).attempts.filter((a) => !a.retired)).toHaveLength(1);
+    expect(progressOf(again, DS).attempts.at(-1)?.counted).toBeUndefined();
   });
 
-  it("同一知识点的重复记录（counted=false）也一并删除", () => {
+  it("同一知识点的重复记录（counted=false）也归档保留", () => {
     let s = answerAllKc();
     s = recordAttempt(s, DS, kcQuestions[0], true, NOW);
     expect(progressOf(s, DS).attempts.filter((a) => a.kcId === "c09")).toHaveLength(4);
 
     const cleared = clearKcEvidence(s, DS, "c09");
-    expect(progressOf(cleared, DS).attempts).toHaveLength(0);
+    expect(progressOf(cleared, DS).attempts).toHaveLength(4);
+    expect(progressOf(cleared, DS).attempts.every((a) => a.retired)).toBe(true);
   });
 
   it("自定义方向按传入的图清空，不回落内置学科", () => {
@@ -376,7 +378,8 @@ describe("按知识点清空证据", () => {
 
     expect(after.mastery.map((m) => m.kcId)).toEqual(["k1", "k2"]);
     expect(after.mastery[0]).toEqual(initialMastery("k1", computeDepths(fakeGraph).get("k1") ?? 0));
-    expect(after.attempts).toHaveLength(0);
+    expect(after.attempts).toHaveLength(1);
+    expect(after.attempts[0].retired).toBe(true);
   });
 
   it("清空没有证据的知识点不改变任何字段", () => {
@@ -407,7 +410,8 @@ describe("按知识点清空证据", () => {
 
     expect(after.memories).toEqual(progressOf(s, DS).memories);
     expect(after.pathEdits).toEqual(progressOf(s, DS).pathEdits);
-    expect(after.attempts).toHaveLength(0);
+    expect(after.attempts).toHaveLength(1);
+    expect(after.attempts[0].retired).toBe(true);
   });
 });
 

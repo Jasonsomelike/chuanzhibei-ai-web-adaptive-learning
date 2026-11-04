@@ -419,25 +419,35 @@ export function createRemoteKbStorage(options: RemoteKbStorageOptions = {}): KbR
 
 // ── 本地 + 远端 ───────────────────────────────────────────────────
 
-/** 按 id 求并集；远端同名条目覆盖本地（远端是跨设备的权威副本）。 */
+/** 待上传修改优先；其余按服务端版本比较，相同版本采用远端。 */
 function mergeDocs(
   localDocs: readonly UploadDoc[],
   remoteDocs: readonly UploadDoc[],
 ): UploadDoc[] {
   const byId = new Map<string, UploadDoc>();
   for (const doc of localDocs) byId.set(doc.id, doc);
-  for (const doc of remoteDocs) byId.set(doc.id, doc);
+  for (const doc of remoteDocs) {
+    const local = byId.get(doc.id);
+    if (local?.pendingSync || (local?.updatedAt ?? 0) > (doc.updatedAt ?? 0)) continue;
+    byId.set(doc.id, doc);
+  }
   return [...byId.values()];
 }
 
 function mergeChunks(
   localChunks: readonly UploadChunk[],
   remoteChunks: readonly UploadChunk[],
+  docs: readonly UploadDoc[],
+  localDocs: readonly UploadDoc[],
 ): UploadChunk[] {
-  const byId = new Map<string, UploadChunk>();
-  for (const chunk of localChunks) byId.set(chunk.id, chunk);
-  for (const chunk of remoteChunks) byId.set(chunk.id, chunk);
-  return [...byId.values()];
+  // 按文档选择完整的一份片段，避免把新标题与旧正文、或新旧切块拼在一起。
+  const localById = new Map(localDocs.map((doc) => [doc.id, doc]));
+  const localIds = new Set(docs.filter((doc) => localById.get(doc.id) === doc).map((doc) => doc.id));
+  const docIds = new Set(docs.map((doc) => doc.id));
+  return [
+    ...localChunks.filter((chunk) => localIds.has(chunk.docId)),
+    ...remoteChunks.filter((chunk) => docIds.has(chunk.docId) && !localIds.has(chunk.docId)),
+  ];
 }
 
 export interface SyncedKbStorageOptions {
@@ -664,25 +674,33 @@ export function createSyncedKbStorage(
     localChunks: readonly UploadChunk[],
     remoteDocs: readonly UploadDoc[],
   ): Promise<void> {
-    if (firstSynced.has(directionId)) return;
-
-    const remoteIds = new Set(remoteDocs.map((doc) => doc.id));
-    const missing = localDocs.filter((doc) => !remoteIds.has(doc.id));
+    const remoteById = new Map(remoteDocs.map((doc) => [doc.id, doc]));
+    const missing = localDocs.filter((doc) => doc.pendingSync ||
+      (!firstSynced.has(directionId) && !remoteById.has(doc.id)));
     let complete = true;
 
     for (const doc of missing) {
       const chunks = localChunks.filter((chunk) => chunk.docId === doc.id);
       if (chunks.length === 0) continue;
+      const remoteDoc = remoteById.get(doc.id);
+      if (remoteDoc && (remoteDoc.updatedAt ?? null) !== (doc.updatedAt ?? null)) {
+        complete = false;
+        markWarning(new KbConflictError());
+        continue;
+      }
       try {
-        const saved = await remote.putDoc(doc, chunks, null);
+        const saved = await remote.putDoc(doc, chunks, doc.updatedAt ?? null);
         // 本地补服务端版本号：之后改绑定才有正确的 CAS 基准
         try {
-          await local.putDocWithChunks(saved, chunks);
+          await local.putDocWithChunks({ ...saved, pendingSync: false }, chunks);
         } catch {
           // 本地已有一份内容；版本号补写失败只影响下一次 CAS，读取时仍以远端为准
         }
       } catch (err) {
-        if (isKbConflictError(err)) continue;
+        if (isKbConflictError(err)) {
+          if (doc.pendingSync) markWarning(err);
+          continue;
+        }
         complete = false;
         markWarning(err);
         break;
@@ -693,7 +711,7 @@ export function createSyncedKbStorage(
   }
 
   async function loadDirectionInner(directionId: string): Promise<DirectionKb> {
-    const [localDocs, localChunks] = await Promise.all([
+    let [localDocs, localChunks] = await Promise.all([
       local.listDocs(directionId),
       local.listChunks(directionId),
     ]);
@@ -712,12 +730,19 @@ export function createSyncedKbStorage(
     }
 
     if (remoteReady) {
+      // 网络请求期间可能发生本地编辑，重读后再合并。
+      [localDocs, localChunks] = await Promise.all([
+        local.listDocs(directionId), local.listChunks(directionId),
+      ]);
       await pushLocalOnly(directionId, localDocs, localChunks, remoteDocs);
+      [localDocs, localChunks] = await Promise.all([
+        local.listDocs(directionId), local.listChunks(directionId),
+      ]);
     }
-
+    const docs = mergeDocs(localDocs, remoteDocs);
     return {
-      docs: mergeDocs(localDocs, remoteDocs),
-      chunks: mergeChunks(localChunks, remoteChunks),
+      docs,
+      chunks: mergeChunks(localChunks, remoteChunks, docs, localDocs),
     };
   }
 
@@ -740,19 +765,24 @@ export function createSyncedKbStorage(
     listChunks: async (directionId) => (await loadDirection(directionId)).chunks,
 
     async getDoc(docId) {
+      const localDoc = await local.getDoc(docId);
       try {
         const doc = await remote.getDoc(docId);
         clearWarning();
-        if (doc !== null) return doc;
+        if (localDoc?.pendingSync) {
+          warning = "这份资料有尚未同步的本地修改，已保留本地内容。";
+          return localDoc;
+        }
+        if (doc !== null) return mergeDocs(localDoc ? [localDoc] : [], [doc])[0];
       } catch (err) {
         markWarning(err);
       }
-      return local.getDoc(docId);
+      return localDoc;
     },
 
     async putDocWithChunks(doc, chunks, opts?: KbWriteOptions) {
       // 本地先写：本地失败必须让调用方看到（远端成功但本地失败等于没保存）
-      await local.putDocWithChunks(doc, chunks);
+      await local.putDocWithChunks({ ...doc, pendingSync: true }, chunks);
 
       const base =
         opts?.baseUpdatedAt !== undefined ? opts.baseUpdatedAt : (doc.updatedAt ?? null);
@@ -762,7 +792,7 @@ export function createSyncedKbStorage(
         invalidateVectorState(doc.directionId);
         void syncVectors(doc.directionId);
         try {
-          await local.putDocWithChunks(saved, chunks);
+          await local.putDocWithChunks({ ...saved, pendingSync: false }, chunks);
         } catch {
           // 本地已有内容；版本号回写失败不改变「已保存」的语义
         }
@@ -812,6 +842,24 @@ export function createSyncedKbStorage(
 
 /** 每个账号一个复合存储：同步告警与首次回传状态都挂在实例上。 */
 const syncedStorages = new Map<string, KbStorage>();
+let storageGeneration = 0;
+
+/** 换号后，旧实例的在途读写都失效，不能用新账号 cookie 回传旧内容。 */
+function scopedStorage<T extends KbStorage>(storage: T, generation: number): T {
+  const asyncMethods = new Set(["listDocs", "listChunks", "getDoc", "putDoc", "putDocWithChunks", "removeDoc", "estimate", "loadDirection", "loadVectors", "loadVectorChunkIds", "putVectors", "syncVectors"]);
+  return new Proxy(storage, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      if (typeof key !== "string" || !asyncMethods.has(key) || typeof value !== "function") return value;
+      return async (...args: unknown[]) => {
+        if (generation !== storageGeneration) throw new Error("账号已切换，已取消旧资料请求");
+        const result: unknown = await Reflect.apply(value, target, args);
+        if (generation !== storageGeneration) throw new Error("账号已切换，已丢弃旧资料结果");
+        return result;
+      };
+    },
+  });
+}
 
 /**
  * 全部知识库写入点的唯一入口。
@@ -826,15 +874,17 @@ export function getKbStorageForUser(userId?: string | null): KbStorage | null {
   const existing = syncedStorages.get(key);
   if (existing !== undefined) return existing;
 
-  const local = getDefaultKbStorage();
-  const remote = createRemoteKbStorage();
-  const storage: KbStorage = local === null ? remote : createSyncedKbStorage(local, remote);
+  const localStorage = getDefaultKbStorage();
+  const local = localStorage ? scopedStorage(localStorage, storageGeneration) : null;
+  const remote = scopedStorage(createRemoteKbStorage(), storageGeneration);
+  const storage: KbStorage = scopedStorage(local === null ? remote : createSyncedKbStorage(local, remote), storageGeneration);
   syncedStorages.set(key, storage);
   return storage;
 }
 
 /** 单测专用：清空账号实例缓存。 */
 export function __resetKbStorageCacheForTests(): void {
+  storageGeneration += 1;
   syncedStorages.clear();
 }
 
@@ -845,5 +895,6 @@ export function __resetKbStorageCacheForTests(): void {
  * 不会被补推到服务器，也不会有任何 syncWarning。
  */
 export function resetKbStorageCache(): void {
+  storageGeneration += 1;
   syncedStorages.clear();
 }

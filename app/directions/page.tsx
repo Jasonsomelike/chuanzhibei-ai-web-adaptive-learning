@@ -199,6 +199,7 @@ export default function DirectionsPage() {
       <>
         <Nav />
         <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+          <h1 className="mb-5 text-2xl font-semibold tracking-tight">我的学习方向</h1>
           <Card motion="login-required">
             <SectionTitle hint="自定义方向需要账号才能保存，这样换设备也不会丢。">
               需要先登录

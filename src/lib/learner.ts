@@ -29,6 +29,7 @@ export type AttemptSource = "builtin" | "generated" | "borrowed" | "manual";
 
 /** 一次作答记录。保留它才能解释「为什么你的掌握度是这个数」。 */
 export interface AttemptRecord {
+  readonly attemptId?: string;
   readonly questionId: string;
   readonly kcId: string;
   readonly difficulty: Difficulty;
@@ -50,6 +51,8 @@ export interface AttemptRecord {
   readonly source?: AttemptSource;
   /** 学生选中的选项下标，用于记忆卡展示「你选了…」。 */
   readonly selectedIndex?: number;
+  /** 已归档的重测前证据：保留历史，但不进入本轮掌握度。 */
+  readonly retired?: boolean;
 }
 
 /** 手动改写路径时的一条记录。 */
@@ -113,6 +116,7 @@ export function progressOf(
 
 /** recordAttempt 的可选参数。graph 用于自定义方向，其余字段原样落进作答记录。 */
 export interface RecordAttemptOptions {
+  readonly attemptId?: string;
   readonly graph?: KnowledgeGraph;
   readonly weightScale?: number;
   readonly predicted?: number;
@@ -145,7 +149,7 @@ export function recordAttempt(
   const progress = progressOf(state, subjectId, opts?.graph);
 
   const alreadyCounted = progress.attempts.some(
-    (a) => a.questionId === question.id && a.kcId === question.kcId && a.counted !== false,
+    (a) => !a.retired && a.questionId === question.id && a.kcId === question.kcId && a.counted !== false,
   );
   const weightScale = opts?.weightScale ?? 1;
   const counted = !alreadyCounted && weightScale > 0;
@@ -159,6 +163,7 @@ export function recordAttempt(
     : progress.mastery;
 
   const attempt: AttemptRecord = {
+    attemptId: opts?.attemptId ?? `${question.id}:${now}:${progress.attempts.length}`,
     questionId: question.id,
     kcId: question.kcId,
     difficulty: question.difficulty,
@@ -195,7 +200,7 @@ export function recordAttempt(
  *
  * 语义：
  *   - 该 KC 的 mastery 回到与新建进度一致的先验（按图谱深度，evidenceN 归零）
- *   - attempts 里该 KC 的记录全部删除，attemptedQuestionIds 随之重新为空
+ *   - 该 KC 的旧作答归档保留，attemptedQuestionIds 只查看本轮有效记录
  *   - 其它知识点、其它学科、pathEdits 与 memories 原样保留
  *
  * graph 与 recordAttempt 同义：自定义方向必须传，否则会回落内置学科建进度。
@@ -217,7 +222,7 @@ export function clearKcEvidence(
       [subjectId]: {
         ...progress,
         mastery: progress.mastery.map((m) => (m.kcId === kcId ? prior : m)),
-        attempts: progress.attempts.filter((a) => a.kcId !== kcId),
+        attempts: progress.attempts.map((a) => a.kcId === kcId ? { ...a, retired: true } : a),
       },
     },
   };
@@ -289,7 +294,7 @@ export function attemptedQuestionIds(
 ): Set<string> {
   const progress = progressOf(state, subjectId, graph);
   return new Set(
-    progress.attempts.filter((a) => a.kcId === kcId).map((a) => a.questionId),
+    progress.attempts.filter((a) => !a.retired && a.kcId === kcId).map((a) => a.questionId),
   );
 }
 
@@ -446,12 +451,14 @@ function sanitizeAttempt(raw: unknown): AttemptRecord | null {
     difficulty,
     correct,
     at,
+    ...(typeof raw.attemptId === "string" && raw.attemptId.length <= 250 ? { attemptId: raw.attemptId } : {}),
     // counted 只认显式的 false；旧存档缺字段就是「计入」
     ...(raw.counted === false ? { counted: false } : {}),
     ...(isFiniteNumber(raw.predicted) ? { predicted: raw.predicted } : {}),
     ...(isFiniteNumber(raw.weightScale) ? { weightScale: raw.weightScale } : {}),
     ...(isAttemptSource(raw.source) ? { source: raw.source } : {}),
     ...(isCount(raw.selectedIndex) ? { selectedIndex: raw.selectedIndex } : {}),
+    ...(raw.retired === true ? { retired: true } : {}),
   };
 }
 

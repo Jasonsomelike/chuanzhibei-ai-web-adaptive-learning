@@ -39,7 +39,7 @@ export function MiniMarkdown({
             return (
               <code
                 key={index}
-                className="rounded bg-[var(--line)] px-1 py-0.5 font-mono text-[0.92em]"
+                className="rounded bg-[var(--line)] px-1 py-0.5 wrap-anywhere font-mono text-[0.92em]"
               >
                 {token.value}
               </code>

@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "可解释的自适应学习路径 · 多学科",
+  title: "智慧学伴 · 每一步，都有依据",
   description:
-    "掌握度用难度加权 Beta 后验建模，路径由纯函数算出、可逐位复现，LLM 只解释不排序。支持多学科与 5 套配色主题。传智杯 AI WEB 网页开发挑战赛作品。",
+    "诊断当前学习状态，按时间安排学习路径，结合教材向课程导师提问。支持 9 门课程、自定义学习方向与错题复习。",
 };
 
 export const viewport: Viewport = {

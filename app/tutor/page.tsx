@@ -8,7 +8,8 @@ import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import { useStaggerIn } from "@/components/motion";
 import { useSubject } from "@/lib/subject";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
-import { loadLearner, progressOf, type LearnerState } from "@/lib/learner";
+import { progressOf } from "@/lib/learner";
+import { useLearner } from "@/lib/useLearner";
 import type { MasteryState } from "@/lib/mastery";
 import {
   hydrateProviderFromServer,
@@ -65,6 +66,8 @@ import { WebEvidence } from "@/components/web-evidence";
 import { ReadAloud } from "@/components/read-aloud";
 import type { AttachedImage } from "@/components/image-input";
 import { tutorSystemPrompt } from "@/lib/tutorPersona";
+import { loadTutorTone, tutoringPolicy, offlineTutoringText, type HelpLevel } from "@/lib/tutorPreferences";
+import { MaterialReader } from "@/components/material-reader";
 import type { SpeechSession, SpeechSupport } from "@/lib/speech";
 
 /*
@@ -150,6 +153,9 @@ interface AgentDoneSummary {
   readonly steps: number;
   readonly toolCalls: number;
   readonly elapsedMs: number;
+  readonly uploads?: readonly UploadHit[];
+  readonly materialContext?: string;
+  readonly materialSources?: readonly string[];
 }
 
 /** 一次上传资料检索的结果与降级原因；界面直接展示。 */
@@ -206,7 +212,6 @@ interface Message {
  * 人格提示词：身份 + 12 条安全规则 + 语气 + 回答结构 + 禁语 + 不确定协议。
  * 语气用默认档（陪伴）；设置页不承载语气选择，页面也不额外造一个入口。
  */
-const TUTOR_SYSTEM_PROMPT = tutorSystemPrompt();
 
 /** 有摘录时展示的口径说明。没有摘录就不显示，避免暗示回答有教材依据。 */
 const MATERIAL_BASIS_NOTE =
@@ -406,7 +411,11 @@ function AnswerBody({ text, streaming }: { readonly text: string; readonly strea
         return (
           <p
             key={index}
-            className={index === 0 ? "whitespace-pre-wrap" : "mt-2 whitespace-pre-wrap"}
+            className={
+              index === 0
+                ? "whitespace-pre-wrap wrap-anywhere"
+                : "mt-2 whitespace-pre-wrap wrap-anywhere"
+            }
           >
             <MiniMarkdown text={block.text} trailing={last ? trailing : null} />
           </p>
@@ -441,6 +450,9 @@ type AgentStreamEvent =
       readonly steps: number;
       readonly toolCalls: number;
       readonly elapsedMs: number;
+      readonly uploads?: readonly UploadHit[];
+      readonly materialContext?: string;
+      readonly materialSources?: readonly string[];
     };
 
 interface AgentStreamOutcome {
@@ -520,6 +532,13 @@ function parseAgentEvent(raw: unknown): AgentStreamEvent | null {
       steps: numberOr(record.steps, 0),
       toolCalls: numberOr(record.toolCalls, 0),
       elapsedMs: numberOr(record.elapsedMs, 0),
+      materialContext: typeof record.materialContext === "string" ? record.materialContext : "",
+      materialSources: Array.isArray(record.materialSources) ? record.materialSources.filter((source): source is string => typeof source === "string").slice(0, 100) : [],
+      uploads: Array.isArray(record.uploads) ? record.uploads.slice(0, 3).filter((hit): hit is UploadHit => {
+        const row = asRecord(hit); const chunk = asRecord(row?.chunk);
+        return typeof row?.score === "number" && Number.isFinite(row.score) && chunk !== null &&
+          ["id", "docId", "directionId", "title", "section", "text"].every((key) => typeof chunk[key] === "string") && typeof chunk.index === "number";
+      }) : [],
     };
   }
   return null;
@@ -621,10 +640,15 @@ function similarHitsOf(payload: unknown): SimilarHit[] {
 export default function TutorPage() {
   const { target, targetId, setTargetId, ready, loadingTarget } = useSubject();
   const { user } = useAuth();
-  const [learner, setLearner] = useState<LearnerState | null>(null);
+  const { learner, ready: learnerReady } = useLearner(targetId, target?.graph);
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [helpLevel, setHelpLevel] = useState<HelpLevel>("hint");
+  useEffect(() => {
+    const question = new URLSearchParams(window.location.search).get("q");
+    if (question) setInput(question.slice(0, 500));
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
@@ -729,7 +753,6 @@ export default function TutorPage() {
   };
 
   useEffect(() => {
-    setLearner(loadLearner());
     setProvider(loadProvider());
     const stored = loadSearchConfig();
     setSearchConfig(stored);
@@ -807,7 +830,7 @@ export default function TutorPage() {
     setListening(false);
     setSpeechInterim("");
     setSpeechError(null);
-  }, [target]);
+  }, [target, user?.id]);
 
   useEffect(() => {
     /*
@@ -1018,6 +1041,10 @@ export default function TutorPage() {
           question,
           ...(imageUrls.length > 0 ? { images: imageUrls } : {}),
           ...(target !== null && target.kind === "subject" ? { subject: targetId } : {}),
+          ...(target?.kind === "direction" ? { directionId: targetId } : {}),
+          tone: loadTutorTone(),
+          helpLevel,
+          materialSourceIds: materialSelection.sourceIds.slice(0, 20),
         }),
         signal,
       });
@@ -1132,6 +1159,9 @@ export default function TutorPage() {
             steps: event.steps,
             toolCalls: event.toolCalls,
             elapsedMs: event.elapsedMs,
+            uploads: event.uploads,
+            materialContext: event.materialContext,
+            materialSources: event.materialSources,
           };
           const summary = doneSummary;
           patchMessage(assistantId, (message) => ({
@@ -1386,11 +1416,15 @@ export default function TutorPage() {
       }
 
       if (outcome.ok) {
+        const uploads = [...(outcome.done?.uploads ?? [])];
+        const serverMaterial = outcome.done?.materialContext ?? "";
+        const agentPlan = buildAnswerPlan({ materialHits: uploads.length + (serverMaterial.trim() ? 1 : 0), webHits: 0, generalAllowed: true });
         const reply = applyVisionDeclaration(outcome.text, agentPlan);
         const answerPart = splitVisionReply(reply).answer;
-        const citations = extractCitedKcIds(answerPart, docs);
-        const claims = extractClaims(answerPart, docs.map((doc) => doc.kcId));
-        const verificationContext = buildVerificationContext(material.promptContext, uploads);
+        const citationDocs = target.graph.concepts.map((concept) => ({ kcId: concept.id, title: concept.name, snippet: concept.summary, score: 0 }));
+        const citations = extractCitedKcIds(answerPart, citationDocs);
+        const claims = extractClaims(answerPart, citationDocs.map((doc) => doc.kcId));
+        const verificationContext = buildVerificationContext(serverMaterial, uploads);
         const canVerify = shouldVerifyClaims(activeProvider, claims.length, verificationContext);
 
         let verificationSkipped: string | null = null;
@@ -1422,10 +1456,7 @@ export default function TutorPage() {
           claims,
           generatedByLlm: true,
           note: notes.join(" · "),
-          sources: citedMaterialSources(
-            material.excerpts,
-            citations.map((citation) => citation.kcId),
-          ),
+          sources: citations.length > 0 ? [...(outcome.done?.materialSources ?? [])] : [],
           conflicts,
           streaming: false,
           thinkingRequested: false,
@@ -1568,7 +1599,7 @@ export default function TutorPage() {
         web: webResults,
       });
       patchMessage(assistantId, () => ({
-        text: composed.text,
+        text: offlineTutoringText(helpLevel, composed.text, docs[0]?.title),
         citations: docs.map((doc) => ({ kcId: doc.kcId, title: doc.title })),
         generatedByLlm: false,
         note: [
@@ -1606,7 +1637,7 @@ export default function TutorPage() {
       const result = await callChatStream(
         activeProvider,
         {
-          system: TUTOR_SYSTEM_PROMPT,
+          system: tutorSystemPrompt({ tone: loadTutorTone() }) + "\n" + tutoringPolicy(helpLevel),
           user: userContent,
           maxTokens: TUTOR_MAX_TOKENS,
           temperature: 0.3,
@@ -1834,7 +1865,7 @@ export default function TutorPage() {
           web: webResults,
         });
         patchMessage(assistantId, () => ({
-          text: composed.text,
+          text: offlineTutoringText(helpLevel, composed.text, docs[0]?.title),
           citations: docs.map((doc) => ({ kcId: doc.kcId, title: doc.title })),
           generatedByLlm: false,
           note:
@@ -1863,7 +1894,7 @@ export default function TutorPage() {
     }
   };
 
-  if (!ready || !target) {
+  if (!ready || !learnerReady || !target) {
     return (
       <>
         <Nav />
@@ -1946,7 +1977,7 @@ export default function TutorPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+      <main id="main" ref={mainRef} className="mx-auto max-w-6xl px-5 py-8">
         <div className="mb-5" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">课程导师</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
@@ -1954,6 +1985,28 @@ export default function TutorPage() {
           </p>
         </div>
 
+        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+        <aside className="order-2 min-w-0 space-y-4 lg:order-1" aria-label="课程学习材料">
+          <Card>
+            <p className="text-xs text-[var(--accent)]">当前课程</p>
+            <h2 className="mt-1 text-lg font-semibold">{target.name}</h2>
+            <p className="mt-2 text-sm text-[var(--ink-soft)]">读一段原文，再带着具体卡点提问。</p>
+            <Link href={`/path?${target.kind === "direction" ? "direction" : "subject"}=${encodeURIComponent(targetId)}`} className="mt-3 inline-block text-sm text-[var(--accent)] underline">返回当前学习计划 →</Link>
+          </Card>
+          <MaterialReader pack={materialPack} concepts={target.graph.concepts} selection={materialSelection} />
+          {kbChunks.length > 0 ? <details className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
+            <summary className="cursor-pointer text-sm font-medium">我的资料 · {kbDocs.length} 份</summary>
+            <div className="mt-3 max-h-80 space-y-3 overflow-y-auto">
+              {kbChunks.slice(0, 12).map((chunk) => <div key={chunk.id}>
+                <h3 className="text-sm font-medium">{chunk.title}{chunk.pageFrom ? ` · 第 ${chunk.pageFrom} 页` : ""}</h3>
+                <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">{chunk.text}</p>
+                <button type="button" onClick={() => setInput(`请引导我理解《${chunk.title}》这一段：${chunk.text.slice(0, 160)}`)} className="mt-1 text-xs text-[var(--accent)] underline">围绕这段提问</button>
+              </div>)}
+            </div>
+          </details> : null}
+        <details className="rounded-xl border border-[var(--line)] p-4">
+        <summary className="cursor-pointer text-sm font-medium">切换课程与回答设置</summary>
+        <div className="mt-4">
         {/* 目标切换 */}
         <Card className="mb-4" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
@@ -1986,7 +2039,7 @@ export default function TutorPage() {
             {activeProvider ? (
               <>
                 <Pill tone="good">大模型 + 检索</Pill>
-                <span className="text-xs text-[var(--ink-faint)]">
+                <span className="min-w-0 max-w-full wrap-anywhere text-xs text-[var(--ink-faint)]">
                   {activeProvider.label} · {activeProvider.model} ·{" "}
                   {activeProvider.mode === "server"
                     ? "服务端代发"
@@ -2069,6 +2122,16 @@ export default function TutorPage() {
           </div>
         </Card>
 
+        </div>
+        </details>
+        </aside>
+        <section className="order-1 min-w-0 lg:order-2" aria-label="学习辅导对话">
+        <fieldset className="mb-4 flex flex-wrap gap-2">
+          <legend className="mb-2 text-sm font-medium">希望学伴怎样帮你？</legend>
+          {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button
+            type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}
+            className={`rounded-lg border px-3 py-2 text-sm ${helpLevel === level ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]" : "border-[var(--line-strong)] text-[var(--ink-soft)]"}`}>{label}</button>)}
+        </fieldset>
         {/* 对话区 */}
         <div className="mb-4 space-y-3">
           {messages.length === 0 ? (
@@ -2391,6 +2454,10 @@ export default function TutorPage() {
           <div ref={endRef} />
         </div>
 
+        <div className="sticky bottom-0 z-10 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-3 shadow-sm" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <details className="mb-2">
+        <summary className="cursor-pointer text-xs text-[var(--ink-soft)]">添加图片、语音或联网补充</summary>
+        <div className="mt-3">
         {/* 图片输入：粘贴 / 选择 / 拍照；最多 3 张 */}
         <ImageInput images={images} onChange={setImages} disabled={busy} />
 
@@ -2461,6 +2528,8 @@ export default function TutorPage() {
           ) : null}
         </div>
 
+        </div>
+        </details>
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -2477,7 +2546,7 @@ export default function TutorPage() {
             onChange={(event) => setInput(event.target.value)}
             maxLength={500}
             placeholder="问点什么，比如「为什么给我排这一步」"
-            className="flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
           />
           {busy ? (
             <button
@@ -2497,6 +2566,9 @@ export default function TutorPage() {
             </button>
           )}
         </form>
+        </div>
+        </section>
+        </div>
       </main>
     </>
   );

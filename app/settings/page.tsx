@@ -602,7 +602,7 @@ export default function SettingsPage() {
             serverState?.serverConfigured ? (
               <>
                 <Pill tone="good">已配置（账号）</Pill>
-                <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
                   {serverState.label} · {serverState.model} ·{" "}
                   {serverState.api === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} ·
                   密钥加密存服务端 · 思考 {THINKING_LABEL[serverState.options.thinking]} · 依据核对{" "}
@@ -614,7 +614,7 @@ export default function SettingsPage() {
             ) : (
               <>
                 <Pill tone="warn">未配置（账号）</Pill>
-                <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+                <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
                   在「模型供应商」保存一次模型配置；在此之前导师页使用知识库检索模式
                 </span>
               </>
@@ -622,7 +622,7 @@ export default function SettingsPage() {
           ) : existing ? (
             <>
               <Pill tone="good">已配置（本机）</Pill>
-              <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+              <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
                 {existing.label} · {existing.model} ·{" "}
                 {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
                 <span className="font-mono">{maskKey(existing.apiKey)}</span> · 思考{" "}
@@ -633,23 +633,23 @@ export default function SettingsPage() {
           ) : (
             <>
               <Pill tone="warn">未配置（本机）</Pill>
-              <span className="max-w-[70ch] text-xs leading-relaxed text-[var(--ink-faint)]">
+              <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
                 导师页将使用知识库检索模式，路径功能不受影响
               </span>
             </>
           )}
         </div>
         {effectiveMode === "server" && serverError !== null ? (
-          <p className="mb-8 max-w-[70ch] text-xs leading-relaxed text-[var(--warn)]">{serverError}</p>
+          <p className="mb-8 max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--warn)]">{serverError}</p>
         ) : null}
 
         <div className="lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10">
-          {/* 窄屏：顶部横向 scroll 的分区标签；lg 以上改为左侧竖向导航 */}
+          {/* 窄屏：分区标签换行铺满，11 个分区始终可见；lg 以上改为左侧竖向导航 */}
           <nav aria-label="设置分区" data-motion="nav" className="lg:sticky lg:top-8 lg:self-start">
             <div
               role="tablist"
               aria-orientation="vertical"
-              className="no-scrollbar -mx-1 flex gap-1 overflow-x-auto px-1 pb-2 lg:mx-0 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:px-0 lg:pb-0"
+              className="-mx-1 flex flex-wrap gap-1 px-1 pb-2 lg:mx-0 lg:flex-col lg:flex-nowrap lg:gap-0.5 lg:px-0 lg:pb-0"
             >
               {SECTIONS.map((section, index) => {
                 const selected = active === section.id;

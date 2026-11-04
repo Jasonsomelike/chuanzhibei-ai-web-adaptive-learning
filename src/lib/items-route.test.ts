@@ -32,7 +32,7 @@ const { POST } = await import("../../app/api/directions/items/route");
 function req(body: unknown): Request {
   return new Request("http://localhost/api/directions/items", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify(body),
   });
 }
@@ -56,6 +56,11 @@ beforeEach(() => {
 });
 
 describe("POST /api/directions/items 写入语义", () => {
+  it("跨站写请求在读库前被拒绝", async () => {
+    const response = await POST(new Request("http://localhost/api/directions/items", { method: "POST", headers: { origin: "https://other.test" }, body: "{}" }));
+    expect(response.status).toBe(403);
+    expect(fakeDb.run).not.toHaveBeenCalled();
+  });
   it("run 返回 0 时不把题算成已插入（Postgres 无 RETURNING 的回归）", async () => {
     const res = await POST(
       req({ directionId: "d1", kcId: "k1", items: [goodItem] }) as never,

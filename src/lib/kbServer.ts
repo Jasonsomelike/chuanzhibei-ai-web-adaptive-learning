@@ -472,11 +472,13 @@ export async function putKbDocument(
   };
 
   const docRow = docToRow(userId, doc, updatedAt);
-  await db.run(
+  const claimed = await db.run(
     `INSERT INTO kb_docs (${DOC_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     ON CONFLICT (user_id, doc_id) DO UPDATE SET ${DOC_UPDATE}`,
-    docParams(docRow),
+     ON CONFLICT (user_id, doc_id) DO UPDATE SET ${DOC_UPDATE}
+     WHERE kb_docs.updated_at = $14 AND $14 IS NOT NULL`,
+    [...docParams(docRow), existingRow?.updated_at ?? null],
   );
+  if (claimed === 0) return { ok: false, reason: "conflict", message: "文档已在另一设备更新，本地修改已保留，请刷新后重试。" };
 
   const inputChunks = body.chunks.map(toUploadChunk);
   const chunks = inputChunks;

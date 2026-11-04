@@ -95,6 +95,8 @@ export interface UploadDoc {
    * 用数字而不是 ISO 串：同步的 CAS 要比较相等，不能依赖时间戳的格式化方式。
    */
   readonly updatedAt?: number;
+  /** 仅本地保存：尚未上传成功的修改，读取远端时必须保留。 */
+  readonly pendingSync?: boolean;
 }
 
 /** 一段上传正文。页码只在 PDF 上出现，md / txt 不编页码。 */

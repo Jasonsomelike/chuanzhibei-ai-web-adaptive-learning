@@ -24,7 +24,7 @@ import { useAuth } from "@/lib/useAuth";
  * 覆盖横屏手机、平板等宽度超过 `sm` 的触屏设备。
  */
 export const NAV_LINK_CLASS =
-  "inline-flex min-h-11 items-center rounded-md px-2.5 py-[0.375rem] touch-target transition-colors sm:min-h-0";
+  "inline-flex min-w-0 max-w-full min-h-11 items-center rounded-md px-2.5 py-[0.375rem] touch-target transition-colors sm:min-h-0";
 
 /** 登出按钮：文字更小、桌面更紧凑，但移动端同样至少 44px。 */
 export const NAV_LOGOUT_CLASS =
@@ -32,7 +32,7 @@ export const NAV_LOGOUT_CLASS =
 
 /** 未登录时的登录入口。 */
 export const NAV_LOGIN_CLASS =
-  "ml-1 inline-flex min-h-11 items-center rounded-md bg-[var(--accent)] px-2.5 py-[0.25rem] text-xs font-medium text-[var(--on-accent)] touch-target sm:min-h-0";
+  "ml-1 inline-flex max-w-full min-h-11 items-center rounded-md bg-[var(--accent)] px-2.5 py-[0.25rem] text-xs font-medium text-[var(--on-accent)] touch-target sm:min-h-0";
 
 const LINKS = [
   { href: "/diagnose", label: "诊断测评" },
@@ -50,29 +50,38 @@ export function NavLinks() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex flex-wrap items-center gap-0.5 text-sm">
-      {LINKS.map((l) => {
+    <nav className="flex min-w-0 max-w-full flex-wrap items-center gap-0.5 text-sm">
+      {LINKS.map((l, index) => {
         const active = pathname === l.href;
         return (
           <Link
             key={l.href}
             href={l.href}
             aria-current={active ? "page" : undefined}
-            className={`${NAV_LINK_CLASS} ${
+            className={`${index >= 3 ? "max-sm:hidden" : ""} ${NAV_LINK_CLASS} ${
               active
                 ? "bg-[var(--accent-soft)] text-[var(--accent)]"
                 : "text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
             }`}
           >
-            {l.label}
+            <span className="truncate">{l.label}</span>
           </Link>
         );
       })}
 
+      <details className="relative sm:hidden">
+        <summary className={`${NAV_LINK_CLASS} cursor-pointer list-none text-[var(--ink-soft)]`}>更多 ▾</summary>
+        <div className="absolute right-0 top-full z-50 mt-1 grid w-40 rounded-xl border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-lg">
+          {LINKS.slice(3).map((link) => <Link key={link.href} href={link.href}
+            aria-current={pathname === link.href ? "page" : undefined}
+            className="rounded-lg px-3 py-3 text-sm hover:bg-[var(--line)]">{link.label}</Link>)}
+        </div>
+      </details>
+
       {loading ? (
         <span className="ml-1 px-2 text-xs text-[var(--ink-faint)]">…</span>
       ) : user ? (
-        <span className="ml-1 flex items-center gap-1.5">
+        <span className="ml-1 flex min-w-0 items-center gap-1.5">
           <span
             className="max-w-24 truncate rounded-md bg-[var(--line)] px-2 py-1 text-xs text-[var(--ink-soft)]"
             title={user.email}

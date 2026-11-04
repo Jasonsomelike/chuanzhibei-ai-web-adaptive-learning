@@ -1,258 +1,83 @@
 import Link from "next/link";
-import { Nav, Card, SectionTitle, Pill, ButtonLink } from "@/components/ui";
-import { MotionScope } from "@/components/motion";
+import { Nav, Card, SectionTitle, ButtonLink } from "@/components/ui";
+import { LearningDashboard } from "@/components/learning-dashboard";
 import { SUBJECTS, allSubjectsStats } from "@/data/subjects";
 import { ALGO_VERSION } from "@/lib/plan";
 import { TEAM, teamLine } from "@/data/team";
-import { THEMES } from "@/lib/themes";
 
 export default function HomePage() {
   const stats = allSubjectsStats();
-  const totalKc = stats.reduce((s, x) => s + x.concepts, 0);
-  const totalQ = stats.reduce((s, x) => s + x.questions, 0);
-  const totalEdge = stats.reduce((s, x) => s + x.edges, 0);
-
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-6xl px-5 py-12">
-        <MotionScope>
-        {/* 主张：一句话说清这个系统和普通推荐有什么区别 */}
-        <section className="mb-10 grid items-center gap-8 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-12">
-          <div data-motion="hero">
-            <Pill tone="accent">{TEAM.track} · {TEAM.group}</Pill>
-            <h1 className="mt-4 text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
-              给你一条
-              <span className="whitespace-nowrap text-[var(--accent)]">算得出、说得清、改得动</span>的
-              <br className="hidden sm:block" />
-              学习路径
-            </h1>
-            <p className="mt-4 max-w-2xl text-[var(--ink-soft)]">
-              掌握度用难度加权的 Beta 后验建模，同时给出「你现在多会」和「我们有多确定」。
-              排序由先修图、掌握度与时间预算用纯函数算出——
-              <strong className="font-medium text-[var(--ink)]">大模型不参与排序</strong>，
-              所以同一条路径可以逐位复现，大模型不可用时路径照常生成。
-            </p>
-            <div className="mt-6 flex flex-wrap gap-3">
-              <ButtonLink href="/diagnose">开始诊断</ButtonLink>
-              <ButtonLink href="/path" variant="ghost">
-                直接看路径
-              </ButtonLink>
-              <ButtonLink href="/guide" variant="ghost">
-                使用指南
-              </ButtonLink>
-            </div>
-          </div>
-
-          <Card motion="hero-path" className="border-[var(--line-strong)]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-[var(--ink-faint)]">示例路径 · 操作系统 · 90 分钟</span>
-              <Pill tone="accent">纯函数</Pill>
-            </div>
-            <ol className="mt-4 space-y-3.5">
-              {[
-                { id: "o06", title: "进程控制块与进程控制", why: "先修深度 4 · 先建立基线" },
-                { id: "o07", title: "进程上下文切换", why: "先修 o06 已排在前 · 继续深入" },
-                { id: "o08", title: "线程与多线程模型", why: "ZPD 最近 · 下一步优先" },
-              ].map((step, i) => (
-                <li key={step.id} className="flex gap-3">
-                  <span className="tabular mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border border-[var(--line-strong)] text-[11px]">
-                    {i + 1}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium leading-snug">
-                      <span className="font-mono text-xs text-[var(--ink-faint)]">{step.id}</span>{" "}
-                      {step.title}
-                    </p>
-                    <p className="mt-0.5 text-xs text-[var(--ink-faint)]">{step.why}</p>
-                  </div>
-                </li>
-              ))}
-            </ol>
-            <p className="mt-4 border-t border-[var(--line)] pt-3 font-mono text-[11px] text-[var(--ink-faint)]">
-              同输入 → 同 pathHash · 改预算只换取舍
-            </p>
-          </Card>
-        </section>
-
-        <section className="mb-12 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-5">
-          {[
-            { value: SUBJECTS.length, label: "学科" },
-            { value: totalKc, label: "知识点" },
-            { value: totalEdge, label: "先修边" },
-            { value: totalQ, label: "题" },
-            { value: "0", label: "必需密钥" },
-          ].map((item) => (
-            <div key={item.label} data-motion="stat" className="bg-[var(--surface)] px-4 py-3.5">
-              <p className="tabular text-xl font-semibold">{item.value}</p>
-              <p className="mt-0.5 text-xs text-[var(--ink-faint)]">{item.label}</p>
-            </div>
-          ))}
-        </section>
-
-        {/* 三个可验证的承诺 */}
-        <section className="mb-12">
-          <SectionTitle hint="这三条不是宣传语，每一条都能在仓库里找到对应的实现与测试。">
-            三个可验证的承诺
-          </SectionTitle>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Card motion="promise">
-              <h3 className="font-medium">路径可复现</h3>
-              <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                同一个 attempt 快照 + 同一算法版本 → 同一条路径。
-                `path_hash` 对输出取 SHA-256，算法或图谱一改，hash 立刻变，
-                `npm test` 里的 golden 字面量会失败。
-              </p>
-              <p className="mt-3 font-mono text-xs text-[var(--ink-faint)]">
-                src/lib/plan.ts · {ALGO_VERSION}
-              </p>
-            </Card>
-            <Card motion="promise">
-              <h3 className="font-medium">理由可追溯</h3>
-              <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                每一步都写明为什么排在这里，并引用具体的掌握度数值。
-                大模型生成的解释必须标注引用了哪个知识点。
-              </p>
-              <p className="mt-3 font-mono text-xs text-[var(--ink-faint)]">
-                app/tutor/page.tsx · 引用从回复里解析
-              </p>
-            </Card>
-            <Card motion="promise">
-              <h3 className="font-medium">大模型可缺席</h3>
-              <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                不配置任何密钥时，导师回答退化为知识库检索 + 题库解析的结构化拼装，
-                依然可用。这是设计选择，不是兜底话术。
-              </p>
-              <p className="mt-3 font-mono text-xs text-[var(--ink-faint)]">
-                src/lib/provider.ts
-              </p>
-            </Card>
-          </div>
-        </section>
-
-        {/* 上传教材：最容易被忽略的能力，给一个显眼的直达入口 */}
-        <section className="mb-12">
-          <Card className="border-[var(--accent)]">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="max-w-2xl">
-                <h3 className="font-medium">上传自己的教材、讲义或 PPT 文字稿</h3>
-                <p className="mt-1.5 text-sm text-[var(--ink-soft)]">
-                  自定义方向支持上传 Markdown / TXT / 带文本层的 PDF：导师回答会检索你上传的片段并标注出处，
-                  绑定知识点后还会进入出题依据。解析全部在本浏览器完成，不保存原始文件。
-                </p>
-              </div>
-              <ButtonLink href="/directions?kb=open">去上传教材</ButtonLink>
-            </div>
-          </Card>
-        </section>
-
-        {/* 学科列表 */}
-        <section className="mb-12">
-          <SectionTitle hint="每个学科规模一致，是为了共用同一套模型参数与界面。">
-            支持的学科
-          </SectionTitle>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {SUBJECTS.map((s) => {
-              const st = stats.find((x) => x.id === s.id)!;
-              return (
-                <Card key={s.id} motion="subject">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <h3 className="font-medium">{s.name}</h3>
-                    <span className="tabular shrink-0 text-xs text-[var(--ink-faint)]">
-                      {st.concepts} 点 / {st.questions} 题
-                    </span>
-                  </div>
-                  <p className="mt-1.5 text-sm text-[var(--ink-soft)]">{s.tagline}</p>
-                  <p className="mt-1 text-xs text-[var(--ink-faint)]">
-                    {s.syllabus} · {st.chapters} 章
-                  </p>
-                </Card>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* 主题与个性化 */}
-        <section className="mb-12">
-          <SectionTitle hint="配色不是拍脑袋定的：每套都实算过对比度。正文与次要文字达到 WCAG AAA（≥7:1），分隔线等非文本元素达到 AA（≥3:1）。">
-            个性化
-          </SectionTitle>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Card motion="personalize">
-              <h3 className="font-medium">{THEMES.length} 套配色主题</h3>
-              <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                {THEMES.map((t) => t.name).join(" · ")}
-              </p>
-              <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                配浅色 / 深色 / 跟随系统三种模式，共 {THEMES.length * 2} 个组合。
-                正文对比度最低 15.50:1，次要文字最低 7.24:1。
-              </p>
-              <Link href="/settings?panel=appearance" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
-                切换主题
-              </Link>
-            </Card>
-            <Card motion="personalize">
-              <h3 className="font-medium">自带模型供应商</h3>
-              <p className="mt-2 text-sm text-[var(--ink-soft)]">
-                地址、密钥、模型名自己填，支持 OpenAI 兼容与 Anthropic 两种协议。
-                内置 DeepSeek / OpenAI / Claude / 通义 / Kimi / 智谱 预设，也可填任意自建端点。
-              </p>
-              <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                密钥只存本浏览器，请求由浏览器直连供应商，不经过本项目后端。
-              </p>
-              <Link href="/settings?panel=provider" className="mt-3 inline-block text-sm text-[var(--accent)] underline">
-                配置供应商
-              </Link>
-            </Card>
-          </div>
-        </section>
-
-        {/* 参赛团队 */}
-        <section>
-          <SectionTitle hint={`${TEAM.competition} · ${TEAM.track}`}>
-            参赛团队
-          </SectionTitle>
-          <Card motion="team">
-            <div className="grid gap-x-6 gap-y-4 sm:grid-cols-3">
-              <div>
-                <p className="text-sm text-[var(--ink-soft)]">团队</p>
-                <p className="mt-1 font-medium">
-                  {TEAM.name}
-                  <span className="tabular ml-2 text-sm text-[var(--ink-faint)]">
-                    #{TEAM.id}
-                  </span>
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-[var(--ink-soft)]">院校与组别</p>
-                <p className="mt-1 font-medium">
-                  {TEAM.school} · {TEAM.group}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-[var(--ink-soft)]">指导教师</p>
-                <p className="mt-1 font-medium">{TEAM.advisor}</p>
-              </div>
-            </div>
-            <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm text-[var(--ink-soft)]">
-              成员：{TEAM.members.map((m) => m.name).join(" · ")} ·{" "}
-              <Link href="/about" className="text-[var(--accent)] underline">
-                了解团队与功能
-              </Link>
-            </p>
-          </Card>
-        </section>
-
-        <footer
-          data-motion="footer"
-          className="mt-12 border-t border-[var(--line)] pt-6 text-sm text-[var(--ink-faint)]"
-        >
-          <p>{teamLine()}</p>
-          <p className="mt-1">
-            {TEAM.competition} · {TEAM.track}
+      <main id="main" className="mx-auto max-w-6xl px-5 py-10 sm:py-14">
+        <section className="mb-8 max-w-3xl">
+          <p className="text-sm font-medium text-[var(--accent)]">智慧学伴 · 每一步，都有依据</p>
+          <h1 className="mt-3 text-3xl font-semibold leading-tight tracking-tight sm:text-5xl">
+            知道卡在哪里，<br />也知道下一步怎么学。
+          </h1>
+          <p className="mt-4 max-w-2xl leading-relaxed text-[var(--ink-soft)]">
+            用几道题了解当前状态，按你的时间安排学习。读资料、问导师、再练习，让每一次作答帮助你调整方向。
           </p>
+          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm text-[var(--ink-faint)]">
+            <span>9 门课程可直接开始</span><span>无需密钥即可诊断与规划</span>
+            <Link href="/guide" className="text-[var(--accent)] underline">第一次使用？查看指南 →</Link>
+          </div>
+        </section>
+
+        <LearningDashboard />
+
+        <section className="mb-10" aria-labelledby="journey-heading">
+          <h2 id="journey-heading" className="mb-4 text-lg font-semibold">把一次学习，连成一个闭环</h2>
+          <div className="grid gap-4 sm:grid-cols-3">
+            {[
+              { number: "01", title: "先了解自己", text: "诊断会区分尚未测评与需要巩固。没有作答记录时，我们先了解你的基础。", href: "/diagnose", action: "做一轮诊断" },
+              { number: "02", title: "安排下一步", text: "选好能投入的时间，按先修关系排出步骤。每一步都能查看推荐依据，也能自己调整。", href: "/path", action: "查看学习路径" },
+              { number: "03", title: "学懂，再验证", text: "结合教材和讲义提问，核对回答出处。用练习和到期复习，检验是否真的理解。", href: "/tutor", action: "打开课程导师" },
+            ].map((step) => <Card key={step.number}>
+              <span className="tabular text-sm text-[var(--accent)]">{step.number}</span>
+              <h3 className="mt-2 font-semibold">{step.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-[var(--ink-soft)]">{step.text}</p>
+              <Link href={step.href} className="mt-4 inline-block text-sm text-[var(--accent)] underline">{step.action} →</Link>
+            </Card>)}
+          </div>
+        </section>
+
+        <section className="mb-10">
+          <SectionTitle hint="选一门课直接开始，学习记录按课程分别保存。">从你正在学的课程开始</SectionTitle>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {SUBJECTS.map((subject) => <Link key={subject.id} href={`/diagnose?subject=${subject.id}`}
+              className="group rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 transition-colors hover:border-[var(--accent)]">
+              <h3 className="font-medium group-hover:text-[var(--accent)]">{subject.name}<span aria-hidden="true" className="float-right">↗</span></h3>
+              <p className="mt-2 text-sm text-[var(--ink-soft)]">{subject.tagline}</p>
+              <p className="mt-2 text-xs text-[var(--ink-faint)]">{subject.graph.concepts.length} 个知识点 · {subject.questions.length} 道题</p>
+            </Link>)}
+          </div>
+        </section>
+
+        <Card className="mb-10">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="max-w-2xl">
+              <h2 className="text-lg font-semibold">让学伴读懂你的课程资料</h2>
+              <p className="mt-2 text-sm text-[var(--ink-soft)]">创建自定义方向，上传 Markdown、TXT 或带文本层的 PDF。提问时检索原文，回答标注出处，学习内容与你的课程对齐。</p>
+            </div>
+            <ButtonLink href="/directions?kb=open" variant="ghost">创建方向与上传资料 →</ButtonLink>
+          </div>
+        </Card>
+
+        <details className="rounded-xl border border-[var(--line)] p-5">
+          <summary className="cursor-pointer font-medium">为什么相信这份学习建议？</summary>
+          <div className="mt-4 grid gap-4 text-sm text-[var(--ink-soft)] sm:grid-cols-3">
+            <div><h3 className="font-medium text-[var(--ink)]">推荐有依据</h3><p className="mt-2">先修关系、作答证据和时间预算共同决定路径。Beta 后验同时记录估计与不确定性，未测评不等于不会。</p></div>
+            <div><h3 className="font-medium text-[var(--ink)]">过程可复现</h3><p className="mt-2">相同输入生成相同路径，模型不可用时仍可诊断和规划。算法版本 {ALGO_VERSION}；{stats.reduce((sum, s) => sum + s.edges, 0)} 条先修关系。</p></div>
+            <div><h3 className="font-medium text-[var(--ink)]">回答可核对</h3><p className="mt-2">导师引用课程或上传资料，并提供引用核对。资料中没有依据时明确说明；模型与检索可在设置中配置。</p></div>
+          </div>
+          <Link href="/about" className="mt-4 inline-block text-sm text-[var(--accent)] underline">查看算法、能力边界与团队</Link>
+        </details>
+
+        <footer className="mt-10 border-t border-[var(--line)] pt-5 text-xs text-[var(--ink-faint)]">
+          <p>{teamLine()}</p><p className="mt-1">{TEAM.competition} · {TEAM.track}</p>
         </footer>
-        </MotionScope>
       </main>
     </>
   );

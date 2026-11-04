@@ -21,6 +21,7 @@
  */
 
 import { MATERIALS_STORAGE_KEY } from "@/lib/materials";
+import { clearProgressSyncCache } from "@/lib/progressClient";
 import { CHAPTERS_STORAGE_KEY } from "@/lib/chapters";
 import { MATERIALS_CHANGED_EVENT } from "@/lib/materialStore";
 import { clearKbDatabase } from "@/lib/kbStore";
@@ -174,16 +175,19 @@ function forceClearPlan(nextOwner: string | null): AccountTransitionPlan {
 }
 
 /** 执行一份切换计划；任何一步失败都不影响其余步骤。 */
-function applyAccountTransition(plan: AccountTransitionPlan): void {
+async function applyAccountTransition(plan: AccountTransitionPlan): Promise<void> {
   if (typeof window === "undefined") return;
 
-  if (plan.clearLearner) removeLocal(LEARNER_STORAGE_KEY);
+  if (plan.clearLearner) {
+    removeLocal(LEARNER_STORAGE_KEY);
+    clearProgressSyncCache();
+  }
   if (plan.clearSecrets) clearBrowserSecrets();
   if (plan.clearMaterials) clearMaterialsAndChapters();
   if (plan.clearKb) {
     // 实例缓存里带着 firstSynced：复用旧实例会漏推登出期间新增的文档
     resetKbStorageCache();
-    void clearKbDatabase();
+    await clearKbDatabase();
   }
 
   writeOwner(plan.nextOwner);
@@ -196,7 +200,7 @@ function applyAccountTransition(plan: AccountTransitionPlan): void {
  * 归属键只记邮箱，planAccountTransition 会当成同一人，本地数据就留下了；
  * 这里显式补一次全清，服务端进度是按 user.id 存的，不补会串号。
  */
-function applyUserTransition(prev: AuthUser | null, next: AuthUser | null): void {
+async function applyUserTransition(prev: AuthUser | null, next: AuthUser | null): Promise<void> {
   /*
    * 归属键是首选来源；旧存档可能没有它，此时用内存里的上一位用户兜底。
    * 两者都没有才是真正的匿名态（null→B 要保留本机数据）。
@@ -204,7 +208,7 @@ function applyUserTransition(prev: AuthUser | null, next: AuthUser | null): void
   const prevOwner = readOwner() ?? prev?.email ?? null;
   const plan = planAccountTransition(prevOwner, next?.email ?? null);
   const idChanged = prev !== null && next !== null && prev.id !== next.id;
-  applyAccountTransition(
+  await applyAccountTransition(
     idChanged && !plan.clearLearner ? forceClearPlan(plan.nextOwner) : plan,
   );
 }
@@ -274,7 +278,10 @@ async function performRefresh(): Promise<void> {
     if (startedAt !== generation) return;
 
     const next = data.user ?? null;
-    applyUserTransition(snapshot.user, next);
+    const previousUser = snapshot.user;
+    if (previousUser?.id !== next?.id) commit({ user: null, loading: true });
+    await applyUserTransition(previousUser, next);
+    if (startedAt !== generation) return;
     commit({ user: next, loading: false });
 
     // 新设备本地没有 apiKey：服务端若已保存 llm 配置，靠这次水合生成本地状态。
@@ -301,8 +308,10 @@ function refresh(): Promise<void> {
 }
 
 /** 登录 / 注册成功后的统一提交：换人清理、写快照、水合服务端配置。 */
-function commitAuthenticated(next: AuthUser): AuthUser {
-  applyUserTransition(snapshot.user, next);
+async function commitAuthenticated(next: AuthUser): Promise<AuthUser> {
+  const previousUser = snapshot.user;
+  if (previousUser?.id !== next.id) commit({ user: null, loading: true });
+  await applyUserTransition(previousUser, next);
   commit({ user: next, loading: false });
   void hydrateProviderFromServer();
   return next;
@@ -368,7 +377,7 @@ async function logout(): Promise<void> {
    * 登出必须无条件清：即使归属键丢了（旧存档、手工清过），
    * 也不能把 learner / 密钥 / 上传资料留给下一位用户。
    */
-  applyAccountTransition(forceClearPlan(null));
+  await applyAccountTransition(forceClearPlan(null));
   removeLocal(SUBJECT_STORAGE_KEY);
   commit({ user: null, loading: false });
 }

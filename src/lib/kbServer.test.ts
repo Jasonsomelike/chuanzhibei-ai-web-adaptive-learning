@@ -300,6 +300,14 @@ describe("putKbDocument（内存 DB）", () => {
     expect(stored[0].embeddingDim).toBe(2);
   });
 
+  it("相同版本的并发更新只有一位写入成功", async () => {
+    const first = await putKbDocument(db, "u1", makePut());
+    if (!first.ok) throw new Error("seed failed");
+    const results = await Promise.all([1, 2].map(() => putKbDocument(db, "u1", makePut({ baseUpdatedAt: first.updatedAt }))));
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok && result.reason === "conflict")).toHaveLength(1);
+  });
+
   it("baseUpdatedAt 过期时 409 且一行都不写", async () => {
     const first = await putKbDocument(db, "u1", makePut());
     expect(first.ok).toBe(true);

@@ -15,6 +15,7 @@
 import { z } from "zod";
 
 import { SUBJECTS } from "@/data/subjects";
+import type { UploadHit } from "@/lib/knowledge";
 
 // ── 请求契约 ──────────────────────────────────────────────────────
 
@@ -48,9 +49,13 @@ export const agentRequest = z.strictObject({
     .max(AGENT_MAX_IMAGES)
     .optional(),
   subject: z.enum(SUBJECT_IDS).optional(),
+  directionId: z.string().uuid().optional(),
+  tone: z.enum(["companion", "senior", "strict"]).optional(),
+  helpLevel: z.enum(["hint", "steps", "explain"]).optional(),
+  materialSourceIds: z.array(z.string().min(1).max(64)).max(20).optional(),
   /** 用户本次可投入的学习时间，用于 plan_path 的预算；不是服务端的运行时限。 */
   budgetMinutes: z.number().int().min(5).max(480).optional(),
-});
+}).refine((body) => !(body.subject && body.directionId), "subject 与 directionId 不能同时指定");
 
 export type AgentRequest = z.infer<typeof agentRequest>;
 
@@ -213,6 +218,10 @@ export interface AgentDoneEvent {
   readonly toolCalls: number;
   readonly elapsedMs: number;
   readonly textChars: number;
+  /** 本轮服务端实际检索的原文，引用编号与工具返回完全一致。 */
+  readonly uploads?: readonly UploadHit[];
+  readonly materialContext?: string;
+  readonly materialSources?: readonly string[];
 }
 
 export type AgentEvent =

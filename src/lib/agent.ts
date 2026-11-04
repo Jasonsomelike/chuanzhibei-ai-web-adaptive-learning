@@ -88,6 +88,7 @@ export interface AgentRunOptions {
   readonly question: string;
   readonly images?: readonly string[];
   readonly systemPrompt: string;
+  readonly initialToolResults?: readonly { readonly name: string; readonly text: string; readonly arguments?: Record<string, unknown> }[];
   readonly tools: readonly AgentToolSpec[];
   readonly limits: AgentLimits;
   readonly callModel: (
@@ -290,6 +291,22 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunSummar
     { role: "system", content: options.systemPrompt },
     userMessage(options.question, options.images),
   ];
+  const initialResults = (options.initialToolResults ?? []).slice(0, 2).filter((result) => byName.has(result.name));
+  if (initialResults.length > 0) {
+    messages.push({ role: "assistant", content: "", toolCalls: initialResults.map((result, index) => ({
+      id: `context_${index}`, name: result.name, arguments: JSON.stringify(result.arguments ?? {}),
+    })) });
+    for (const [index, result] of initialResults.entries()) {
+      const prepared = prepareToolText(result.text, options.limits.maxResultChars);
+      messages.push({ role: "tool", toolCallId: `context_${index}`, content: wrapToolResult({ name: result.name, ...prepared }) });
+    }
+  } else if (toolset.length === 0) {
+    // 不支持工具协议的供应商仍获得相同学习上下文，以隔离的数据消息提供。
+    for (const result of (options.initialToolResults ?? []).slice(0, 2)) {
+      const prepared = prepareToolText(result.text, options.limits.maxResultChars);
+      messages.push({ role: "user", content: wrapToolResult({ name: result.name, ...prepared }) });
+    }
+  }
 
   let steps = 0;
   let toolCallCount = 0;

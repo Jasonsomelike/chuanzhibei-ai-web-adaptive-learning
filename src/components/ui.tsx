@@ -260,7 +260,7 @@ export function SectionTitle({
   return (
     <div data-motion={motion} className="mb-4">
       <h2 className="text-lg font-semibold tracking-tight">{children}</h2>
-      {hint ? <p className="mt-1 text-sm text-[var(--ink-soft)]">{hint}</p> : null}
+      {hint ? <p className="mt-1 wrap-anywhere text-sm text-[var(--ink-soft)]">{hint}</p> : null}
     </div>
   );
 }
@@ -411,10 +411,9 @@ export function Nav() {
   return (
     <header className="border-b border-[var(--line)] bg-[var(--surface)]">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
-        <Link href="/" className="flex items-center gap-2 font-semibold">
-          <BrandMark size={28} />
-          <span className="hidden sm:inline">可解释的自适应学习路径</span>
-          <span className="sm:hidden">学习路径</span>
+        <Link href="/" className="flex min-w-0 max-w-full items-center gap-2 font-semibold">
+          <BrandMark size={28} className="shrink-0" />
+          <span className="truncate">智慧学伴</span>
         </Link>
         <NavLinks />
       </div>

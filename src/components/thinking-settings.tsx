@@ -172,7 +172,7 @@ export function ThinkingSettings({
             </p>
             {probe.result.reasoning.trim() !== "" ? (
               <Collapse title="查看模型返回的思考内容（节选）" className="mt-1">
-                <p className="whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">
+                <p className="whitespace-pre-wrap wrap-anywhere text-xs leading-relaxed text-[var(--ink-soft)]">
                   {probe.result.reasoning.slice(0, 400)}
                 </p>
               </Collapse>

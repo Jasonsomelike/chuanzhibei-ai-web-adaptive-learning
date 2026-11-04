@@ -245,12 +245,13 @@ describe("/api/agent：SSE 主路径", () => {
     expect(messages[0].role).toBe("system");
     expect(String(messages[0].content)).toContain("os");
     expect(String(messages[0].content)).toContain("90");
-    expect(messages[messages.length - 1]).toMatchObject({ role: "user", content: "有哪些学科？" });
+    expect(messages.find((message) => message.role === "user")).toMatchObject({ role: "user", content: "有哪些学科？" });
+    expect(messages.some((message) => message.role === "tool" && String(message.content).includes("server-validated-attempts"))).toBe(true);
 
     // 第二轮：工具结果以界符隔离回灌，且带 tool_call_id。
     const second = upstream.requests[1];
     const returned = (second.body.messages as { role: string; content: string; tool_call_id?: string }[])
-      .find((message) => message.role === "tool");
+      .find((message) => message.role === "tool" && message.tool_call_id === "call_1");
     expect(returned?.tool_call_id).toBe("call_1");
     expect(returned?.content).toContain(TOOL_RESULT_GUARD);
   });
@@ -268,7 +269,7 @@ describe("/api/agent：SSE 主路径", () => {
       role: string;
       content: string | { type: string; image_url?: { url: string } }[];
     }[];
-    const user = messages[messages.length - 1];
+    const user = messages.find((message) => (message as { role?: string }).role === "user")!;
     expect(Array.isArray(user.content)).toBe(true);
     const parts = user.content as { type: string; image_url?: { url: string } }[];
     expect(parts[0]).toMatchObject({ type: "text", text: "这道题怎么做？" });
@@ -305,6 +306,7 @@ describe("/api/agent：降级路径", () => {
 
     const body = upstream.requests[0].body;
     expect(body.tools).toBeUndefined();
+    expect(JSON.stringify(body.messages)).toContain("server-validated-attempts");
     expect(upstream.requests).toHaveLength(1);
   });
 

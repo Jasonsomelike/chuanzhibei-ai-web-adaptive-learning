@@ -21,3 +21,7 @@ export const MAX_SEARCH_BODY_BYTES = 16 * 1024;
 
 /** /api/tts：正文上限 2000 字，UTF-8 最多 3 字节/字，32KB 足够。 */
 export const MAX_TTS_BODY_BYTES = 32 * 1024;
+
+/** 自定义方向图谱与批量题目：限制流式请求，解析前执行。 */
+export const MAX_DIRECTION_BODY_BYTES = 256 * 1024;
+export const MAX_DIRECTION_ITEMS_BODY_BYTES = 512 * 1024;

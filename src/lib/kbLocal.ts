@@ -19,9 +19,16 @@ export const KB_DOC_STORE = "docs";
 export const KB_CHUNK_STORE = "chunks";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+let deleting = false;
+const CLEAR_PENDING_KEY = "alp.kb.clear-pending";
+function isolationPending(): boolean {
+  if (deleting) return true;
+  try { return window.localStorage.getItem(CLEAR_PENDING_KEY) === "1"; } catch { return false; }
+}
 
 /** 打开数据库。失败不缓存 rejected promise，下一次操作还能重试。 */
 export function openDatabase(): Promise<IDBDatabase> {
+  if (isolationPending()) return Promise.reject(new Error("正在隔离上一账号的本地资料，请稍后重试"));
   if (typeof indexedDB === "undefined") {
     return Promise.reject(new Error("当前环境不支持 IndexedDB"));
   }
@@ -100,8 +107,13 @@ async function putRows(doc: UploadDoc, chunks: readonly UploadChunk[]): Promise<
     try {
       transaction.objectStore(KB_DOC_STORE).put(doc);
       const chunkStore = transaction.objectStore(KB_CHUNK_STORE);
-      // 事务内不 await：所有 put 同步排进同一个事务，失败由事务整体回滚
-      for (const chunk of chunks) chunkStore.put(chunk);
+      // 替换整份文档，不能留下缩短或重新切块之前的旧段落。
+      const keys = chunkStore.index("docId").getAllKeys(doc.id);
+      keys.onsuccess = () => {
+        for (const key of keys.result) chunkStore.delete(key);
+        for (const chunk of chunks) chunkStore.put(chunk);
+      };
+      keys.onerror = () => transaction.abort();
     } catch (err) {
       transaction.abort();
       reject(err);
@@ -153,7 +165,7 @@ export function createIndexedDbStorage(): KbStorage {
 
 /** 当前浏览器可用的存储；Node / SSR 返回 null，调用方据此显示「不支持」。 */
 export function getDefaultKbStorage(): KbStorage | null {
-  if (typeof indexedDB === "undefined") return null;
+  if (typeof indexedDB === "undefined" || isolationPending()) return null;
   return createIndexedDbStorage();
 }
 
@@ -175,6 +187,8 @@ export function closeKbDb(): void {
 export async function clearKbDatabase(): Promise<void> {
   closeKbDb();
   if (typeof indexedDB === "undefined") return;
+  deleting = true;
+  try { window.localStorage.setItem(CLEAR_PENDING_KEY, "1"); } catch { /* 当前会话仍由 deleting 阻止读取 */ }
 
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -188,11 +202,14 @@ export async function clearKbDatabase(): Promise<void> {
     try {
       request = indexedDB.deleteDatabase(KB_DB_NAME);
     } catch {
+      // 删除未成功时禁用本地读取，不能在新账号下继续暴露旧库。
       clearTimeout(timer);
       done();
       return;
     }
     request.onsuccess = () => {
+      deleting = false;
+      try { window.localStorage.removeItem(CLEAR_PENDING_KEY); } catch { /* 未清除标记时继续使用远端 */ }
       clearTimeout(timer);
       done();
     };

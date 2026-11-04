@@ -6,6 +6,8 @@ import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { useStaggerIn, useStepFlash } from "@/components/motion";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
+import { LearningEvidence } from "@/components/learning-evidence";
+import { targetQuery } from "@/lib/target";
 import { useSubject } from "@/lib/subject";
 import { recordPathEdit } from "@/lib/learner";
 import { useLearner } from "@/lib/useLearner";
@@ -96,6 +98,10 @@ export default function PathPage() {
     synced,
   } = useLearner(targetId, target?.graph);
   const [budget, setBudget] = useState(90);
+  useEffect(() => {
+    const fromUrl = Number(new URLSearchParams(window.location.search).get("budget"));
+    if (BUDGET_OPTIONS.includes(fromUrl)) setBudget(fromUrl);
+  }, []);
   const [compareBudget, setCompareBudget] = useState<number | null>(null);
   /*
    * 手动改写只存「顺序 + 移除集合」，不存整份 steps。
@@ -386,10 +392,25 @@ export default function PathPage() {
         <div className="mb-6" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">学习路径</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            排序由纯函数算出，不调用大模型。切换章节、改预算或用 ↑ / ↓ 调整步骤都会立刻重算，无需等待。
+            从下一步开始，按你的时间安排学习；每次作答都会更新推荐依据。
           </p>
         </div>
 
+        {displayed[0] ? <Card className="mb-5 border-[var(--accent)]">
+          <p className="text-sm text-[var(--accent)]">{target.name} · 下一步建议</p>
+          <h2 className="mt-2 text-xl font-semibold">{kcById.get(displayed[0].kcId)?.name}</h2>
+          <p className="mt-2 text-sm text-[var(--ink-soft)]">
+            {(progress.mastery.find((m) => m.kcId === displayed[0].kcId)?.evidenceN ?? 0) === 0 ? "尚未测评，建议先了解基础，再用练习确认掌握情况。" : displayed[0].reason}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3 text-sm">
+            <Link className="rounded-lg bg-[var(--accent)] px-4 py-2 font-medium text-[var(--on-accent)]" href={`/tutor${targetQuery(target)}&q=${encodeURIComponent(`请引导我学习${kcById.get(displayed[0].kcId)?.name}，先给一个思考问题。`)}`}>学习这一步 →</Link>
+            <Link className="rounded-lg border border-[var(--line-strong)] px-4 py-2" href={`/diagnose${targetQuery(target)}`}>用练习检验</Link>
+          </div>
+        </Card> : null}
+        <LearningEvidence graph={graph} progress={progress} budgetMinutes={budget} />
+        <details className="mb-5 rounded-xl border border-[var(--line)] p-4">
+        <summary className="cursor-pointer text-sm font-medium">调整学习计划 · {target.name} · {budget} 分钟</summary>
+        <div className="mt-4">
         {/* 目标切换 */}
         <Card className="mb-5" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
@@ -535,6 +556,8 @@ export default function PathPage() {
           ) : null}
         </Card>
 
+        </div>
+        </details>
         {/* 路径 */}
         <section className="mb-5">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2" data-motion="steps-heading">
@@ -654,7 +677,7 @@ export default function PathPage() {
                             手动挪动位置后这句话不再解释新位置，所以显式补一句，
                             而不是让用户以为理由是跟着位置重算的。
                           */}
-                          <p className="mt-1.5 text-sm text-[var(--ink-soft)]">{step.reason}</p>
+                          <p className="mt-1.5 text-sm text-[var(--ink-soft)]">{(m?.evidenceN ?? 0) === 0 ? "尚无作答记录，先按基础先修顺序探索，掌握情况待诊断。" : step.reason}</p>
                           {manualEdit ? (
                             <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
                               理由说明的是算法排序依据；当前位置是你手动调整的。

@@ -19,6 +19,7 @@ import {
   createLearner,
   progressOf,
   mergeServerProgress,
+  sanitizeProgress,
   type LearnerState,
   type SubjectProgress,
 } from "@/lib/learner";
@@ -26,6 +27,7 @@ import type { KnowledgeGraph } from "@/lib/graph";
 import type { MemoryItem } from "@/lib/memory";
 import { useAuth } from "@/lib/useAuth";
 import { authStore } from "@/lib/authStore";
+import { pushProgress, rememberProgressRevisions, mergeProgressEvidence } from "@/lib/progressClient";
 import { clearMemories, pullMemories, pushMemories } from "@/lib/memoryClient";
 import {
   memoriesEqual,
@@ -101,23 +103,15 @@ async function postProgress(
   subjectId: string,
   progress: SubjectProgress,
   keepalive = false,
-): Promise<void> {
+): Promise<SubjectProgress | null> {
   /*
    * 登出后立即停止推送：定时器可能在 React 重渲染之前触发，
    * 仅靠组件里的 userId 闭包不够。以共享 store 的当前账号为准，
    * 匿名态不再向 /api/progress 发请求（那里只会回 401）。
    */
-  if (authStore.getSnapshot().user === null) return;
-  try {
-    await fetch("/api/progress", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subjectId, progress }),
-      ...(keepalive ? { keepalive: true } : {}),
-    });
-  } catch {
-    // 推送失败不阻塞界面：本地已有副本，下次变更会重试
-  }
+  const owner = authStore.getSnapshot().user?.id;
+  if (!owner) return null;
+  return pushProgress(owner, subjectId, progress, () => authStore.getSnapshot().user?.id === owner, keepalive);
 }
 
 export interface UseLearnerResult {
@@ -146,6 +140,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
 
   const [learner, setLearnerState] = useState<LearnerState | null>(null);
   const [ready, setReady] = useState(false);
+  const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
   const [synced, setSynced] = useState(false);
 
   /** 最新状态的同步副本：异步回调不能读可能过期的 state。 */
@@ -215,6 +210,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
         learnerRef.current = local;
         setLearnerState(local);
         setSynced(false);
+        setLoadedFor(null);
         setReady(true);
         return;
       }
@@ -227,8 +223,23 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
            * 超过 200 张 / 形状坏掉的 memories 不能原样进界面，
            * 所以统一走 mergeServerProgress（逐学科 sanitizeProgress）。
            */
-          const data = (await res.json()) as { progress?: unknown };
-          const pulled = mergeServerProgress(local, data.progress);
+          const data = (await res.json()) as { progress?: unknown; revisions?: unknown };
+          rememberProgressRevisions(userId, data.revisions);
+          let pulled = mergeServerProgress(local, data.progress);
+          let allSynced = true;
+          const remoteProgress = data.progress && typeof data.progress === "object" ? data.progress as Record<string, unknown> : {};
+          for (const [id, localProgress] of Object.entries(local.subjects)) {
+            if (localProgress.attempts.length === 0) continue;
+            const remote = sanitizeProgress(remoteProgress[id]);
+            const merged = remote ? mergeProgressEvidence(remote, localProgress) : localProgress;
+            if (remote && JSON.stringify(merged.attempts) === JSON.stringify(remote.attempts)) continue;
+            if (cancelled) return;
+            const saved = await pushProgress(userId, id, progressWithoutMemories(local, id, merged),
+              () => !cancelled && authStore.getSnapshot().user?.id === userId);
+            if (cancelled) return;
+            if (!saved) allSynced = false;
+            pulled = { ...pulled, subjects: { ...pulled.subjects, [id]: { ...(saved ?? merged), memories: localProgress.memories } } };
+          }
           const currentSubject = subjectIdRef.current;
 
           /*
@@ -249,7 +260,8 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
           if (cancelled) return;
           learnerRef.current = next;
           setLearnerState(next);
-          setSynced(true);
+          setSynced(allSynced);
+          setLoadedFor(userId);
           setReady(true);
           saveLearner(next);
           return;
@@ -262,6 +274,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
       learnerRef.current = local;
       setLearnerState(local);
       setSynced(false);
+      setLoadedFor(userId);
       setReady(true);
     };
 
@@ -346,9 +359,37 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     );
     pendingProgress.current.clear();
     for (const entry of entries) {
-      void postProgress(entry.subjectId, entry.progress);
+      void postProgress(entry.subjectId, entry.progress).then((saved) => {
+        if (authStore.getSnapshot().user?.id !== ownerId) return;
+        if (!saved) {
+          setSynced(false);
+          if (!pendingProgress.current.has(entry.subjectId)) pendingProgress.current.set(entry.subjectId, entry);
+          return;
+        }
+        setSynced(pendingProgress.current.size === 0);
+        const current = learnerRef.current;
+        const local = current?.subjects[entry.subjectId];
+        if (!current || !local || local.attempts !== entry.progress.attempts) return;
+        const next = { ...current, subjects: { ...current.subjects, [entry.subjectId]: { ...saved, memories: local.memories } } };
+        learnerRef.current = next;
+        setLearnerState(next);
+        saveLearner(next);
+      });
     }
   }, []);
+
+  useEffect(() => {
+    const retry = () => {
+      const owner = authStore.getSnapshot().user?.id;
+      if (owner) flushProgress(owner);
+    };
+    window.addEventListener("online", retry);
+    window.addEventListener("pagehide", retry);
+    return () => {
+      window.removeEventListener("online", retry);
+      window.removeEventListener("pagehide", retry);
+    };
+  }, [flushProgress]);
 
   const flushMemories = useCallback((ownerId: string) => {
     if (authStore.getSnapshot().user?.id !== ownerId) {
@@ -464,7 +505,7 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
 
   return {
     learner,
-    ready,
+    ready: ready && !authLoading && loadedFor === userId,
     progress: learner ? progressOf(learner, subjectId, graph) : null,
     setLearner,
     synced,

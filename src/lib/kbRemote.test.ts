@@ -56,6 +56,9 @@ class MemoryKbStorage implements KbStorage {
   ): Promise<void> {
     this.putCalls += 1;
     this.docs.set(doc.id, doc);
+    for (const [id, chunk] of this.chunks) {
+      if (chunk.docId === doc.id) this.chunks.delete(id);
+    }
     for (const chunk of chunks) this.chunks.set(chunk.id, chunk);
   }
 
@@ -97,7 +100,7 @@ class FakeKbServer {
   private version = 0;
 
   seed(doc: UploadDoc, chunks: readonly UploadChunk[] = []): void {
-    this.docs.set(doc.id, { doc: { ...doc, updatedAt: 1000 }, chunks: [...chunks] });
+    this.docs.set(doc.id, { doc: { ...doc, updatedAt: doc.updatedAt ?? 1000 }, chunks: [...chunks] });
   }
 
   putCalls(): Call[] {
@@ -271,6 +274,23 @@ const routeFetch: KbFetch = async (input, init) => {
 // ── 读：并集与回退 ────────────────────────────────────────────────
 
 describe("复合存储读取", () => {
+  it("选择较新本地版本的整份片段，不混入远端旧段落", async () => {
+    const doc = makeDoc({ id: "doc-a", updatedAt: 20, title: "新版本" });
+    seedLocal(local, doc);
+    server.seed({ ...doc, updatedAt: 10, title: "旧版本" }, makeChunks(doc, 3));
+    const storage = syncedStorage();
+    const [docs, chunks] = await Promise.all([storage.listDocs("dir-1"), storage.listChunks("dir-1")]);
+    expect(docs[0].title).toBe("新版本");
+    expect(chunks).toHaveLength(1);
+    expect((await storage.getDoc(doc.id))?.title).toBe("新版本");
+  });
+
+  it("远端较新时只读远端整份片段，不保留本机多余切块", async () => {
+    const doc = makeDoc({ id: "doc-a", updatedAt: 10 });
+    seedLocal(local, doc, 3);
+    server.seed({ ...doc, updatedAt: 20 }, makeChunks(doc, 1));
+    expect(await syncedStorage().listChunks("dir-1")).toHaveLength(1);
+  });
   it("本地 + 远端按 id 求并集，同名文档以远端为准", async () => {
     seedLocal(local, makeDoc({ id: "doc-a", title: "本机版" }));
     seedLocal(local, makeDoc({ id: "doc-shared", title: "本机共享版" }));
@@ -370,6 +390,34 @@ describe("首次登录回传", () => {
 // ── 写：本地 + 远端 ───────────────────────────────────────────────
 
 describe("复合存储写入", () => {
+  it("离线修改在新存储实例中仍可见，恢复网络后自动重试并清除待同步状态", async () => {
+    server.seed(makeDoc({ id: "doc-a", updatedAt: 10, title: "服务端旧版" }));
+    const edit = makeDoc({ id: "doc-a", updatedAt: 10, title: "离线修改" });
+    server.failStatus = 500;
+    await syncedStorage().putDocWithChunks(edit, [{ ...makeChunks(edit)[0], text: "修改后的正文" }]);
+    expect(local.docs.get(edit.id)?.pendingSync).toBe(true);
+    const reloaded = syncedStorage();
+    expect((await reloaded.listDocs("dir-1"))[0].title).toBe("离线修改");
+    server.failStatus = null;
+    expect((await reloaded.getDoc(edit.id))?.title).toBe("离线修改");
+    expect((await reloaded.listDocs("dir-1"))[0].title).toBe("离线修改");
+    expect((await reloaded.listChunks("dir-1"))[0].text).toBe("修改后的正文");
+    expect(local.docs.get(edit.id)?.pendingSync).toBe(false);
+    expect(server.docs.get(edit.id)?.doc.title).toBe("离线修改");
+  });
+
+  it("离线修改遇到跨设备冲突时保留本地完整内容并持续提示", async () => {
+    const edit = makeDoc({ id: "doc-a", updatedAt: 10, pendingSync: true, title: "本地未上传" });
+    seedLocal(local, edit);
+    server.seed({ ...edit, pendingSync: false, updatedAt: 20, title: "另一设备新版" });
+    const storage = syncedStorage();
+    expect((await storage.listDocs("dir-1"))[0].title).toBe("本地未上传");
+    expect(storage.syncWarning()).toContain("刷新");
+    expect(server.putCalls()).toHaveLength(0);
+    expect((await storage.getDoc(edit.id))?.title).toBe("本地未上传");
+    expect(storage.syncWarning()).not.toBeNull();
+    expect(server.docs.get(edit.id)?.doc.title).toBe("另一设备新版");
+  });
   it("本地与远端都写；远端回写的版本号补到本地", async () => {
     const doc = makeDoc({ id: "doc-new" });
     const chunks = makeChunks(doc, 2);

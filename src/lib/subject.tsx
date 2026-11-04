@@ -16,7 +16,7 @@
  * 旧版静默回落到 data-structures，导致用户的自定义方向被当成数据结构来测。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SUBJECTS, DEFAULT_SUBJECT_ID, getSubject } from "@/data/subjects";
 import type { KnowledgeGraph } from "@/lib/graph";
 import {
@@ -49,6 +49,21 @@ export function useSubject(): UseTargetResult {
   const [ready, setReady] = useState(false);
   const [loadingTarget, setLoadingTarget] = useState(false);
   const [targetError, setTargetError] = useState<string | null>(null);
+  const pending = useRef<AbortController | null>(null);
+
+  const cancelPending = useCallback(() => {
+    pending.current?.abort();
+    pending.current = null;
+    setLoadingTarget(false);
+  }, []);
+
+  const updateUrl = useCallback((id: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("subject");
+    url.searchParams.delete("direction");
+    url.searchParams.set(isBuiltin(id) ? "subject" : "direction", id);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
 
   const persist = useCallback((id: string) => {
     try {
@@ -67,10 +82,16 @@ export function useSubject(): UseTargetResult {
 
   const loadDirection = useCallback(
     async (id: string) => {
+      pending.current?.abort();
+      const controller = new AbortController();
+      pending.current = controller;
+      setReady(false);
       setLoadingTarget(true);
+      setTargetError(null);
       try {
         const res = await fetch(`/api/directions?id=${encodeURIComponent(id)}`, {
           cache: "no-store",
+          signal: controller.signal,
         });
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -88,6 +109,7 @@ export function useSubject(): UseTargetResult {
           description?: string;
           graph: KnowledgeGraph;
         };
+        if (controller.signal.aborted) return;
         setTargetState(
           targetFromDirection({
             id: data.id,
@@ -97,44 +119,61 @@ export function useSubject(): UseTargetResult {
           }),
         );
         setTargetIdState(data.id);
+        persist(data.id);
         setTargetError(null);
       } catch (err) {
+        if (controller.signal.aborted) return;
         const reason = err instanceof Error ? err.message : String(err);
         // 先回落再设错误：applyBuiltin 会清空 targetError，顺序反了提示就永远不显示
         applyBuiltin(DEFAULT_SUBJECT_ID);
         setTargetIdState(DEFAULT_SUBJECT_ID);
         persist(DEFAULT_SUBJECT_ID);
+        updateUrl(DEFAULT_SUBJECT_ID);
         setTargetError(`自定义方向加载失败：${reason}。已回到默认学科。`);
       } finally {
-        setLoadingTarget(false);
+        if (pending.current === controller) {
+          pending.current = null;
+          setLoadingTarget(false);
+          setReady(true);
+        }
       }
     },
-    [applyBuiltin, persist],
+    [applyBuiltin, persist, updateUrl],
   );
 
   const setTarget = useCallback(
     (t: LearningTarget) => {
+      cancelPending();
       setTargetState(t);
       setTargetIdState(t.id);
       setTargetError(null);
       persist(t.id);
+      updateUrl(t.id);
+      setReady(true);
     },
-    [persist],
+    [cancelPending, persist, updateUrl],
   );
 
   const setTargetId = useCallback(
     (id: string) => {
+      updateUrl(id);
       if (isBuiltin(id)) {
+        cancelPending();
         applyBuiltin(id);
         persist(id);
+        setReady(true);
         return;
       }
       // 方向 id 是 UUID；只有传了非内置 id 才去拉
       persist(id);
       void loadDirection(id);
     },
-    [applyBuiltin, loadDirection, persist],
+    [applyBuiltin, cancelPending, loadDirection, persist, updateUrl],
   );
+
+  useEffect(() => {
+    return () => pending.current?.abort();
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -150,16 +189,17 @@ export function useSubject(): UseTargetResult {
     const wanted = fromUrl ?? saved;
 
     if (!wanted || isBuiltin(wanted)) {
-      applyBuiltin(isBuiltin(wanted ?? "") ? (wanted as string) : DEFAULT_SUBJECT_ID);
+      const id = isBuiltin(wanted ?? "") ? (wanted as string) : DEFAULT_SUBJECT_ID;
+      applyBuiltin(id);
+      persist(id);
       setReady(true);
       return;
     }
 
-    // 自定义方向：先给一个占位（图还是默认学科的），ready 之后再替换
-    applyBuiltin(DEFAULT_SUBJECT_ID);
-    setReady(true);
+    // 图谱到达前不展示默认学科，避免读取或作答到另一学科的进度。
     void loadDirection(wanted);
-  }, [applyBuiltin, loadDirection]);
+    return () => pending.current?.abort();
+  }, [applyBuiltin, loadDirection, persist]);
 
   return { target, targetId, setTarget, setTargetId, ready, loadingTarget, targetError };
 }

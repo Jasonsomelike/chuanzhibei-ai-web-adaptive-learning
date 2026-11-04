@@ -57,8 +57,8 @@ export function MaterialReader({
         </span>
       </div>
       <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">
-        与出题引用同源：这里显示的就是出题与依据核对用的片段。
-        答题前先读原文，题目出处会标注同样的引用抬头。
+        阅读课程原文，提问和练习时可按同一出处核对。
+        注意教材与课堂讲义可能使用不同的页码或符号约定。
       </p>
 
       <ul className="mt-3 space-y-2">
@@ -98,7 +98,7 @@ export function MaterialReader({
                               className="rounded-md bg-[var(--canvas)] px-3 py-2"
                             >
                               <p className="text-xs text-[var(--ink-faint)]">{entry.label}</p>
-                              <p className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">
+                              <p className="mt-0.5 whitespace-pre-wrap wrap-anywhere text-xs leading-relaxed text-[var(--ink-soft)]">
                                 {entry.text}
                               </p>
                             </li>

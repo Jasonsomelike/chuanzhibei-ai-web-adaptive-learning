@@ -492,7 +492,7 @@ export function MaterialSourcePanel() {
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium">《{source.title}》</span>
+                            <span className="min-w-0 wrap-anywhere text-sm font-medium">《{source.title}》</span>
                             <Pill tone={source.kind === "textbook" ? "accent" : "neutral"}>
                               {source.kind === "textbook" ? "教材" : "讲义"}
                             </Pill>
@@ -558,7 +558,7 @@ export function MaterialSourcePanel() {
                                                   : ""}
                                               </p>
                                             ) : null}
-                                            <p className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">
+                                            <p className="mt-0.5 whitespace-pre-wrap wrap-anywhere text-xs leading-relaxed text-[var(--ink-soft)]">
                                               {c.text}
                                             </p>
                                           </li>

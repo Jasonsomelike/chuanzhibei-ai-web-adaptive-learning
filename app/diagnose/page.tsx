@@ -103,6 +103,7 @@ interface AnsweredRow {
   question: Question;
   correct: boolean;
   before: number;
+  beforeEvidence?: number;
   after: number;
   practiceOnly: boolean;
   /** 作答前的预测正确率；旧数据没有。 */
@@ -633,6 +634,7 @@ export default function DiagnosePage() {
     const source: AttemptSource = current.origin ?? "builtin";
 
     const next = recordAttempt(learner, targetId, current.question, correct, stamp, {
+      attemptId: crypto.randomUUID(),
       graph,
       weightScale,
       predicted,
@@ -684,6 +686,7 @@ export default function DiagnosePage() {
         question: current.question,
         correct,
         before,
+        beforeEvidence: beforeState?.evidenceN ?? 0,
         after,
         practiceOnly: current.practiceOnly,
         ...(predicted !== undefined ? { predicted } : {}),
@@ -833,7 +836,7 @@ export default function DiagnosePage() {
     if (!learner || !graph) return;
     const name = kcName.get(kcId) ?? kcId;
     const confirmed = window.confirm(
-      `确定清空「${name}」的全部作答证据？\n该知识点的掌握度会回到初始先验，已答过的题会重新出现并重新计入证据。`,
+      `为「${name}」开始新一轮测评？\n旧作答会保留为历史，本轮从尚未测评开始，题目可重新作答并计入新证据。`,
     );
     if (!confirmed) return;
 
@@ -1552,8 +1555,8 @@ export default function DiagnosePage() {
                   <p className="mt-1 text-xs text-[var(--bad)]">{memoryWarning}</p>
                 ) : null}
                 <p className="tabular mt-2 text-xs text-[var(--ink-faint)]">
-                  该知识点掌握度：{Math.round((lastAnswer?.before ?? 0) * 100)}
-                  % → {Math.round((lastAnswer?.after ?? 0) * 100)}%
+                  该知识点掌握度：{lastAnswer?.beforeEvidence === 0 ? "尚未测评" : `${Math.round((lastAnswer?.before ?? 0) * 100)}%`}
+                  {" → "}{Math.round((lastAnswer?.after ?? 0) * 100)}%（当前估计，需更多证据确认）
                   {current.practiceOnly ? "（本题仅练习，掌握度未变）" : ""}
                 </p>
                 <button
@@ -1623,7 +1626,7 @@ export default function DiagnosePage() {
                           onClick={() => clearEvidenceOfKc(row.kcId)}
                           className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)]"
                         >
-                          清空该知识点证据
+                          保留历史，重新测评
                         </button>
                       </div>
                     </div>

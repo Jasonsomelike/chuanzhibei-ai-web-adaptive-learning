@@ -95,6 +95,7 @@ export function MemoryReview({
 
   return (
     <section
+      id="memory-review"
       aria-label="记忆复习"
       className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
     >
@@ -137,7 +138,7 @@ export function MemoryReview({
 
                 {revealed ? (
                   <div className="mt-2 rounded-lg bg-[var(--canvas)] p-3 text-sm">
-                    <p className="whitespace-pre-wrap leading-relaxed">
+                    <p className="whitespace-pre-wrap wrap-anywhere leading-relaxed">
                       {memoryAnswerText(item)}
                     </p>
                     {item.note !== undefined && item.note !== "" ? (

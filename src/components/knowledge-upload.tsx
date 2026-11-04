@@ -432,7 +432,7 @@ export function KnowledgeUpload({
           {busy ? "导入中…" : "导入"}
         </button>
         {file !== null && kind !== null ? (
-          <span className="text-xs text-[var(--ink-soft)]">
+          <span className="min-w-0 max-w-full wrap-anywhere text-xs text-[var(--ink-soft)]">
             {file.name} · {formatBytes(file.size)} · {kind.toUpperCase()}
           </span>
         ) : null}

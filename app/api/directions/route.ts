@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
+import { assertMutationOrigin, readLimitedText } from "@/lib/routeAuth";
+import { MAX_DIRECTION_BODY_BYTES } from "@/lib/bodyLimit";
 import {
   validateDraft,
   draftToDirection,
@@ -173,14 +175,19 @@ interface CreateBody {
  * 无论哪种，落库前都必须过 validateDraft。
  */
 export async function POST(request: Request) {
+  const origin = assertMutationOrigin(request);
+  if (origin) return origin;
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "请先登录" }, { status: 401 });
   }
 
   let body: CreateBody;
+  const limited = await readLimitedText(request, MAX_DIRECTION_BODY_BYTES);
+  if (!limited.ok) return limited.response;
   try {
-    body = (await request.json()) as CreateBody;
+    body = JSON.parse(limited.text) as CreateBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid");
   } catch {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
@@ -317,12 +324,17 @@ interface UpdateBody {
 
 /** PATCH：改标题、描述、公开状态。只有作者本人能改。 */
 export async function PATCH(request: Request) {
+  const origin = assertMutationOrigin(request);
+  if (origin) return origin;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
 
   let body: UpdateBody;
+  const limited = await readLimitedText(request, MAX_DIRECTION_BODY_BYTES);
+  if (!limited.ok) return limited.response;
   try {
-    body = (await request.json()) as UpdateBody;
+    body = JSON.parse(limited.text) as UpdateBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid");
   } catch {
     return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
@@ -358,6 +370,8 @@ export async function PATCH(request: Request) {
 
 /** DELETE：删自己的方向。 */
 export async function DELETE(request: Request) {
+  const origin = assertMutationOrigin(request);
+  if (origin) return origin;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
 
