@@ -4,33 +4,51 @@
 
 ```mermaid
 flowchart LR
-  A["诊断出题<br/>app/diagnose/page.tsx"] --> B["Beta 后验<br/>src/lib/mastery.ts:78"]
-  B --> C["排序：深度→ZPD→sd→兜底<br/>src/lib/plan.ts:128"]
-  C --> D["预算装包<br/>src/lib/plan.ts:169"]
-  D --> E["手动改写<br/>app/path/page.tsx:260"]
-  E --> F["先修校验<br/>src/lib/plan.ts:375"]
-  F -->|改预算 / 再答题| C
-  D --> G["路径指纹 pathHash<br/>src/lib/plan.ts:296"]
-  T["导师 / 方向生成<br/>app/tutor/page.tsx · src/lib/direction.ts"] -. "只生成内容与解释，不进排序" .-> C
-  A --> M["记忆卡<br/>src/lib/memory.ts"]
-  A --> CAL["预测校准<br/>src/lib/calibration.ts"]
+  A["📝 诊断出题<br/>app/diagnose/page.tsx"] --> B["🧮 Beta 后验<br/>src/lib/mastery.ts:78"]
+  B --> C["⚙️ 排序：深度→ZPD→sd→兜底<br/>src/lib/plan.ts:128"]
+  C --> D["📦 预算装包<br/>src/lib/plan.ts:169"]
+  D --> E["✍️ 手动改写<br/>app/path/page.tsx:260"]
+  E --> F["✅ 先修校验<br/>src/lib/plan.ts:375"]
+  F -->|"🔁 改预算 / 再答题"| C
+  D --> G["🔐 路径指纹 pathHash<br/>src/lib/plan.ts:296"]
+  T["🤖 导师 / 方向生成<br/>app/tutor/page.tsx · src/lib/direction.ts"] -. "只生成内容与解释，不进排序" .-> C
+  A --> M["🗂️ 记忆卡<br/>src/lib/memory.ts"]
+  A --> CAL["🎯 预测校准<br/>src/lib/calibration.ts"]
   M -. "只读：不更新 α/β" .-> B
   CAL -. "只读作答记录" .-> B
+
+  classDef core fill:#4ECDC4,stroke:#0B7285,stroke-width:2px,color:#fff
+  classDef support fill:#A8DADC,stroke:#1864AB,stroke-width:2px,color:#000
+  classDef model fill:#FFE66D,stroke:#F08C00,stroke-width:2px,color:#000
+  classDef fingerprint fill:#95E1D3,stroke:#087F5B,stroke-width:2px,color:#000
+
+  class A,B,C,D,E,F core
+  class M,CAL support
+  class T model
+  class G fingerprint
 ```
 
 **可选能力层**（都不在核心路径上，失败时只降级自己）：
 
 ```mermaid
 flowchart LR
-  Q["导师提问<br/>app/tutor/page.tsx"] --> R["BM25 / 混合检索<br/>rag.ts · hybrid.ts · vector.ts"]
-  Q --> S["流式 + 思考<br/>chat.ts · reasoning.ts → /api/llm/chat"]
-  Q --> W["联网检索<br/>websearch.ts · searchClient.ts → /api/search"]
-  Q --> U["上传资料检索<br/>knowledge.ts · kbStore.ts · kbRemote.ts"]
-  S --> V["引用核对<br/>verify.ts · verifyClient.ts"]
-  D["方向出题<br/>src/lib/directionItems.ts"] --> L6["L6 依据核对<br/>verify.ts · verifyClient.ts"]
+  Q["🗣️ 导师提问<br/>app/tutor/page.tsx"] --> R["📚 BM25 / 混合检索<br/>rag.ts · hybrid.ts · vector.ts"]
+  Q --> S["💬 流式 + 思考<br/>chat.ts · reasoning.ts → /api/llm/chat"]
+  Q --> W["🌐 联网检索<br/>websearch.ts · searchClient.ts → /api/search"]
+  Q --> U["📤 上传资料检索<br/>knowledge.ts · kbStore.ts · kbRemote.ts"]
+  S --> V["🔖 引用核对<br/>verify.ts · verifyClient.ts"]
+  D["📝 方向出题<br/>src/lib/directionItems.ts"] --> L6["✅ L6 依据核对<br/>verify.ts · verifyClient.ts"]
   V -. "只标注，不改写回答" .-> Q
   L6 -. "未过降为 practice" .-> D
-  Q --> TTS["朗读<br/>src/lib/tts.ts → /api/tts"]
+  Q --> TTS["🔊 朗读<br/>src/lib/tts.ts → /api/tts"]
+
+  classDef entry fill:#FFE66D,stroke:#F08C00,stroke-width:2px,color:#000
+  classDef cap fill:#A8DADC,stroke:#1864AB,stroke-width:2px,color:#000
+  classDef check fill:#4ECDC4,stroke:#0B7285,stroke-width:2px,color:#fff
+
+  class Q,D entry
+  class R,S,W,U,TTS cap
+  class V,L6 check
 ```
 
 每个节点的职责：
@@ -49,6 +67,35 @@ flowchart LR
 | L6 依据核对 | 一批 3–4 题 + 该知识点的原文 | 逐字 quote、答案与选项比对；整批一次调用 | `checks` + 未过降为 practice |
 
 **分层与职责**（自下而上，上层只能依赖下层）：
+
+```mermaid
+flowchart TB
+  subgraph L4["🖥️ 表现层"]
+    P["app/ — 9 个页面 + 14 个 API 路由<br/>职责：读写状态、展示数值理由、把纯函数结果画出来"]
+  end
+  subgraph L3["🔌 触点层（可选）"]
+    T["chat · direction · directionItems · verifyClient · searchClient · external · upstream · ssrfGuard<br/>tts · kbStore / kbLocal / kbRemote · vectorCache · embeddingClient · hybridSearchClient<br/>server* 适配 · materials · pdf · textFile<br/>职责：检索、模型调用、浏览器 / 账号存储与语音；失败必须降级"]
+  end
+  subgraph L2["🧮 决策层（纯函数）"]
+    D["graph · mastery · plan · itemgen · memory · calibration<br/>knowledge · rag · hybrid · vector · embedding · ragEval<br/>verify · websearch · reasoning<br/>职责：无网络、无随机、无时间；可被测试逐位复现"]
+  end
+  subgraph L1["💾 数据层"]
+    S["9 学科图谱与题库（静态 TS 模块）· Postgres / 内存 10 张表<br/>方向上传知识库（IndexedDB 本机 + 账号 kb_docs / kb_chunks）<br/>职责：只存数据，不含规则"]
+  end
+
+  P -->|"调用"| T
+  P -->|"直接调用"| D
+  T -->|"读写"| S
+  D -. "✗ 硬约束：决策层不 import 触点层" .-> T
+
+  style L4 fill:#FFE66D,stroke:#F08C00,color:#000
+  style L3 fill:#F38181,stroke:#C92A2A,color:#000
+  style L2 fill:#4ECDC4,stroke:#0B7285,color:#fff
+  style L1 fill:#A8DADC,stroke:#1864AB,color:#000
+```
+
+<details>
+<summary>PDF / 不支持 Mermaid 的平台：ASCII 分层版</summary>
 
 ```
 ┌─ 数据层 ──────────────────────────────────────────────┐
@@ -72,6 +119,8 @@ flowchart LR
 │ 职责：读写状态、展示数值理由、把纯函数结果画出来             │
 └───────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 关键约束：**决策层不 import 触点层**。`plan.ts` 的依赖只有 `graph.ts` 与 `mastery.ts`（`src/lib/plan.ts:11-18`），所以模型不可用时决策层行为完全不变。新增的 `memory.ts` / `calibration.ts` / `knowledge.ts` / `rag.ts` / `hybrid.ts` / `vector.ts` / `embedding.ts` / `ragEval.ts` / `verify.ts` / `websearch.ts` / `reasoning.ts` 同样不碰网络、IndexedDB 与系统时钟；`pathHash` 与 golden case 没有因为这一轮新增功能而变化。
 

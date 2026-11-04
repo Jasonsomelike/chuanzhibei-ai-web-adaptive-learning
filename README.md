@@ -74,6 +74,38 @@ npm run dev            # http://localhost:3000
 
 ## 架构
 
+```mermaid
+flowchart TB
+  subgraph CORE["核心路径（纯函数，逐位可复现）"]
+    direction LR
+    A["📝 诊断出题"] --> B["🧮 Beta 后验"] --> C["⚙️ 排序<br/>深度 → ZPD → sd → 兜底"] --> D["📦 预算装包"] --> E["✍️ 手动改写"] --> F["✅ 先修校验"]
+  end
+  D --> H["🔐 pathHash = SHA-256(steps + algoVersion + kgVersion)"]
+  F -.->|"🔁 改预算 / 再答题"| C
+  subgraph OPT["可选能力（失败只降级自己，不阻塞核心路径）"]
+    direction LR
+    T["🤖 导师 / 方向"] --> R["📚 BM25 / 混合检索"] --> S["💬 流式回答"] --> V["🔖 逐字引用核对"]
+    T --> W["🌐 联网检索"]
+    T --> U["📤 上传资料"]
+    T --> AU["🔊 语音朗读"]
+  end
+  T -.->|"只生成内容与解释，不进排序"| C
+
+  classDef coreNode fill:#4ECDC4,stroke:#0B7285,stroke-width:2px,color:#fff
+  classDef optNode fill:#A8DADC,stroke:#1864AB,stroke-width:2px,color:#000
+  classDef hashNode fill:#95E1D3,stroke:#087F5B,stroke-width:2px,color:#000
+
+  class A,B,C,D,E,F coreNode
+  class T,R,S,V,W,U,AU optNode
+  class H hashNode
+
+  style CORE fill:#F0FBFA,stroke:#0B7285,color:#000
+  style OPT fill:#FFF9E8,stroke:#F08C00,color:#000
+```
+
+<details>
+<summary>纯文本版（不支持 Mermaid 的平台）</summary>
+
 ```
 诊断出题 → Beta 后验 → 排序（深度 → ZPD → sd → 兜底）→ 预算装包 → 手动改写 → 先修校验
                               │
@@ -86,6 +118,8 @@ npm run dev            # http://localhost:3000
            └─ 语音朗读（浏览器 / mimo chat-audio）
 ```
 
+</details>
+
 关键约束：**决策层不 import 触点层**。`plan.ts` 的依赖只有 `graph.ts` 与 `mastery.ts`，所以模型、搜索、存储全部不可用时，排序行为完全不变。模型只参与「生成图谱 / 生成题目 / 写解释」，不参与排序。
 
 分层图、每个节点的输入输出、Beta 后验公式、排序键与复杂度实测见 [架构与算法](docs/architecture.md)。
@@ -94,11 +128,27 @@ npm run dev            # http://localhost:3000
 
 RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必须有出处**：
 
-```
-提问 ─┬─ 知识点：BM25 top3 ─────────────────────────────────┐
-      └─ 上传资料：BM25 top20 ∥ 向量 top20 → RRF(k=60) → top3 ─┤
-                                                                ▼
-                              注入 [kcId] / [资料n] → 模型流式回答 → 逐字核对引用
+```mermaid
+flowchart TD
+  Q["🗣️ 提问"] --> KP["📚 知识点：BM25 top3"]
+  Q --> UP["📤 上传资料：BM25 top20 ∥ 向量 top20"]
+  UP --> RRF["⚖️ RRF（k=60）→ top3"]
+  KP --> CTX["🧾 注入 [kcId] / [资料n]"]
+  RRF --> CTX
+  CTX --> LLM["🤖 模型流式回答"]
+  LLM --> VER["✅ 逐字核对引用"]
+
+  classDef entry fill:#FFE66D,stroke:#F08C00,stroke-width:2px,color:#000
+  classDef retrieve fill:#A8DADC,stroke:#1864AB,stroke-width:2px,color:#000
+  classDef fuse fill:#95E1D3,stroke:#087F5B,stroke-width:2px,color:#000
+  classDef model fill:#F38181,stroke:#C92A2A,stroke-width:2px,color:#000
+  classDef guard fill:#4ECDC4,stroke:#0B7285,stroke-width:2px,color:#fff
+
+  class Q entry
+  class KP,UP,RRF retrieve
+  class CTX fuse
+  class LLM model
+  class VER guard
 ```
 
 | 参数 | 值 |

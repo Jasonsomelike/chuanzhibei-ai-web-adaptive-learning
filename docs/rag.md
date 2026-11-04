@@ -6,19 +6,31 @@ RAG 在本项目里不是「给聊天加点上下文」的装饰，而是**回�
 
 ```mermaid
 flowchart TD
-  Q["用户提问"] --> KP["知识点检索<br/>buildIndex(concepts) → BM25 top3"]
-  Q --> UP["上传资料检索（本方向 chunks）"]
-  UP --> B1["BM25 top20<br/>rag.ts search()"]
-  UP --> V1["向量 top20<br/>vector.ts topKNormalized()"]
-  V1 --> VS["向量来源<br/>kb.vectors（账号，游标分页）<br/>→ vectorCache（IndexedDB）<br/>→ /api/llm/embeddings 补算"]
-  B1 --> RRF["RRF 融合<br/>k=60, weights 1:1, candidates 20"]
+  Q["🗣️ 用户提问"] --> KP["📚 知识点检索<br/>buildIndex(concepts) → BM25 top3"]
+  Q --> UP["📤 上传资料检索（本方向 chunks）"]
+  UP --> B1["🔍 BM25 top20<br/>rag.ts search()"]
+  UP --> V1["🧭 向量 top20<br/>vector.ts topKNormalized()"]
+  V1 --> VS["💾 向量来源<br/>kb.vectors（账号，游标分页）<br/>→ vectorCache（IndexedDB）<br/>→ /api/llm/embeddings 补算"]
+  B1 --> RRF["⚖️ RRF 融合<br/>k=60, weights 1:1, candidates 20"]
   V1 --> RRF
-  RRF --> TOP["top3 + 相邻切块去重"]
-  KP --> CTX["注入上下文<br/>[kcId] / [资料n]"]
+  RRF --> TOP["🎯 top3 + 相邻切块去重"]
+  KP --> CTX["🧾 注入上下文<br/>[kcId] / [资料n]"]
   TOP --> CTX
-  CTX --> LLM["模型回答（流式）<br/>/api/llm/chat 或浏览器直连"]
-  LLM --> CITE["extractCitedKcIds<br/>只列回复里真的出现、且在检索结果里的 id"]
-  CITE --> VER["verifyClaims<br/>逐字 quote 核对，只标注不改写"]
+  CTX --> LLM["🤖 模型回答（流式）<br/>/api/llm/chat 或浏览器直连"]
+  LLM --> CITE["🔖 extractCitedKcIds<br/>只列回复里真的出现、且在检索结果里的 id"]
+  CITE --> VER["✅ verifyClaims<br/>逐字 quote 核对，只标注不改写"]
+
+  classDef entry fill:#FFE66D,stroke:#F08C00,stroke-width:2px,color:#000
+  classDef retrieve fill:#A8DADC,stroke:#1864AB,stroke-width:2px,color:#000
+  classDef fuse fill:#95E1D3,stroke:#087F5B,stroke-width:2px,color:#000
+  classDef model fill:#F38181,stroke:#C92A2A,stroke-width:2px,color:#000
+  classDef guard fill:#4ECDC4,stroke:#0B7285,stroke-width:2px,color:#fff
+
+  class Q entry
+  class KP,UP,B1,V1,VS retrieve
+  class RRF,TOP,CTX fuse
+  class LLM model
+  class CITE,VER guard
 ```
 
 <details>
