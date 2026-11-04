@@ -27,14 +27,14 @@ async function visit(path: string) {
 
 try {
   await visit("/");
-  await page.getByRole("heading", { name: "从一小步开始" }).waitFor();
+  await page.getByRole("heading", { name: /把今天的学习/ }).waitFor();
   check((await page.title()).includes("智慧学伴"), "标题正确且首页非空");
   await page.getByLabel("当前学习目标").selectOption("network");
   await page.getByRole("button", { name: "60 分钟", exact: true }).click();
-  const planLink = page.getByRole("link", { name: "查看完整计划 →" });
+  const planLink = page.getByRole("link", { name: "查看完整计划", exact: true });
   check((await planLink.getAttribute("href"))?.includes("subject=network&budget=60"), "学科与预算进入实际计划链接");
   await planLink.click();
-  await page.getByRole("heading", { name: "学习路径", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "让每一步，都接得上。", exact: true }).waitFor();
   check((await page.locator("main").innerText()).includes("下一步建议"), "路径首屏突出下一步");
   await page.getByText("调整学习计划 ·", { exact: false }).click();
   check(await page.getByRole("button", { name: "把本周预算设为 60 分钟" }).getAttribute("aria-pressed") === "true", "首页预算在路径页实际生效");
@@ -65,6 +65,79 @@ try {
   await page.getByText("学习证据与路径变化", { exact: false }).click();
   check((await page.locator("main").innerText()).includes("作答前路径"), "学习证据抽屉展示前后版本");
 
+  // UI upgrade: real course/evidence data, accessible overlays and stable list identity.
+  await visit("/");
+  const savedBeforePreview = await page.evaluate(() => localStorage.getItem("alp.learner.v2"));
+  await page.getByRole("tab", { name: /先了解自己/ }).click();
+  check(await page.getByText("题目预览，不写入学习记录", { exact: false }).isVisible(), "首页可预览真实课程诊断题，明确不记分");
+  await page.getByRole("tab", { name: /学懂，再验证/ }).click();
+  check((await page.getByRole("link", { name: "带着这一步问导师" }).getAttribute("href"))?.includes("&q="), "首页学习预览带真实主题进入导师");
+  await page.getByRole("tab", { name: /安排下一步/ }).click();
+  check(savedBeforePreview === await page.evaluate(() => localStorage.getItem("alp.learner.v2")), "流程预览不改写学习证据");
+  await page.keyboard.press("Control+k");
+  await page.getByRole("textbox", { name: "搜索课程与功能", exact: true }).fill("线性代数");
+  await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter");
+  await page.waitForURL("**/diagnose?subject=linear-algebra");
+  check((await page.locator("main").innerText()).includes("线性代数"), "键盘搜索进入实际课程");
+  await page.getByRole("button", { name: "专注模式", exact: true }).click();
+  check(await page.locator("main").getAttribute("data-focus") === "true" && !await page.locator(".diagnostic-sidebar").isVisible(), "专注模式隐藏辅助栏");
+  await page.getByRole("button", { name: "退出专注", exact: true }).click();
+  check(await page.locator(".diagnostic-sidebar").isVisible(), "可退出专注并恢复辅助材料");
+  await visit("/tutor?subject=data-structures");
+  check(await page.locator("#q").evaluate(el => el.tagName === "TEXTAREA"), "导师支持多行问题输入");
+  await page.getByRole("button", { name: "围绕这段提问", exact: true }).first().click();
+  check((await page.locator("#q").inputValue()).includes("教材") && await page.locator("#q").evaluate(el => el === document.activeElement), "教材摘录进入输入框并保持出处");
+  check(await page.getByRole("link", { name: "[top]", exact: true }).count() === 0, "教材数组下标不会误变成知识点链接");
+  await page.getByRole("tab", { name: "教材阅读", exact: true }).focus();
+  await page.keyboard.press("End");
+  check(await page.getByRole("tab", { name: "学习设置", exact: true }).getAttribute("aria-selected") === "true", "导师侧栏支持标准标签页键盘操作");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await visit("/tutor?subject=data-structures");
+  await page.getByRole("button", { name: "教材与学习设置", exact: true }).click();
+  check(await page.getByRole("dialog", { name: "课程学习材料", exact: true }).isVisible(), "移动端材料抽屉可打开");
+  await page.getByRole("button", { name: "围绕这段提问", exact: true }).first().click();
+  check(await page.getByRole("dialog").count() === 0 && await page.locator("#q").evaluate(el => el === document.activeElement), "移动端引用原文后关闭抽屉，焦点回到问题");
+  await page.getByRole("button", { name: "教材与学习设置", exact: true }).click(); await page.keyboard.press("Escape");
+  check(await page.getByRole("button", { name: "教材与学习设置", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await visit("/path?subject=data-structures&budget=60");
+  await page.locator(".react-flow__node").first().waitFor();
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
+    return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
+  });
+  check(await page.locator(".react-flow__node").count() > 0, "图谱初始视野包含全部当前节点，无基础节点裁切");
+  await page.getByLabel("定位知识点", { exact: true }).selectOption("c05");
+  check((await page.locator(".knowledge-desktop-inspector h3").innerText()) === "顺序表", "选择节点显示实际知识点详情");
+  await page.locator(".knowledge-desktop-inspector").getByRole("link", { name: "开始练习", exact: true }).click();
+  await page.locator('input[name="answer"]').first().waitFor();
+  check((await page.locator(".question-paper").innerText()).includes("顺序表"), "图谱进入选中知识点的实际练习");
+  await visit("/path?subject=data-structures&budget=60");
+  await page.getByRole("button", { name: "把本周预算设为 90 分钟", exact: true }).click();
+  check((await page.getByRole("status").innerText()).includes("相比 60 分钟预算"), "预算变化报告实际新增与移出数量");
+  const identity = await page.locator("[data-flip-id]").first().elementHandle();
+  const originalId = await identity!.getAttribute("data-flip-id");
+  await page.getByRole("button", { name: /^把「.*」下移一位$/ }).first().click();
+  check(await identity!.evaluate(el => el.isConnected), "GSAP Flip 重排保留原知识点 DOM 身份");
+  check(await page.locator("[data-flip-id]").first().getAttribute("data-flip-id") !== originalId, "路径步骤实际重排");
+  check((await page.locator("main").innerText()).includes("当前顺序违反"), "手动越过先修仍保留约束警告");
+  await page.waitForFunction(() => [...document.querySelectorAll("[data-flip-id]")].every(el => { const matrix = new DOMMatrixReadOnly(getComputedStyle(el).transform); return Math.abs(matrix.m42) < 0.1 && Math.abs(matrix.m41) < 0.1; }));
+  await page.getByRole("button", { name: "恢复算法排序", exact: true }).click();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await identity!.dispose();
+  for (const route of ["/", "/diagnose", "/path", "/tutor"]) {
+    await visit(`${route}?subject=data-structures`);
+    if (route === "/path") {
+      await page.locator(".react-flow__node").first().waitFor();
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
+        return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
+      });
+    }
+    await page.screenshot({ path: join(output, `${route === "/" ? "home" : route.slice(1)}-1440.png`), fullPage: false });
+  }
+
   for (const width of [1280, 853, 390, 360]) {
     await page.setViewportSize({ width, height: 900 });
     for (const route of ["/", "/diagnose", "/path", "/tutor", "/directions", "/market", "/settings", "/guide", "/about", "/login"]) {
@@ -76,10 +149,29 @@ try {
     }
     if (width === 390) {
       check(!await page.getByRole("link", { name: "设置中心", exact: true }).first().isVisible(), "移动端次要导航收进更多菜单");
-      await page.getByText("更多 ▾", { exact: true }).click();
+      await page.getByRole("button", { name: "更多", exact: true }).click();
       check(await page.getByRole("link", { name: "设置中心", exact: true }).last().isVisible(), "更多菜单可访问设置");
     }
   }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const themeNames = { sand: "暖砂", forest: "森林", indigo: "深蓝", violet: "紫罗兰", contrast: "高对比" };
+  for (const [theme, label] of Object.entries(themeNames)) for (const mode of ["light", "dark"] as const) {
+    await visit("/settings?panel=appearance");
+    await page.getByRole("button", { name: new RegExp(`^${label}`) }).click();
+    await page.getByRole("button", { name: mode === "light" ? "浅色" : "深色", exact: true }).click();
+    await visit("/path?subject=data-structures&budget=60");
+    await page.locator(".knowledge-node").first().waitFor();
+    const appearance = await page.evaluate(() => {
+      return { theme: document.documentElement.dataset.theme, mode: document.documentElement.dataset.mode,
+        contrast: [...document.querySelectorAll(".knowledge-node")].map(el => { const style = getComputedStyle(el); const [foreground, background] = [style.color, style.backgroundColor].map(value => { const values = value.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(x => { const v = x / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722; }); return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05); }) };
+    });
+    check(appearance.theme === theme && appearance.mode === mode, `${label} ${mode} 经设置页切换并在图谱恢复`);
+    check(appearance.contrast.every(ratio => ratio >= 4.5), `${label} ${mode} 图谱状态文字对比度至少 4.5:1`);
+    if (theme === "forest" && mode === "dark") await page.screenshot({ path: join(output, "path-forest-dark-1280.png"), fullPage: false });
+  }
+  await visit("/settings?panel=appearance");
+  await page.getByRole("button", { name: /^暖砂/ }).click();
+  await page.getByRole("button", { name: "浅色", exact: true }).click();
   check(runtimeErrors.length === 0, `无浏览器运行错误：${runtimeErrors.join("; ")}`);
 
   // API 经过真实 cookie 会话，验证判分、版本冲突与账号隔离。
@@ -127,7 +219,7 @@ try {
     await visit("/settings?panel=tone");
     await page.getByRole("button", { name: /^严格/ }).click();
     await visit("/tutor?subject=data-structures");
-    await page.getByText("切换课程与回答设置", { exact: true }).click();
+    await page.getByRole("tab", { name: "学习设置", exact: true }).click();
     await page.getByLabel("智能体（服务端工具循环）", { exact: true }).check();
     await page.getByRole("button", { name: "3 · 完整讲解" }).click();
     await page.locator("#q").fill("栈为什么遵循后进先出？");
@@ -144,4 +236,8 @@ try {
     check(runtimeErrors.length === 0, `Agent 交互后无浏览器运行错误：${runtimeErrors.join("; ")}`);
   } finally { await new Promise<void>((resolve) => mock.close(() => resolve())); }
   console.log(`\n${checks} 项全部通过。截图：${output}`);
+} catch (error) {
+  await page.screenshot({ path: join(output, "failure.png"), fullPage: true }).catch(() => undefined);
+  console.error("UI 回归失败", { url: page.url(), runtimeErrors, evidence: output });
+  throw error;
 } finally { await browser.close(); }

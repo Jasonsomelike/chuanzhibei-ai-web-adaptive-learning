@@ -8,7 +8,7 @@
 
 [在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [已知限制](docs/limits.md)
 
-![tests](https://img.shields.io/badge/tests-2058%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-2064%20passed-brightgreen)
 ![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
 ![subjects](https://img.shields.io/badge/subjects-9-blue)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -17,7 +17,7 @@
 
 ![首页](screenshots/home-hero.png)
 
-**2026-11-04 更新**：首页已改为个人学习入口，路径首屏突出下一步，导师支持材料工作台与分层提示；Agent 接入服务端重算学情、自定义方向和账号上传资料。进度增加版本冲突合并，重测保留历史。当前截图目录中较早图片仅供历史参考，完整变更与最新验收见 [改进记录](docs/improvements-2026-11-04.md)。
+**2026-11-04 更新**：首页支持诊断、规划与学习的交互预览；导师采用教材与对话双栏工作台，移动端使用材料抽屉。诊断增加专注模式、连续反馈和证据更新；学习路径加入 React Flow 先修图谱、预算变化提示及 GSAP Flip 重排。保留五套配色、明暗模式与减少动态效果设置。Agent 学情隔离、进度合并与历史保留等改进见 [改进记录](docs/improvements-2026-11-04.md)，当前验收见下表；较早截图仅供历史参考。
 
 ## 评审入口
 
@@ -175,14 +175,14 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 | 命令 | 验证什么 | 最近实测（2026-11-04） |
 | --- | --- | --- |
 | `npm run verify` | 类型 + 单测 + 图谱 + 密钥扫描 + 导师规则评测 | **exit 0** |
-| `npm run test` | 104 个测试文件 | **2058 passed / 104 files**，exit 0 |
+| `npm run test` | 105 个测试文件 | **2064 passed / 105 files**，exit 0 |
 | `npm run kg:validate` | 9 学科图谱与题库 | **0 error**（360 点 / 540 边 / 1080 题） |
 | `npm run build` | Next 16 生产构建 | **exit 0**，30 个路由条目（含图标与 404） |
 | `npm run eval:rag:hard` | 22 条片段级查询 | BM25 nDCG@10 `0.955`；标题加权增益 `0.000`，向量 / RRF 未测 |
 | `npx tsx scripts/eval-tutor.ts --judge rules` | 10 条导师回答 rubric（8 维） | 10 条全部产出分数，硬门 R1≥1 / R5=2 / R7=2 全过，exit 0 |
 | `npm run check:secrets` | 当前工作树密钥扫描 | 未发现疑似密钥，**exit 0** |
 | `npm run lint` | ESLint 9 扁平配置 | 0 error，保留部分 hook 警告 |
-| `npm run test:e2e` | 学习闭环、4 种宽度、模型上下文、账号与 MCP | **152/152 + 36/36 + 18/18**，自动启动隔离内存服务 |
+| `npm run test:e2e` | 学习闭环、5 种宽度、10 种主题组合、模型上下文、账号与 MCP | **222/222 + 36/36 + 18/18**，自动启动隔离内存服务 |
 
 先 `npm run build` 再 `npm run test:e2e`；测试启动器强制清空数据库地址、生成临时主密钥，并在结束后关闭自己的服务。CI 已加入新评测和浏览器流程，远端运行需推送后确认。详见 [最新改进与验收](docs/improvements-2026-11-04.md) 和 [历史验证记录](docs/verification.md)。
 

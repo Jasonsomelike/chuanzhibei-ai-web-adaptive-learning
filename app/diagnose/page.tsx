@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { useStaggerIn, useSwapIn } from "@/components/motion";
+import { useDiagnosticFeedback } from "@/components/diagnostic-motion";
+import { Icon } from "@/components/icons";
+import { Hint } from "@/components/primitives/hint";
+import { targetQuery } from "@/lib/target";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
@@ -144,6 +148,9 @@ export default function DiagnosePage() {
   const [current, setCurrent] = useState<PickedQuestion | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [revealed, setRevealed] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  const [requestedKc, setRequestedKc] = useState<string | null>(null);
+  useEffect(() => { setRequestedKc(new URLSearchParams(window.location.search).get("kc")); }, []);
 
   const [directionItems, setDirectionItems] = useState<DirectionItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -177,8 +184,15 @@ export default function DiagnosePage() {
    */
   const mainRef = useRef<HTMLElement>(null);
   const questionCardRef = useRef<HTMLDivElement>(null);
+  const previousQuestion = useRef<string | null>(null);
   useStaggerIn(mainRef);
   useSwapIn(questionCardRef, current?.question.id ?? null);
+  useDiagnosticFeedback(mainRef, revealed, current?.question.id ?? null, answered.length, HARD_CAP);
+  useEffect(() => {
+    const id = current?.question.id ?? null;
+    if (id && previousQuestion.current && id !== previousQuestion.current) questionCardRef.current?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
+    previousQuestion.current = id;
+  }, [current?.question.id]);
 
   // 切目标时重读一次：用户可能刚在设置页改过供应商配置
   useEffect(() => {
@@ -392,6 +406,8 @@ export default function DiagnosePage() {
       if (candidates.length === 0) return null;
 
       candidates.sort((a, b) => {
+        const requested = Number(b.concept.id === requestedKc) - Number(a.concept.id === requestedKc);
+        if (requested !== 0) return requested;
         if (a.depth !== b.depth) return a.depth - b.depth;
         const ma = masteryMean(a.mastery!);
         const mb = masteryMean(b.mastery!);
@@ -436,7 +452,7 @@ export default function DiagnosePage() {
         chapter: chosen.concept.chapter,
       };
     },
-    [depths, graph, questionsByKc, targetId, directionItems, perKcTarget, skippedKcs],
+    [depths, graph, questionsByKc, targetId, directionItems, perKcTarget, skippedKcs, requestedKc],
   );
 
   /**
@@ -458,6 +474,8 @@ export default function DiagnosePage() {
       const stateProgress = progressOf(state, targetId, graph);
 
       const sorted = [...graph.concepts].sort((a, b) => {
+        const requested = Number(b.id === requestedKc) - Number(a.id === requestedKc);
+        if (requested !== 0) return requested;
         const da = depths.get(a.id) ?? 0;
         const db = depths.get(b.id) ?? 0;
         if (da !== db) return da - db;
@@ -480,7 +498,7 @@ export default function DiagnosePage() {
       }
       return null;
     },
-    [graph, depths, targetId, skippedKcs, questionsByKc, directionItems, perKcTarget],
+    [graph, depths, targetId, skippedKcs, questionsByKc, directionItems, perKcTarget, requestedKc],
   );
 
   /** 懒生成某 KC 的题。失败时进 failed 状态，由界面给降级选项。 */
@@ -1013,23 +1031,20 @@ export default function DiagnosePage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
+      <main id="main" ref={mainRef} data-focus={focusMode} className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4" data-motion="hero">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">诊断测评</h1>
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">先找准，下一步才更清楚。</h1>
             <p className="mt-1 text-sm text-[var(--ink-soft)]">
-              按先修顺序出题，每答一题立即更新掌握度。每个知识点测够 3–4 题即可生成路径。
+              诊断测评 · {target.name} · 每答一题，更新一份学习依据。
             </p>
           </div>
-          <button
-            type="button"
-            onClick={clearAll}
-            className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-sm text-[var(--ink-soft)] hover:bg-[var(--line)]"
-          >
-            清空当前目标记录（含掌握度）
-          </button>
+          <Hint label="隐藏辅助材料与历史概览，专注当前题目。随时可以退出。"><button type="button" aria-pressed={focusMode} onClick={() => setFocusMode(value => !value)} className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm text-[var(--accent)]"><Icon name="expand" size={17} />{focusMode ? "退出专注" : "专注模式"}</button></Hint>
         </div>
 
+        <details className="mb-5 rounded-xl border border-[var(--line)] px-4 py-3">
+          <summary className="cursor-pointer text-sm text-[var(--ink-soft)]">诊断设置 · {target.name}</summary>
+          <div className="mt-4">
         {/* 目标切换 */}
         <Card className="mb-5" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
@@ -1057,6 +1072,10 @@ export default function DiagnosePage() {
             </p>
           ) : null}
         </Card>
+          <button type="button" onClick={clearAll} className="mt-2 rounded px-2 py-2 text-xs text-[var(--bad)] underline">清空当前目标记录（含掌握度）</button>
+          </div>
+        </details>
+        {requestedKc && kcName.has(requestedKc) ? <p className="mb-4 text-xs text-[var(--ink-faint)]">优先测评「{kcName.get(requestedKc)}」；该点证据充足或题目用尽后，继续按先修顺序诊断。</p> : null}
 
         {/* 内联新建方向 */}
         {showNewDirection ? (
@@ -1073,8 +1092,10 @@ export default function DiagnosePage() {
           />
         ) : null}
 
+        <div className="diagnostic-layout">
+        <section className="diagnostic-main" aria-label="当前诊断题目">
         {/* 进度 */}
-        <Card className="mb-5" motion="progress">
+        <Card className="mb-5 diagnostic-progress" motion="progress">
           <div className="flex items-center justify-between text-sm">
             <span className="text-[var(--ink-soft)]">
               本次已答{" "}
@@ -1085,49 +1106,18 @@ export default function DiagnosePage() {
               正确 <span className="tabular font-medium text-[var(--ink)]">{correctCount}</span> 题
             </span>
           </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--line)]">
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--line)]" role="progressbar" aria-label="本轮诊断进度" aria-valuemin={0} aria-valuemax={HARD_CAP} aria-valuenow={answered.length} aria-valuetext={`已答 ${answered.length} 题，本轮最多 ${HARD_CAP} 题，达到证据门槛可能提前结束`}>
             <div
-              className="h-full bg-[var(--accent)] transition-[width] duration-300"
-              style={{ width: `${Math.min(100, (answered.length / HARD_CAP) * 100)}%` }}
+              data-diagnostic-meter
+              className="h-full origin-left bg-[var(--accent)]"
+              style={{ transform: `scaleX(${Math.min(1, answered.length / HARD_CAP)})` }}
             />
           </div>
           <p className="mt-2 text-xs text-[var(--ink-faint)]">
-            {progress.attempts.length > 0
-              ? `该目标历史累计作答 ${progress.attempts.length} 题 · `
-              : ""}
-            {synced ? "进度已同步到账号" : "进度仅存本浏览器"}
+            本轮最多 {HARD_CAP} 题，达到证据门槛会提前结束。{synced ? "已同步到账号。" : "记录保存在本浏览器。"}
           </p>
         </Card>
 
-        {/* 预测校准：用历史作答（含本次）的预测值与对错做同目标内弱校准 */}
-        <CalibrationCard attempts={progress.attempts} className="mb-5" />
-
-        {/* 记忆复习：只显示到期卡片；自评不写 α/β */}
-        <MemoryReview
-          memories={progress.memories ?? []}
-          now={nowIso}
-          kcName={(id) => kcName.get(id) ?? id}
-          onReview={reviewCard}
-          className="mb-5"
-        />
-
-        {/* 错题重训与知识点总结：重做走 submit 同一条作答路径 */}
-        <ErrorRetrainPanel
-          attempts={progress.attempts}
-          questions={availableQuestions}
-          kcName={(id) => kcName.get(id) ?? id}
-          targetName={target.name}
-          onRetrainQuestion={retrainQuestion}
-          className="mb-5"
-        />
-
-        {/* 教材原文阅读：与出题引用同源，按章节折叠 */}
-        <MaterialReader
-          pack={readingPack}
-          concepts={graph.concepts}
-          selection={materialSelection}
-          className="mb-5"
-        />
 
         {/* 记忆卡容量拒绝等写入警告必须可见，不能只返回不展示 */}
         {memoryWarning !== null ? (
@@ -1420,7 +1410,7 @@ export default function DiagnosePage() {
         {/* 当前题目 */}
         {current && !done ? (
           <div ref={questionCardRef} data-motion="question-card" data-motion-manual>
-          <Card className="mb-5">
+          <Card className="mb-5 question-paper">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <Pill tone="accent">{current.kcName}</Pill>
               <Pill>难度 {current.question.difficulty}</Pill>
@@ -1440,7 +1430,7 @@ export default function DiagnosePage() {
               ) : null}
               {current.practiceOnly ? <Pill tone="warn">仅练习，不计入掌握度</Pill> : null}
             </div>
-            <h2 className="text-base font-medium leading-relaxed">{current.question.stem}</h2>
+            <h2 tabIndex={-1} className="text-lg font-semibold leading-[1.8] sm:text-xl">{current.question.stem}</h2>
 
             {/*
               出处：生成题显示落库的「依据：…」，内置题没有页级出处，只标明题库与章节。
@@ -1483,7 +1473,7 @@ export default function DiagnosePage() {
                 return (
                   <label
                     key={i}
-                    className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors ${tone} ${revealed ? "cursor-default" : "cursor-pointer"}`}
+                    className={`question-option flex items-start gap-3 rounded-lg border px-4 py-4 text-sm transition-colors ${tone} ${revealed ? "cursor-default" : "cursor-pointer"}`}
                   >
                     <input
                       type="radio"
@@ -1492,7 +1482,8 @@ export default function DiagnosePage() {
                       onChange={() => setSelected(i)}
                       className="mt-1"
                     />
-                    <span>{opt}</span>
+                    <span className="font-medium text-[var(--ink-faint)]">{String.fromCharCode(65 + i)}.</span><span className="min-w-0 flex-1">{opt}</span>
+                    {revealed && (isCorrect || isSelected) ? <span className={`shrink-0 text-xs ${isCorrect ? "text-[var(--good)]" : "text-[var(--bad)]"}`}>{isCorrect ? "正确答案" : "你的选择"}</span> : null}
                   </label>
                 );
               })}
@@ -1538,8 +1529,10 @@ export default function DiagnosePage() {
             </details>
 
             {revealed ? (
-              <div data-motion="feedback" className="mt-4 rounded-lg bg-[var(--canvas)] p-3 text-sm">
-                <p className="font-medium">
+              <div data-motion="feedback" data-motion-manual className="mt-5 text-sm">
+                <div data-answer-feedback role="status" className={`rounded-xl border p-4 ${selected === current.question.answerIndex ? "border-[var(--good)] bg-[var(--good-soft)]" : "border-[var(--bad)] bg-[var(--bad-soft)]"}`}>
+                <p className="flex items-center gap-2 font-semibold">
+                  <Icon name={selected === current.question.answerIndex ? "check" : "close"} size={20} />
                   {selected === current.question.answerIndex ? "回答正确" : "回答错误"}
                 </p>
                 <p className="mt-1 text-[var(--ink-soft)]">{current.question.explanation}</p>
@@ -1554,18 +1547,25 @@ export default function DiagnosePage() {
                 {memoryWarning !== null ? (
                   <p className="mt-1 text-xs text-[var(--bad)]">{memoryWarning}</p>
                 ) : null}
+                </div>
+                <div data-evidence-update className="mt-4 rounded-xl border border-[var(--line)] p-4">
+                <p className="flex items-center gap-2 text-sm font-medium"><Icon name="layers" size={18} />{current.practiceOnly ? "本题仅练习，学习证据未增加" : "本知识点的学习证据已更新"}</p>
                 <p className="tabular mt-2 text-xs text-[var(--ink-faint)]">
                   该知识点掌握度：{lastAnswer?.beforeEvidence === 0 ? "尚未测评" : `${Math.round((lastAnswer?.before ?? 0) * 100)}%`}
                   {" → "}{Math.round((lastAnswer?.after ?? 0) * 100)}%（当前估计，需更多证据确认）
                   {current.practiceOnly ? "（本题仅练习，掌握度未变）" : ""}
                 </p>
+                </div>
+                <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={next}
-                  className="mt-3 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
+                  className="rounded-lg bg-[var(--accent)] px-5 py-2.5 text-sm font-medium text-[var(--on-accent)]"
                 >
                   下一题
                 </button>
+                <Link href={`/path${targetQuery(target)}`} className="rounded-lg border border-[var(--line-strong)] px-4 py-2.5 text-sm text-[var(--accent)]">结束并查看路径</Link>
+                </div>
               </div>
             ) : (
               <button
@@ -1688,6 +1688,26 @@ export default function DiagnosePage() {
             </div>
           </section>
         ) : null}
+        </section>
+        <aside className="diagnostic-sidebar" aria-label="本次测评会话">
+          <Card>
+            <h2 className="flex items-center gap-2 text-base font-semibold"><Icon name="clipboard" size={20} />本次测评会话</h2>
+            <dl className="mt-4 space-y-3 border-t border-[var(--line)] pt-4 text-sm">
+              <div className="flex justify-between"><dt className="text-[var(--ink-soft)]">本次已答</dt><dd className="tabular font-semibold">{answered.length} 题</dd></div>
+              <div className="flex justify-between gap-3"><dt className="shrink-0 text-[var(--ink-soft)]">本次知识点</dt><dd className="text-right text-[var(--accent)]">{current?.kcName ?? (gen.kind !== "idle" ? gen.kcName : done ? "诊断已完成" : "准备下一题")}</dd></div>
+            </dl>
+            <h3 className="mt-5 border-t border-[var(--line)] pt-4 text-sm font-medium">知识点证据</h3>
+            <ul className="mt-3 space-y-3">{[...new Set([current?.question.kcId, ...graph.concepts.map(concept => concept.id)].filter((id): id is string => !!id))].slice(0, 5).map(id => {
+              const state = progress.mastery.find(item => item.kcId === id);
+              return <li key={id} className="flex items-baseline justify-between gap-2 text-xs"><span className="min-w-0 truncate">{kcName.get(id)}</span><span className="shrink-0 text-[var(--ink-faint)]">{state && state.evidenceN > 0 ? `${state.evidenceN} 条证据 · ±${Math.round(masterySd(state) * 100)}` : "尚未测评"}</span></li>;
+            })}</ul>
+            <p className="mt-4 text-[11px] leading-relaxed text-[var(--ink-faint)]">未测评不代表不会。证据与不确定性随作答更新。</p>
+          </Card>
+          <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={materialSelection} /></div></details>
+          <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />历史与错题复习</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /><ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} onRetrainQuestion={retrainQuestion} className="mb-5" /></div></details>
+          <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
+        </aside>
+        </div>
       </main>
     </>
   );

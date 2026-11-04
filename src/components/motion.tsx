@@ -73,13 +73,14 @@ export function useStaggerIn(
     const plan = planEntrance(fresh.length);
     if (plan === null) return;
 
-    gsap.fromTo(fresh, plan.from, {
+    const context = gsap.context(() => gsap.fromTo(fresh, plan.from, {
       ...plan.to,
       duration: plan.duration,
       stagger: plan.stagger,
       ease: plan.ease,
       overwrite: "auto",
-    });
+    }), root);
+    return () => context.revert();
   });
 }
 
@@ -114,12 +115,13 @@ export function useSwapIn(
     if (!shouldPlay("swap", { reducedMotion: prefersReducedMotion() })) return;
 
     const plan = planAppear();
-    gsap.fromTo(element, plan.from, {
+    const context = gsap.context(() => gsap.fromTo(element, plan.from, {
       ...plan.to,
       duration: plan.duration,
       ease: plan.ease,
       overwrite: "auto",
-    });
+    }), element);
+    return () => context.revert();
     /*
      * 不写依赖数组：目标可能比 trigger 晚一次渲染才挂载（首题异步选题、
      * 面板条件渲染），依赖数组会让「元素到位」这次渲染不再执行，
@@ -158,12 +160,13 @@ export function useStepFlash(
     if (!shouldPlay("swap", { reducedMotion: prefersReducedMotion() })) return;
 
     const plan = planHighlight();
-    gsap.fromTo(element, plan.from, {
+    const context = gsap.context(() => gsap.fromTo(element, plan.from, {
       ...plan.to,
       duration: plan.duration,
       ease: plan.ease,
       overwrite: "auto",
-    });
+    }), root);
+    return () => context.revert();
     /*
      * 同样不写依赖数组：?kc= 在首屏由 effect 写入，而路径要等学习记录
      * 读完才渲染出步骤。依赖 key 的话，元素到位那次渲染不会再执行本 effect。

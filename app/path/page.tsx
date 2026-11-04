@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { useStaggerIn, useStepFlash } from "@/components/motion";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
 import { LearningEvidence } from "@/components/learning-evidence";
+import { usePathFlip } from "@/components/path-motion";
 import { targetQuery } from "@/lib/target";
 import { useSubject } from "@/lib/subject";
 import { recordPathEdit } from "@/lib/learner";
@@ -41,6 +43,7 @@ import { readManualPath, writeManualPath } from "@/lib/manualPath";
  */
 
 const BUDGET_OPTIONS = [30, 60, 90, 120, 180, 240];
+const LearningGraph = dynamic(() => import("@/components/learning-graph"), { ssr: false, loading: () => <div role="status" className="my-5 min-h-80 rounded-xl border border-[var(--line)] p-6 text-sm text-[var(--ink-faint)]">正在展开先修图谱…学习清单可继续使用。</div> });
 
 /** 切目标后的第一帧不拿上一科的选择去算；用共享空数组保持引用稳定。 */
 const EMPTY_CHAPTERS: readonly string[] = [];
@@ -98,6 +101,7 @@ export default function PathPage() {
     synced,
   } = useLearner(targetId, target?.graph);
   const [budget, setBudget] = useState(90);
+  const [budgetBaseline, setBudgetBaseline] = useState<{ targetId: string; progress: typeof progress; chapters: readonly string[]; budget: number; ids: readonly string[] } | null>(null);
   useEffect(() => {
     const fromUrl = Number(new URLSearchParams(window.location.search).get("budget"));
     if (BUDGET_OPTIONS.includes(fromUrl)) setBudget(fromUrl);
@@ -163,6 +167,7 @@ export default function PathPage() {
 
   const updateChapters = useCallback(
     (names: readonly string[]) => {
+      setBudgetBaseline(null);
       setChapterSelection({ targetId, names });
       writeChapterSelection(targetId, names);
     },
@@ -254,6 +259,13 @@ export default function PathPage() {
     () => applyManualOrder(plan?.steps ?? [], manualEdit),
     [plan, manualEdit],
   );
+  const capturePath = usePathFlip(mainRef, `${targetId}:${budget}:${displayed.map(step => step.kcId).join(",")}`);
+  const changeBudget = (minutes: number) => {
+    if (minutes === budget) return;
+    capturePath();
+    setBudgetBaseline({ targetId, progress, chapters, budget, ids: displayed.map(step => step.kcId) });
+    setBudget(minutes);
+  };
 
   /** 相对算法顺序真的换了位置的点。只给这些点标「已手动调整」。 */
   const moved = useMemo(
@@ -320,6 +332,7 @@ export default function PathPage() {
    * 避免「界面改了、刷新又变回去」。存档读不出来时按 null 处理，写失败不影响本会话。
    */
   const applyManualEdit = (edit: ManualEdit | null) => {
+    capturePath();
     setManualEdit(edit);
     writeManualPath(targetId, edit);
   };
@@ -388,15 +401,24 @@ export default function PathPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-4xl px-5 py-10">
+      <main id="main" ref={mainRef} className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
         <div className="mb-6" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight">学习路径</h1>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">让每一步，都接得上。</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            从下一步开始，按你的时间安排学习；每次作答都会更新推荐依据。
+            学习路径 · {target.name} · 每次作答都会更新推荐依据。
           </p>
         </div>
 
-        {displayed[0] ? <Card className="mb-5 border-[var(--accent)]">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
+          <fieldset className="flex flex-wrap items-center gap-3"><legend className="sr-only">学习预算</legend><span className="text-sm font-medium">学习预算</span><div className="flex flex-wrap gap-1.5">{BUDGET_OPTIONS.map(minutes => <button type="button" key={minutes} aria-label={`把本周预算设为 ${minutes} 分钟`} aria-pressed={minutes === budget} onClick={() => changeBudget(minutes)} className={`tabular rounded-lg border px-3 py-2 text-xs ${budget === minutes ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]" : "border-[var(--line)] text-[var(--ink-soft)]"}`}>{minutes} 分钟</button>)}</div></fieldset>
+          <p className="text-xs text-[var(--ink-faint)]">修改预算，查看这次安排的变化。</p>
+        </div>
+        {plan ? <LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} /> : null}
+        <div className="my-5 grid grid-cols-3 divide-x divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--surface)] py-4 text-center">
+          {[{ label: "本次安排", value: displayed.length }, { label: "预算暂缓", value: plan?.deferred.length ?? 0 }, { label: "先修阻塞", value: plan?.blocked.length ?? 0 }].map(item => <div key={item.label}><span className="tabular text-xl font-semibold text-[var(--accent)]">{item.value}</span><span className="ml-2 text-xs text-[var(--ink-soft)]">{item.label}</span></div>)}
+        </div>
+        <p role="status" className="mb-5 text-xs text-[var(--ink-faint)]">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
+        {displayed[0] ? <Card className="mb-5 border-[var(--accent)] path-next-step">
           <p className="text-sm text-[var(--accent)]">{target.name} · 下一步建议</p>
           <h2 className="mt-2 text-xl font-semibold">{kcById.get(displayed[0].kcId)?.name}</h2>
           <p className="mt-2 text-sm text-[var(--ink-soft)]">
@@ -443,33 +465,6 @@ export default function PathPage() {
           />
         ) : null}
 
-        {/* 预算控制 */}
-        <Card className="mb-5" motion="budget">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium">这周能投入多少时间</p>
-              <p className="mt-0.5 text-xs text-[var(--ink-soft)]">改预算即可看到路径如何变化</p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {BUDGET_OPTIONS.map((b) => (
-                <button
-                  key={b}
-                  type="button"
-                  onClick={() => setBudget(b)}
-                  aria-pressed={budget === b}
-                  aria-label={`把本周预算设为 ${b} 分钟`}
-                  className={`tabular rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                    budget === b
-                      ? "bg-[var(--accent)] text-[var(--on-accent)]"
-                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
-                  }`}
-                >
-                  {b} 分
-                </button>
-              ))}
-            </div>
-          </div>
-        </Card>
 
         {/* 反事实对比 */}
         <Card className="mb-5" motion="counterfactual">
@@ -559,12 +554,12 @@ export default function PathPage() {
         </div>
         </details>
         {/* 路径 */}
-        <section className="mb-5">
+        <section id="learning-steps" className="mb-5 scroll-mt-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2" data-motion="steps-heading">
             <SectionTitle
               hint={`共 ${displayed.length} 步 · ${totalMinutes} 分钟${manualEdit ? " · 已手动修改" : ""}`}
             >
-              本周路径
+              学习步骤安排
             </SectionTitle>
             {manualEdit ? (
               <button
@@ -636,7 +631,7 @@ export default function PathPage() {
                 const blockedByInCounterfactual = counterfactualSummary.blockedByOf(step.kcId);
 
                 return (
-                  <li key={`${step.kcId}-${i}`} id={pathStepId(step.kcId)} data-motion-step={step.kcId}>
+                  <li key={step.kcId} id={pathStepId(step.kcId)} data-motion-step={step.kcId} data-flip-id={`step-${step.kcId}`}>
                     <Card
                       className={`${deferredInCounterfactual ? "opacity-50" : ""} ${
                         highlightKc === step.kcId ? "ring-2 ring-[var(--accent)]" : ""

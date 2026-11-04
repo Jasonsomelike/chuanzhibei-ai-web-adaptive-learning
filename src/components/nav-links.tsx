@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import { useAuth } from "@/lib/useAuth";
+import { AppDialog } from "@/components/primitives/dialog";
+import { CommandMenu } from "@/components/command-menu";
+import { Icon } from "@/components/icons";
 
 /**
  * 导航链接与登录态。
@@ -48,19 +52,20 @@ const LINKS = [
 export function NavLinks() {
   const { user, loading, logout } = useAuth();
   const pathname = usePathname();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <nav className="flex min-w-0 max-w-full flex-wrap items-center gap-0.5 text-sm">
-      {LINKS.map((l, index) => {
+    <nav aria-label="主导航" className="app-navigation flex min-w-0 max-w-full flex-wrap items-center gap-1 text-sm">
+      {LINKS.slice(0, 3).map((l) => {
         const active = pathname === l.href;
         return (
           <Link
             key={l.href}
             href={l.href}
             aria-current={active ? "page" : undefined}
-            className={`${index >= 3 ? "max-sm:hidden" : ""} ${NAV_LINK_CLASS} ${
+            className={`app-nav-link ${NAV_LINK_CLASS} ${
               active
-                ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                ? "is-active text-[var(--accent)]"
                 : "text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
             }`}
           >
@@ -69,19 +74,21 @@ export function NavLinks() {
         );
       })}
 
-      <details className="relative sm:hidden">
-        <summary className={`${NAV_LINK_CLASS} cursor-pointer list-none text-[var(--ink-soft)]`}>更多 ▾</summary>
-        <div className="absolute right-0 top-full z-50 mt-1 grid w-40 rounded-xl border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-lg">
+      <AppDialog open={menuOpen} onOpenChange={setMenuOpen} drawer title="更多学习工具" description="管理课程资料、学习方向与个人设置。" trigger={<button type="button" className={`${NAV_LINK_CLASS} gap-1 text-[var(--ink-soft)]`}>更多<Icon name="down" size={14} /></button>}>
+        <div className="grid gap-2">
           {LINKS.slice(3).map((link) => <Link key={link.href} href={link.href}
+            onClick={() => setMenuOpen(false)}
             aria-current={pathname === link.href ? "page" : undefined}
-            className="rounded-lg px-3 py-3 text-sm hover:bg-[var(--line)]">{link.label}</Link>)}
+            className="flex items-center justify-between rounded-lg border border-[var(--line)] px-4 py-4 text-sm hover:bg-[var(--accent-soft)]">{link.label}<Icon name="arrow" size={17} /></Link>)}
         </div>
-      </details>
+      </AppDialog>
+
+      <CommandMenu />
 
       {loading ? (
         <span className="ml-1 px-2 text-xs text-[var(--ink-faint)]">…</span>
       ) : user ? (
-        <span className="ml-1 flex min-w-0 items-center gap-1.5">
+        <span className="nav-account ml-1 flex min-w-0 items-center gap-1.5">
           <span
             className="max-w-24 truncate rounded-md bg-[var(--line)] px-2 py-1 text-xs text-[var(--ink-soft)]"
             title={user.email}

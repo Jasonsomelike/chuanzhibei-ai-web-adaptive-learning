@@ -11,7 +11,8 @@
  * 阅读是辅助，不能把答题界面顶到第二屏。
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
+import { Icon } from "@/components/icons";
 import type { KnowledgeConcept } from "@/lib/graph";
 import type { MaterialPack, MaterialSelection } from "@/lib/materials";
 import {
@@ -25,6 +26,8 @@ export interface MaterialReaderProps {
   readonly concepts: readonly KnowledgeConcept[];
   readonly selection: MaterialSelection;
   readonly className?: string;
+  readonly variant?: "card" | "workbench";
+  readonly onAsk?: (text: string, source: string) => void;
 }
 
 export function MaterialReader({
@@ -32,18 +35,35 @@ export function MaterialReader({
   concepts,
   selection,
   className = "",
+  variant = "card",
+  onAsk,
 }: MaterialReaderProps) {
   const [openChapter, setOpenChapter] = useState<string | null>(null);
+  const chapterId = useId();
 
   const views = useMemo(
     () => kcReadingViews(pack, concepts, selection),
     [pack, concepts, selection],
   );
 
-  if (!hasReadingContent(views)) return null;
+  if (!hasReadingContent(views)) return variant === "workbench" ? <div className="py-8 text-sm leading-relaxed text-[var(--ink-soft)]"><Icon name="book" size={28} className="mb-4 text-[var(--accent)]" /><p>当前选中的资料中还没有可阅读的原文。</p><p className="mt-2 text-xs text-[var(--ink-faint)]">在「我的资料」上传教材，或在学习设置中切换资料来源。</p></div> : null;
 
   const readableViews = views.filter((view: KcReadingView) => view.withContentCount > 0);
   const totalEntries = readableViews.reduce((sum, v) => sum + v.withContentCount, 0);
+  const activeChapter = readableViews.find(view => view.chapter === openChapter) ?? readableViews[0];
+
+  if (variant === "workbench") return <section aria-label="教材原文" className="workbench-reader">
+    <label htmlFor={chapterId} className="mb-2 block text-xs text-[var(--ink-faint)]">阅读章节 · {readableViews.length} 章 / {totalEntries} 段</label>
+    <select id={chapterId} value={activeChapter.chapter} onChange={event => setOpenChapter(event.target.value)} className="mb-6 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm">{readableViews.map(view => <option key={view.chapter} value={view.chapter}>{view.chapter}</option>)}</select>
+    <div className="space-y-8">{activeChapter.items.filter(item => item.hasContent).map(item => <article key={item.kcId}>
+      <h2 className="text-lg font-semibold">{item.kcName}</h2>
+      {item.entries.map((entry, index) => <div key={`${item.kcId}-${index}`} className="mt-3">
+        <p className="text-[11px] leading-relaxed text-[var(--ink-faint)]">{entry.label}</p>
+        <p className="mt-3 whitespace-pre-wrap wrap-anywhere text-[15px] leading-[1.9] text-[var(--ink-soft)]">{entry.text}</p>
+        {onAsk ? <button type="button" data-material-ask onClick={() => onAsk(entry.text, entry.label)} className="mt-3 inline-flex items-center gap-2 text-xs text-[var(--accent)] underline underline-offset-4"><Icon name="chat" size={15} />围绕这段提问</button> : null}
+      </div>)}
+    </article>)}</div>
+  </section>;
 
   return (
     <section

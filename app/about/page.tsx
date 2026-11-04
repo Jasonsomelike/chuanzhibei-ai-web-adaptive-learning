@@ -281,7 +281,7 @@ export default function AboutPage() {
                 ["认证", "PBKDF2-HMAC-SHA256 + 服务端会话"],
                 ["存储", "Postgres（Neon）；本地无库时退化为内存"],
                 ["工具协议", "MCP（JSON-RPC 2.0）"],
-                ["测试", "Vitest 2058 条 + Playwright E2E + MCP 协议测试"],
+                ["测试", "Vitest 2064 条 + Playwright E2E + MCP 协议测试"],
               ].map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-[var(--ink-soft)]">{k}</dt>

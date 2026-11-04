@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 
-import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
+import { Nav, Card, Pill } from "@/components/ui";
+import { TutorRail } from "@/components/tutor-rail";
+import { Icon } from "@/components/icons";
 import { useStaggerIn } from "@/components/motion";
 import { useSubject } from "@/lib/subject";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
@@ -1977,36 +1979,27 @@ export default function TutorPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-6xl px-5 py-8">
-        <div className="mb-5" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight">课程导师</h1>
-          <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            回答优先依据你的教材 / 上传资料；未命中时可用通用知识，但会明确声明。没配供应商时用检索结果拼装。
-          </p>
+      <main id="main" ref={mainRef} className="mx-auto max-w-[1440px] px-5 py-7 sm:px-8">
+        <div className="mb-6 flex flex-wrap items-center gap-4" data-motion="hero">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程导师</h1>
+          <span className="rounded-lg border border-[var(--line)] px-3 py-1 text-sm text-[var(--ink-soft)]">{target.name}</span>
         </div>
 
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
-        <aside className="order-2 min-w-0 space-y-4 lg:order-1" aria-label="课程学习材料">
-          <Card>
-            <p className="text-xs text-[var(--accent)]">当前课程</p>
-            <h2 className="mt-1 text-lg font-semibold">{target.name}</h2>
-            <p className="mt-2 text-sm text-[var(--ink-soft)]">读一段原文，再带着具体卡点提问。</p>
-            <Link href={`/path?${target.kind === "direction" ? "direction" : "subject"}=${encodeURIComponent(targetId)}`} className="mt-3 inline-block text-sm text-[var(--accent)] underline">返回当前学习计划 →</Link>
-          </Card>
-          <MaterialReader pack={materialPack} concepts={target.graph.concepts} selection={materialSelection} />
-          {kbChunks.length > 0 ? <details className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
-            <summary className="cursor-pointer text-sm font-medium">我的资料 · {kbDocs.length} 份</summary>
-            <div className="mt-3 max-h-80 space-y-3 overflow-y-auto">
+        <div className="tutor-workspace">
+        <TutorRail course={target.name}>
+          <MaterialReader variant="workbench" pack={materialPack} concepts={target.graph.concepts} selection={materialSelection} onAsk={(text, source) => { setInput(`请引导我理解这段原文（${source}）：${text.slice(0, 220)}`.slice(0, 500)); document.getElementById("q")?.focus(); }} />
+          <div>
+          <p className="text-sm font-medium">我的资料 · {kbDocs.length} 份</p>
+          {kbChunks.length > 0 ? <div className="mt-4 space-y-5">
               {kbChunks.slice(0, 12).map((chunk) => <div key={chunk.id}>
                 <h3 className="text-sm font-medium">{chunk.title}{chunk.pageFrom ? ` · 第 ${chunk.pageFrom} 页` : ""}</h3>
                 <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">{chunk.text}</p>
-                <button type="button" onClick={() => setInput(`请引导我理解《${chunk.title}》这一段：${chunk.text.slice(0, 160)}`)} className="mt-1 text-xs text-[var(--accent)] underline">围绕这段提问</button>
+                <button type="button" data-material-ask onClick={() => setInput(`请引导我理解《${chunk.title}》这一段：${chunk.text.slice(0, 160)}`.slice(0, 500))} className="mt-1 text-xs text-[var(--accent)] underline">围绕这段提问</button>
               </div>)}
-            </div>
-          </details> : null}
-        <details className="rounded-xl border border-[var(--line)] p-4">
-        <summary className="cursor-pointer text-sm font-medium">切换课程与回答设置</summary>
-        <div className="mt-4">
+            </div> : <p className="mt-4 text-sm leading-relaxed text-[var(--ink-faint)]">还没有上传资料。可以在「我的方向」中添加课程教材与讲义，提问时会检索其中的原文。</p>}
+          <Link href="/directions?kb=open" className="mt-5 inline-flex items-center gap-2 text-sm text-[var(--accent)] underline">管理与上传资料<Icon name="arrow" size={16} /></Link>
+          </div>
+        <div>
         {/* 目标切换 */}
         <Card className="mb-4" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
@@ -2123,23 +2116,17 @@ export default function TutorPage() {
         </Card>
 
         </div>
-        </details>
-        </aside>
-        <section className="order-1 min-w-0 lg:order-2" aria-label="学习辅导对话">
-        <fieldset className="mb-4 flex flex-wrap gap-2">
-          <legend className="mb-2 text-sm font-medium">希望学伴怎样帮你？</legend>
-          {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button
-            type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}
-            className={`rounded-lg border px-3 py-2 text-sm ${helpLevel === level ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]" : "border-[var(--line-strong)] text-[var(--ink-soft)]"}`}>{label}</button>)}
-        </fieldset>
+        </TutorRail>
+        <section className="tutor-chat" aria-label="学习辅导对话">
+        <div className="tutor-chat-title"><h2 className="text-base font-semibold sm:text-lg">与课程导师一起弄懂</h2><p className="mt-1 text-xs text-[var(--ink-faint)]">{activeProvider ? "回答优先依据课程资料，引用可以展开核对。" : "当前为资料检索模式；配置模型后可获得生成式辅导。"}</p></div>
         {/* 对话区 */}
-        <div className="mb-4 space-y-3">
+        <div className={`tutor-messages space-y-4 ${messages.length === 0 ? "is-empty" : ""}`} role="log" aria-label="辅导消息" aria-live="polite" aria-relevant="additions">
           {messages.length === 0 ? (
-            <Card motion="suggestions">
-              <SectionTitle hint="点一个试试，或者直接输入你的问题。">
-                可以这样问
-              </SectionTitle>
-              <div className="flex flex-wrap gap-2">
+            <div data-motion="suggestions" className="tutor-empty">
+              <Icon name="chat" size={46} className="mx-auto text-[var(--accent)]" />
+              <h3 className="mt-5 text-lg font-medium">沿着你的问题，一步步理解。</h3>
+              <p className="mt-2 text-xs text-[var(--ink-faint)]">可以这样问，或在下方写下具体的卡点。</p>
+              <div className="mt-6 grid gap-2 sm:grid-cols-2">
                 {[
                   "为什么给我排这一步？",
                   `${target?.graph.concepts[0]?.name ?? ""}是什么`,
@@ -2149,14 +2136,14 @@ export default function TutorPage() {
                   <button
                     key={suggestion}
                     type="button"
-                    onClick={() => void send(suggestion)}
-                    className="rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-sm text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                    onClick={() => { setInput(suggestion); document.getElementById("q")?.focus(); }}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] px-3 py-3 text-left text-xs text-[var(--ink-soft)] hover:border-[var(--accent)]"
                   >
-                    {suggestion}
+                    {suggestion}<Icon name="chevron" size={15} className="shrink-0" />
                   </button>
                 ))}
               </div>
-            </Card>
+            </div>
           ) : null}
 
           {messages.map((message) =>
@@ -2454,7 +2441,10 @@ export default function TutorPage() {
           <div ref={endRef} />
         </div>
 
-        <div className="sticky bottom-0 z-10 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-3 shadow-sm" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <div className="tutor-composer" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <fieldset className="mb-3"><legend className="sr-only">希望学伴怎样帮你？</legend><div className="segmented max-w-sm">
+          {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}>{label}</button>)}
+        </div></fieldset>
         <details className="mb-2">
         <summary className="cursor-pointer text-xs text-[var(--ink-soft)]">添加图片、语音或联网补充</summary>
         <div className="mt-3">
@@ -2535,18 +2525,20 @@ export default function TutorPage() {
             event.preventDefault();
             void send(input);
           }}
-          className="flex gap-2"
+          className="flex items-end gap-2"
         >
           <label htmlFor="q" className="sr-only">
             输入你的问题
           </label>
-          <input
+          <textarea
             id="q"
+            rows={2}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             maxLength={500}
-            placeholder="问点什么，比如「为什么给我排这一步」"
-            className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            placeholder="写下你卡住的地方…"
+            onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); if (!busy) void send(input); } }}
+            className="min-w-0 flex-1 resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
           />
           {busy ? (
             <button
