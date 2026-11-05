@@ -100,6 +100,13 @@ export default function PathPage() {
     setLearner,
     synced,
   } = useLearner(targetId, target?.graph);
+  const [graphOpen, setGraphOpen] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 768px)");
+    const update = () => setGraphOpen(media.matches);
+    update(); media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   const [budget, setBudget] = useState(90);
   const [budgetBaseline, setBudgetBaseline] = useState<{ targetId: string; progress: typeof progress; chapters: readonly string[]; budget: number; ids: readonly string[] } | null>(null);
   useEffect(() => {
@@ -276,6 +283,16 @@ export default function PathPage() {
   /** 每个 ?kc= 只滚动一次：改预算会让 displayed 换引用，但不该把视口反复拽回定位点。 */
   const scrolledKc = useRef<string | null>(null);
 
+  const selectConcept = useCallback((id: string) => {
+    scrolledKc.current = id;
+    setHighlightKc(id);
+  }, []);
+  const locateConcept = useCallback((id: string) => {
+    scrolledKc.current = id; setHighlightKc(id);
+    if (window.matchMedia("(max-width: 767px)").matches) setGraphOpen(false);
+    requestAnimationFrame(() => document.getElementById(pathStepId(id))?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }));
+  }, []);
+
   useEffect(() => {
     if (highlightKc === null || scrolledKc.current === highlightKc) return;
     const el = document.getElementById(pathStepId(highlightKc));
@@ -403,7 +420,7 @@ export default function PathPage() {
       <Nav />
       <main id="main" ref={mainRef} className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
         <div className="mb-6" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">让每一步，都接得上。</h1>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">我的学习路径</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
             学习路径 · {target.name} · 每次作答都会更新推荐依据。
           </p>
@@ -413,11 +430,42 @@ export default function PathPage() {
           <fieldset className="flex flex-wrap items-center gap-3"><legend className="sr-only">学习预算</legend><span className="text-sm font-medium">学习预算</span><div className="flex flex-wrap gap-1.5">{BUDGET_OPTIONS.map(minutes => <button type="button" key={minutes} aria-label={`把本周预算设为 ${minutes} 分钟`} aria-pressed={minutes === budget} onClick={() => changeBudget(minutes)} className={`tabular rounded-lg border px-3 py-2 text-xs ${budget === minutes ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]" : "border-[var(--line)] text-[var(--ink-soft)]"}`}>{minutes} 分钟</button>)}</div></fieldset>
           <p className="text-xs text-[var(--ink-faint)]">修改预算，查看这次安排的变化。</p>
         </div>
-        {plan ? <LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} /> : null}
+        <button type="button" aria-expanded={graphOpen} aria-controls="path-graph" onClick={() => setGraphOpen(value => !value)} className="mb-4 rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--accent)]">{graphOpen ? "收起先修图谱" : "展开先修图谱"}</button>
+        <details className="mb-4 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4" data-chapter-controls>
+          <summary className="cursor-pointer text-sm font-medium">教材章节 · {chapters.length ? `已选 ${chapters.length} 章` : "整科"}</summary>
+          <div className="mt-4">        {/* 章节范围：只收窄 targets，不裁剪图谱 */}
+        {target.kind === "direction" ? (
+          <Card className="mb-5" motion="chapters">
+            <p className="text-sm font-medium">教材章节</p>
+            <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
+              自定义方向没有教材章节，路径覆盖方向里的全部 {graph.concepts.length} 个知识点；
+              用上方预算控制本次学习时间。
+            </p>
+          </Card>
+        ) : scope ? (
+          <ChapterGoals
+            target={target}
+            selected={chapters}
+            scope={scope}
+            budgetMinutes={budget}
+            plannedSteps={plan?.steps.length ?? 0}
+            onChange={updateChapters}
+          />
+        ) : null}
+
+
+</div>
+        </details>
+        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         <div className="my-5 grid grid-cols-3 divide-x divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--surface)] py-4 text-center">
           {[{ label: "本次安排", value: displayed.length }, { label: "预算暂缓", value: plan?.deferred.length ?? 0 }, { label: "先修阻塞", value: plan?.blocked.length ?? 0 }].map(item => <div key={item.label}><span className="tabular text-xl font-semibold text-[var(--accent)]">{item.value}</span><span className="ml-2 text-xs text-[var(--ink-soft)]">{item.label}</span></div>)}
         </div>
         <p role="status" className="mb-5 text-xs text-[var(--ink-faint)]">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
+        {budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? <details className="mb-5 border-b border-[var(--line)] pb-4">
+          <summary className="cursor-pointer text-sm text-[var(--accent)]">查看预算调整的具体变化</summary>
+          <ul className="mt-3 space-y-2 text-sm">{[...displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => ({ id: step.kcId, label: "新增安排" })), ...budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).map(id => ({ id, label: plan?.blocked.some(item => item.kcId === id) ? "先修阻塞" : plan?.deferred.includes(id) ? "预算暂缓" : "不在本次清单" }))].map(item => <li key={item.id}><button type="button" className="text-[var(--accent)] underline" onClick={() => { selectConcept(item.id); setGraphOpen(true); requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ block: "start" })); }}>{kcById.get(item.id)?.name ?? item.id}</button><span className="ml-3 text-xs text-[var(--ink-soft)]">{item.label}</span></li>)}</ul>
+          {plan?.blocked.length ? <p className="mt-3 text-xs text-[var(--ink-faint)]">先修阻塞表示所需的前置知识未排入本次预算；选中知识点可查看具体前置条件。</p> : null}
+        </details> : null}
         {displayed[0] ? <Card className="mb-5 border-[var(--accent)] path-next-step">
           <p className="text-sm text-[var(--accent)]">{target.name} · 下一步建议</p>
           <h2 className="mt-2 text-xl font-semibold">{kcById.get(displayed[0].kcId)?.name}</h2>
@@ -445,32 +493,11 @@ export default function PathPage() {
           ) : null}
         </Card>
 
-        {/* 章节范围：只收窄 targets，不裁剪图谱 */}
-        {target.kind === "direction" ? (
-          <Card className="mb-5" motion="chapters">
-            <p className="text-sm font-medium">教材章节</p>
-            <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
-              自定义方向没有教材章节，路径覆盖方向里的全部 {graph.concepts.length} 个知识点；
-              用下方预算控制这周能学多少。
-            </p>
-          </Card>
-        ) : scope ? (
-          <ChapterGoals
-            target={target}
-            selected={chapters}
-            scope={scope}
-            budgetMinutes={budget}
-            plannedSteps={plan?.steps.length ?? 0}
-            onChange={updateChapters}
-          />
-        ) : null}
-
-
         {/* 反事实对比 */}
         <Card className="mb-5" motion="counterfactual">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-medium">反事实：如果时间不一样</p>
+              <p className="text-sm font-medium">比较不同学习时间</p>
               <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
                 选一个对照预算，标出哪些步骤会被推迟或因先修阻塞
               </p>
@@ -610,7 +637,7 @@ export default function PathPage() {
                   <p className="mt-1 text-xs text-[var(--ink-faint)]">
                     路径为空不是预算不够，而是候选范围内没有掌握度低于阈值的新点；
                     预算调大也不会把已掌握的点重新排进来。可以到{" "}
-                    <Link href={`/diagnose${target.kind === "direction" ? `?direction=${target.id}` : ""}`} className="underline">
+                    <Link href={`/diagnose${targetQuery(target)}`} className="underline">
                       诊断页
                     </Link>{" "}
                     按知识点清空证据（清空后该知识点的掌握度回到先验、题会重新出现），
@@ -643,7 +670,10 @@ export default function PathPage() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-medium">{c?.name ?? step.kcId}</span>
+                            <button type="button" aria-label={`在图谱中定位「${c?.name ?? step.kcId}」`} aria-pressed={highlightKc === step.kcId} className="text-left font-medium text-[var(--accent)] underline underline-offset-4" onClick={() => {
+                              scrolledKc.current = step.kcId; setHighlightKc(step.kcId); setGraphOpen(true);
+                              requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
+                            }}>{c?.name ?? step.kcId}</button>
                             <Pill>{step.kind === "learn" ? "新学" : "复习"}</Pill>
                             <Pill>{step.estMinutes} 分钟</Pill>
                             <Pill>深度 {depths.get(step.kcId) ?? 0}</Pill>
@@ -720,10 +750,8 @@ export default function PathPage() {
         </section>
 
         {/* 可复现性面板 */}
-        <section>
-          <SectionTitle hint="输入指纹相同 → 路径指纹必然相同；任一不同，说明输入或算法变了。">
-            可复现性
-          </SectionTitle>
+        <details className="rounded-xl border border-[var(--line)] p-4" data-technical-details>
+          <summary className="cursor-pointer text-sm font-medium">技术详情 · 可复现性</summary>
           <Card motion="repro">
             <dl className="space-y-2 text-sm">
               <div className="flex items-baseline justify-between gap-3">
@@ -774,17 +802,17 @@ export default function PathPage() {
               作答会改变掌握度，所以换一批题之后的路径本来就应该不同。
             </p>
           </Card>
-        </section>
+        </details>
 
         <div className="mt-6 flex flex-wrap gap-3">
           <Link
-            href={`/tutor${target.kind === "direction" ? `?direction=${target.id}` : ""}`}
+            href={`/tutor${targetQuery(target)}`}
             className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
           >
             问导师「为什么这样排」
           </Link>
           <Link
-            href={`/diagnose${target.kind === "direction" ? `?direction=${target.id}` : ""}`}
+            href={`/diagnose${targetQuery(target)}`}
             className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
           >
             继续诊断

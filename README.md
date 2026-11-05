@@ -1,12 +1,12 @@
 <div align="center">
 
-# 智慧学伴 · 可解释的自适应学习路径
+# 自适应学习路径
 
 给高校硬课的学生一条**算得出、说得清、改得动**的学习路径。
 
 先修图决定能不能学 · Beta 后验决定先学哪个 · 时间预算决定这次学到哪
 
-[在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [已知限制](docs/limits.md)
+[在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [UI V2 改造与截图](docs/ui-v2-verification.md) · [已知限制](docs/limits.md)
 
 ![tests](https://img.shields.io/badge/tests-2064%20passed-brightgreen)
 ![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
@@ -15,7 +15,7 @@
 
 </div>
 
-![首页](screenshots/home-hero.png)
+![自适应学习路径首页](screenshots/ui-v2/after-home-1440.png)
 
 **2026-11-04 更新**：首页支持诊断、规划与学习的交互预览；导师采用教材与对话双栏工作台，移动端使用材料抽屉。诊断增加专注模式、连续反馈和证据更新；学习路径加入 React Flow 先修图谱、预算变化提示及 GSAP Flip 重排。保留五套配色、明暗模式与减少动态效果设置。Agent 学情隔离、进度合并与历史保留等改进见 [改进记录](docs/improvements-2026-11-04.md)，当前验收见下表；较早截图仅供历史参考。
 
@@ -234,7 +234,7 @@ scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / d
 | [检索与存储](docs/rag.md) | 提问链路、参数表、降级矩阵、上传存储链路、12 张表、向量表、50 条评测 |
 | [部署说明](docs/deploy.md) | Node 版本要求、调用模式、进度合并规则、环境变量、迁移与模型预取、Vercel 与自托管 |
 | [功能清单](docs/features.md) | 按用户旅程排列的能力与界面证据 |
-| [验证记录](docs/verification.md) | 门禁原始输出、E2E、Mock 供应商、可访问性、工程细节 |
+| [验证记录](docs/verification.md) · [UI V2 改造与截图](docs/ui-v2-verification.md) | 门禁原始输出、E2E、Mock 供应商、可访问性、工程细节 |
 | [已知限制](docs/limits.md) | 已验证能力、已修复问题、真实缺口、能力边界、下一步 |
 | [评分对照](docs/scoring.md) | 评分表逐项映射到代码路径与可跑命令 |
 | [ADR-0002 能力升级](docs/adr/2026-10-30-capability-upgrade.md) | Agent / 向量 / 多模态 / MCP 的设计取舍与独立评审记录（**评审未通过**，文中「未验证」项不作为已实现证据） |

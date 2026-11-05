@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
+  agentRules: false,
   // 显式指定 Turbopack root，否则它会向上找到用户主目录的 lockfile
   turbopack: { root: import.meta.dirname },
 

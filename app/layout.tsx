@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "智慧学伴 · 每一步，都有依据",
+  title: "自适应学习路径 · 个性化学习规划",
   description:
     "诊断当前学习状态，按时间安排学习路径，结合教材向课程导师提问。支持 9 门课程、自定义学习方向与错题复习。",
 };

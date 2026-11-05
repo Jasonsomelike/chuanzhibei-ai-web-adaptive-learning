@@ -413,7 +413,7 @@ export function Nav() {
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3 sm:px-8 sm:py-4">
         <Link href="/" className="app-brand flex min-w-0 max-w-full items-center gap-2.5 font-semibold">
           <BrandMark size={28} className="shrink-0" />
-          <span className="truncate">智慧学伴</span>
+          <span className="truncate">自适应学习路径</span>
         </Link>
         <NavLinks />
       </div>

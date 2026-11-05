@@ -147,6 +147,7 @@ export default function DiagnosePage() {
   const [answered, setAnswered] = useState<AnsweredRow[]>([]);
   const [current, setCurrent] = useState<PickedQuestion | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const submittedQuestion = useRef<string | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [requestedKc, setRequestedKc] = useState<string | null>(null);
@@ -321,6 +322,7 @@ export default function DiagnosePage() {
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
+    submittedQuestion.current = null;
     setDirectionItems([]);
     setGen({ kind: "idle" });
     setSkippedKcs(new Set());
@@ -626,7 +628,8 @@ export default function DiagnosePage() {
   );
 
   const submit = () => {
-    if (!learner || !current || selected === null || !graph) return;
+    if (!learner || !current || selected === null || !graph || revealed || submittedQuestion.current === current.question.id) return;
+    submittedQuestion.current = current.question.id;
 
     const correct = selected === current.question.answerIndex;
     const beforeState = progress?.mastery.find((m) => m.kcId === current.question.kcId);
@@ -767,6 +770,7 @@ export default function DiagnosePage() {
   const next = () => {
     setSelected(null);
     setRevealed(false);
+    submittedQuestion.current = null;
     setConfusionWith("");
     setConfusionSaved(false);
     if (learner) setCurrent(pickNext(learner));
@@ -792,6 +796,7 @@ export default function DiagnosePage() {
     const checks = item?.checks ?? [];
     setSelected(null);
     setRevealed(false);
+    submittedQuestion.current = null;
     setConfusionWith("");
     setConfusionSaved(false);
     setCurrent({
@@ -829,6 +834,7 @@ export default function DiagnosePage() {
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
+    submittedQuestion.current = null;
     setSkippedKcs(new Set());
     setConfusionWith("");
     setConfusionSaved(false);
@@ -867,6 +873,7 @@ export default function DiagnosePage() {
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
+    submittedQuestion.current = null;
     setSkippedKcs((prev) => {
       if (!prev.has(kcId)) return prev;
       const nextSkipped = new Set(prev);
@@ -922,6 +929,7 @@ export default function DiagnosePage() {
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
+    submittedQuestion.current = null;
     setConfusionWith("");
     setConfusionSaved(false);
   };
@@ -1034,7 +1042,7 @@ export default function DiagnosePage() {
       <main id="main" ref={mainRef} data-focus={focusMode} className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4" data-motion="hero">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">先找准，下一步才更清楚。</h1>
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程诊断</h1>
             <p className="mt-1 text-sm text-[var(--ink-soft)]">
               诊断测评 · {target.name} · 每答一题，更新一份学习依据。
             </p>
@@ -1432,19 +1440,6 @@ export default function DiagnosePage() {
             </div>
             <h2 tabIndex={-1} className="text-lg font-semibold leading-[1.8] sm:text-xl">{current.question.stem}</h2>
 
-            {/*
-              出处：生成题显示落库的「依据：…」，内置题没有页级出处，只标明题库与章节。
-              origin 为 undefined 只可能是内置题库题——方向题的 source 必为
-              generated / manual / borrowed 三者之一。
-            */}
-            {current.materialLabel ? (
-              <p className="mt-2 text-xs text-[var(--ink-soft)]">{current.materialLabel}</p>
-            ) : current.origin === undefined ? (
-              <p className="mt-2 text-xs text-[var(--ink-faint)]">
-                {current.chapter} · 内置题库（无页级出处）
-              </p>
-            ) : null}
-
             {/* L5 难度理由不匹配这类「未拒绝但值得提示」的问题 */}
             {current.checkNotes.length > 0 ? (
               <details className="mt-2 text-xs text-[var(--ink-soft)]">
@@ -1536,6 +1531,19 @@ export default function DiagnosePage() {
                   {selected === current.question.answerIndex ? "回答正确" : "回答错误"}
                 </p>
                 <p className="mt-1 text-[var(--ink-soft)]">{current.question.explanation}</p>
+                {/*
+                  出处：生成题显示落库的「依据：…」，内置题没有页级出处，只标明题库与章节。
+                  origin 为 undefined 只可能是内置题库题——方向题的 source 必为
+                  generated / manual / borrowed 三者之一。
+                */}
+                {current.materialLabel ? (
+                  <p className="mt-2 text-xs text-[var(--ink-soft)]">{current.materialLabel}</p>
+                ) : current.origin === undefined ? (
+                  <p className="mt-2 text-xs text-[var(--ink-faint)]">
+                    {current.chapter} · 内置题库（无页级出处）
+                  </p>
+                ) : null}
+
                 {/* 单题反馈：预测 vs 实际。预测在作答前算好并随记录落盘。 */}
                 {lastAnswer?.predicted !== undefined ? (
                   <p className="mt-1 text-xs text-[var(--ink-soft)]">
@@ -1703,7 +1711,7 @@ export default function DiagnosePage() {
             })}</ul>
             <p className="mt-4 text-[11px] leading-relaxed text-[var(--ink-faint)]">未测评不代表不会。证据与不确定性随作答更新。</p>
           </Card>
-          <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={materialSelection} /></div></details>
+          {revealed || done ? <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={materialSelection} /></div></details> : null}
           <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />历史与错题复习</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /><ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} onRetrainQuestion={retrainQuestion} className="mb-5" /></div></details>
           <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
         </aside>

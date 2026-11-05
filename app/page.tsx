@@ -16,7 +16,7 @@ export default function HomePage() {
 
 
         <section className="mb-10">
-          <SectionTitle hint="9 门课程，学习记录分别保存。选一门课，直接开始。">从你正在学的课程开始</SectionTitle>
+          <SectionTitle hint="9 门课程，学习记录分别保存。选一门课，直接开始。">课程列表</SectionTitle>
           <div className="border-t border-[var(--line)]">
             {SUBJECTS.map((subject) => <Link key={subject.id} href={`/diagnose?subject=${subject.id}`}
               className="course-row group">
@@ -30,7 +30,7 @@ export default function HomePage() {
         <Card className="mb-10">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="max-w-2xl">
-              <h2 className="text-lg font-semibold">让学伴读懂你的课程资料</h2>
+              <h2 className="text-lg font-semibold">添加课程资料</h2>
               <p className="mt-2 text-sm text-[var(--ink-soft)]">创建自定义方向，上传 Markdown、TXT 或带文本层的 PDF。提问时检索原文，回答标注出处，学习内容与你的课程对齐。</p>
             </div>
             <ButtonLink href="/directions?kb=open" variant="ghost">创建方向与上传资料 →</ButtonLink>

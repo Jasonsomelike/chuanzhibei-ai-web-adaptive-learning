@@ -429,3 +429,24 @@ body {
   .nav-account { max-width: 140px; }
   .app-header:has(.nav-account) .command-trigger { right: 178px; }
 }
+
+/* Daily learning record: no simulated mastery or duplicated page demos. */
+.daily-dashboard { padding-block: 36px; }
+.daily-overview { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 40px; border-block: 1px solid var(--line); padding-block: 28px; }
+.daily-task { border-left: 1px solid var(--line); padding-left: 32px; }
+.daily-history { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; padding-block: 24px 0; }
+.tutor-messages > article, .tutor-messages > div:not(.tutor-empty) { max-width: 70ch; margin-inline: auto; }
+.node-deferred .status-dot { background: transparent; border-style: dashed; }
+.node-blocked .status-dot { border-radius: 1px; transform: rotate(45deg); }
+.knowledge-node.node-deferred { border-style: dashed; }
+.knowledge-node.node-blocked { border-left-width: 4px; }
+@media (max-width: 767px) {
+  .daily-overview, .daily-history { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .daily-task { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0 0; }
+}
+@media (max-width: 550px) {
+  .app-brand { font-size: 18px; gap: 6px; max-width: calc(100% - 112px); letter-spacing: -0.05em; }
+  .app-brand svg { width: 23px; }
+  .app-header:has(.nav-account) .app-brand { max-width: 100%; margin-bottom: 54px; }
+  .app-header:has(.nav-account) .nav-account, .app-header:has(.nav-account) .command-trigger { top: 48px; }
+}

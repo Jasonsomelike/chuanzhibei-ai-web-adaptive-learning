@@ -27,14 +27,15 @@ async function visit(path: string) {
 
 try {
   await visit("/");
-  await page.getByRole("heading", { name: /把今天的学习/ }).waitFor();
-  check((await page.title()).includes("智慧学伴"), "标题正确且首页非空");
+  await page.getByRole("heading", { name: "今天先学什么？", exact: true }).waitFor();
+  check((await page.title()).includes("自适应学习路径"), "标题正确且首页非空");
+  check(!(await page.locator(".daily-task").innerText()).includes("%"), "未测评的首页任务不把先验显示成掌握度");
   await page.getByLabel("当前学习目标").selectOption("network");
   await page.getByRole("button", { name: "60 分钟", exact: true }).click();
   const planLink = page.getByRole("link", { name: "查看完整计划", exact: true });
   check((await planLink.getAttribute("href"))?.includes("subject=network&budget=60"), "学科与预算进入实际计划链接");
   await planLink.click();
-  await page.getByRole("heading", { name: "让每一步，都接得上。", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "我的学习路径", exact: true }).waitFor();
   check((await page.locator("main").innerText()).includes("下一步建议"), "路径首屏突出下一步");
   await page.getByText("调整学习计划 ·", { exact: false }).click();
   check(await page.getByRole("button", { name: "把本周预算设为 60 分钟" }).getAttribute("aria-pressed") === "true", "首页预算在路径页实际生效");
@@ -52,11 +53,23 @@ try {
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page.getByText("结论：", { exact: false }).waitFor();
   check((await page.locator("main").innerText()).includes("[c09]"), "完整讲解可检索并引用课程依据");
+  await page.getByRole("button", { name: "栈 [c09]", exact: true }).last().click();
+  const original = page.getByRole("region", { name: "回答引用原文", exact: true });
+  check(await original.isVisible() && (await original.innerText()).includes("后进先出"), "点击引用在侧栏展示该回答的原文快照");
+  check(new URL(page.url()).pathname === "/tutor", "查看引用保留导师对话位置");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "栈 [c09]", exact: true }).last().click();
+  await page.getByRole("dialog", { name: "课程学习材料", exact: true }).waitFor();
+  check(await original.isVisible(), "移动端引用在材料抽屉内展示");
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   await visit("/diagnose?subject=data-structures");
+  check(await page.locator("[data-answer-feedback]").count() === 0 && !await page.getByText("内置题库（无页级出处）", { exact: false }).isVisible(), "提交前不展示答案与材料出处");
   await page.locator('input[type="radio"][name="answer"]').first().check();
   await page.getByRole("button", { name: "提交答案", exact: true }).click();
   await page.getByRole("button", { name: "下一题", exact: true }).waitFor();
+  check(await page.getByText("内置题库（无页级出处）", { exact: false }).isVisible(), "提交后显示真实题目出处");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("alp.learner.v2") ?? "{}"));
   const progress = saved.subjects["data-structures"];
   check(progress.attempts.length === 1 && progress.attempts[0].selectedIndex === 0, "真实答题保存选项与历史");
@@ -68,10 +81,14 @@ try {
   // UI upgrade: real course/evidence data, accessible overlays and stable list identity.
   await visit("/");
   const savedBeforePreview = await page.evaluate(() => localStorage.getItem("alp.learner.v2"));
+  check(await page.getByRole("link", { name: "继续学习", exact: true }).isVisible(), "已有作答的首页优先继续学习");
+  check((await page.locator("main").innerText()).includes("最近作答："), "首页展示真实最近作答");
+  check(await page.getByRole("tab", { name: /先了解自己/ }).count() === 0, "首页没有重复演示区");
+  await visit("/guide");
   await page.getByRole("tab", { name: /先了解自己/ }).click();
-  check(await page.getByText("题目预览，不写入学习记录", { exact: false }).isVisible(), "首页可预览真实课程诊断题，明确不记分");
+  check(await page.getByText("题目预览，不写入学习记录", { exact: false }).isVisible(), "指南保留真实课程诊断预览，明确不记分");
   await page.getByRole("tab", { name: /学懂，再验证/ }).click();
-  check((await page.getByRole("link", { name: "带着这一步问导师" }).getAttribute("href"))?.includes("&q="), "首页学习预览带真实主题进入导师");
+  check((await page.getByRole("link", { name: "带着这一步问导师" }).getAttribute("href"))?.includes("&q="), "指南学习预览带真实主题进入导师");
   await page.getByRole("tab", { name: /安排下一步/ }).click();
   check(savedBeforePreview === await page.evaluate(() => localStorage.getItem("alp.learner.v2")), "流程预览不改写学习证据");
   await page.keyboard.press("Control+k");
@@ -109,6 +126,17 @@ try {
     return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
   });
   check(await page.locator(".react-flow__node").count() > 0 && await page.locator(".react-flow__edge-path").count() > 0, "图谱先修连线已绘制，初始视野无基础节点裁切");
+  check(!await page.locator("[data-technical-details]").getAttribute("open"), "技术指纹默认收起");
+  const firstStep = page.locator("[data-flip-id]").first();
+  const firstKc = await firstStep.getAttribute("data-motion-step");
+  await firstStep.getByRole("button", { name: /^在图谱中定位/ }).click();
+  check(await page.locator(`.react-flow__node[data-id="${firstKc}"]`).getAttribute("class").then(value => value?.includes("selected")), "清单选择同步图谱选中状态");
+  await page.locator(".knowledge-desktop-inspector").getByRole("button", { name: "在清单中定位", exact: true }).click();
+  check(await firstStep.getByText("已定位", { exact: true }).isVisible(), "图谱可返回并高亮清单中的对应步骤");
+  await page.locator('.react-flow__node[data-id="c02"]').focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelector('#path-step-c02 button[aria-pressed="true"]'));
+  check(await page.locator(".knowledge-desktop-inspector h3").innerText() === "时间复杂度分析", "键盘选择图谱节点同步清单与详情");
   await page.getByLabel("定位知识点", { exact: true }).selectOption("c05");
   check((await page.locator(".knowledge-desktop-inspector h3").innerText()) === "顺序表", "选择节点显示实际知识点详情");
   await page.locator(".knowledge-desktop-inspector").getByRole("link", { name: "开始练习", exact: true }).click();
@@ -146,9 +174,16 @@ try {
       await visit(route);
       const bounds = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, width: document.documentElement.clientWidth }));
       check(bounds.scroll <= bounds.width + 1, `${route} ${width}px 无横向溢出`);
+      check(!(await page.locator("body").innerText()).includes("智慧学伴"), `${route} 品牌一致`);
       check(!await page.locator("nextjs-portal [data-nextjs-dialog]").count(), `${route} 无框架错误遮罩`);
-      if (route === "/path") await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
-      if (["/", "/path", "/tutor", "/settings"].includes(route)) await page.screenshot({ path: join(output, `${route === "/" ? "home" : route.slice(1)}-${width}.png`), fullPage: false });
+      if (route === "/path" && width >= 768) await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
+      if (route === "/path" && width < 768) {
+        check(await page.locator(".react-flow__node").count() === 0 && await page.getByRole("heading", { name: "学习步骤安排", exact: true }).isVisible(), "手机默认学习清单，图谱按需打开");
+        await page.screenshot({ path: join(output, `path-list-${width}.png`), fullPage: false });
+        await page.getByRole("button", { name: "展开先修图谱", exact: true }).click();
+        await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
+      }
+      if (["/", "/diagnose", "/path", "/tutor", "/settings"].includes(route)) await page.screenshot({ path: join(output, `${route === "/" ? "home" : route.slice(1)}-${width}.png`), fullPage: false });
     }
     if (width === 390) {
       check(!await page.getByRole("link", { name: "设置中心", exact: true }).first().isVisible(), "移动端次要导航收进更多菜单");

@@ -12,6 +12,8 @@ import { useSubject } from "@/lib/subject";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { progressOf } from "@/lib/learner";
 import { useLearner } from "@/lib/useLearner";
+import { citationLabel } from "@/lib/materials";
+import { targetQuery } from "@/lib/target";
 import type { MasteryState } from "@/lib/mastery";
 import {
   hydrateProviderFromServer,
@@ -179,6 +181,8 @@ interface Message {
   note?: string;
   /** 教材 / 讲义出处抬头，元素是 citationLabel 的输出，原样展示。 */
   sources: string[];
+  materialContext?: string;
+  originals?: { kcId: string; label: string; text: string }[];
   /** 本次回答涉及的未决口径分歧，已格式化成可直接展示的一行。 */
   conflicts: string[];
   streaming: boolean;
@@ -667,6 +671,10 @@ export default function TutorPage() {
   const [listening, setListening] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechInterim, setSpeechInterim] = useState("");
+  const [sourceFocus, setSourceFocus] = useState<{ request: number; kcId: string; title: string; context?: string; originals: { label: string; text: string }[] } | null>(null);
+  const openCitation = (message: Message, kcId: string) => {
+    setSourceFocus(previous => ({ request: (previous?.request ?? 0) + 1, kcId, title: message.citations.find(citation => citation.kcId === kcId)?.title ?? kcId, context: message.citations.some(citation => citation.kcId === kcId) && message.sources.length ? message.materialContext : undefined, originals: (message.originals ?? []).filter(item => item.kcId === kcId && message.sources.includes(item.label)) }));
+  };
   const endRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const speechRef = useRef<SpeechSession | null>(null);
@@ -825,6 +833,7 @@ export default function TutorPage() {
     setBusy(false);
     setIndex(buildIndex(docs));
     setMessages([]);
+    setSourceFocus(null);
     setError(null);
     setImages([]);
     setImageRetry(null);
@@ -1385,6 +1394,7 @@ export default function TutorPage() {
     assistant.streaming = true;
     assistant.thinkingRequested =
       !wantsAgent && activeProvider !== null && thinkingEnabledFor(activeProvider);
+    assistant.originals = wantsAgent ? [] : [...material.excerpts].map(([kcId, excerpt]) => ({ kcId, label: citationLabel(excerpt), text: excerpt.text }));
     assistant.uploadHits = [...uploads];
     assistant.images = imageUrls.length;
     setMessages((prev) => [
@@ -1459,6 +1469,7 @@ export default function TutorPage() {
           generatedByLlm: true,
           note: notes.join(" · "),
           sources: citations.length > 0 ? [...(outcome.done?.materialSources ?? [])] : [],
+          materialContext: serverMaterial,
           conflicts,
           streaming: false,
           thinkingRequested: false,
@@ -1986,7 +1997,11 @@ export default function TutorPage() {
         </div>
 
         <div className="tutor-workspace">
-        <TutorRail course={target.name}>
+        <TutorRail course={target.name} sourceRequest={sourceFocus?.request} sourcePanel={sourceFocus ? <section data-citation-source tabIndex={-1} aria-label="回答引用原文" className="mb-6 border-b border-[var(--accent)] pb-5">
+          <h2 className="font-semibold">回答引用原文 · {sourceFocus.title}</h2>
+          {sourceFocus.originals.length ? sourceFocus.originals.map((original, index) => <div key={index} className="mt-3"><p className="text-xs text-[var(--ink-faint)]">{original.label}</p><p className="mt-2 whitespace-pre-wrap wrap-anywhere text-sm leading-relaxed">{original.text}</p></div>) : sourceFocus.context ? <div className="mt-3"><p className="text-xs text-[var(--ink-faint)]">本次回答收到的课程摘录，包含本次命中的其他知识点；检索命中不等于逐条引用。</p><p className="mt-3 whitespace-pre-wrap wrap-anywhere text-sm leading-relaxed">{sourceFocus.context}</p></div> : <p className="mt-3 text-sm text-[var(--ink-soft)]">本条引用没有可展示的教材原文快照，请结合回答下方的资料与核对结果确认；知识点引用不等于原文引证。</p>}
+          <Link href={`/path${targetQuery(target)}&kc=${encodeURIComponent(sourceFocus.kcId)}`} className="mt-4 inline-block text-xs text-[var(--accent)] underline">在学习路径中查看知识点</Link>
+        </section> : null}>
           <MaterialReader variant="workbench" pack={materialPack} concepts={target.graph.concepts} selection={materialSelection} onAsk={(text, source) => { setInput(`请引导我理解这段原文（${source}）：${text.slice(0, 220)}`.slice(0, 500)); document.getElementById("q")?.focus(); }} />
           <div>
           <p className="text-sm font-medium">我的资料 · {kbDocs.length} 份</p>
@@ -2118,13 +2133,13 @@ export default function TutorPage() {
         </div>
         </TutorRail>
         <section className="tutor-chat" aria-label="学习辅导对话">
-        <div className="tutor-chat-title"><h2 className="text-base font-semibold sm:text-lg">与课程导师一起弄懂</h2><p className="mt-1 text-xs text-[var(--ink-faint)]">{activeProvider ? "回答优先依据课程资料，引用可以展开核对。" : "当前为资料检索模式；配置模型后可获得生成式辅导。"}</p></div>
+        <div className="tutor-chat-title"><h2 className="text-base font-semibold sm:text-lg">向课程导师提问</h2><p className="mt-1 text-xs text-[var(--ink-faint)]">{activeProvider ? "回答优先依据课程资料，引用可以展开核对。" : "当前为资料检索模式；配置模型后可获得生成式辅导。"}</p></div>
         {/* 对话区 */}
         <div className={`tutor-messages space-y-4 ${messages.length === 0 ? "is-empty" : ""}`} role="log" aria-label="辅导消息" aria-live="polite" aria-relevant="additions">
           {messages.length === 0 ? (
             <div data-motion="suggestions" className="tutor-empty">
               <Icon name="chat" size={46} className="mx-auto text-[var(--accent)]" />
-              <h3 className="mt-5 text-lg font-medium">沿着你的问题，一步步理解。</h3>
+              <h3 className="mt-5 text-lg font-medium">选择一个问题开始</h3>
               <p className="mt-2 text-xs text-[var(--ink-faint)]">可以这样问，或在下方写下具体的卡点。</p>
               <div className="mt-6 grid gap-2 sm:grid-cols-2">
                 {[
@@ -2194,7 +2209,13 @@ export default function TutorPage() {
                  * 阅读列：段落与有序列表按块渲染，行内仍是 MiniMarkdown
                  * （**粗体**、`行内代码`、[kcId] pill、换行），不引 Markdown 依赖。
                  */
-                <AnswerBody text={message.text} streaming={message.streaming} />
+                <div onClick={event => {
+                  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href^="/path?kc="]') : null;
+                  if (!link) return;
+                  const kcId = new URL(link.href).searchParams.get("kc");
+                  if (!kcId) return;
+                  event.preventDefault(); openCitation(message, kcId);
+                }}><AnswerBody text={message.text} streaming={message.streaming} /></div>
               ) : message.streaming ? (
                 <div className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
                   <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]" />
@@ -2298,18 +2319,9 @@ export default function TutorPage() {
                         );
                         return (
                           <span key={citation.kcId} className="inline-flex items-center gap-1">
-                            {/*
-                              引用 Pill 可点：跳到路径页并高亮这个知识点。
-                              路径页只在 ?kc= 命中当前路径时滚动 + 描边，
-                              不在路径里就静默降级为一次普通跳转。
-                            */}
-                            <Link
-                              href={`/path?kc=${encodeURIComponent(citation.kcId)}`}
-                              title={`在路径中定位「${citation.title}」`}
-                              className="inline-flex items-center rounded-full bg-[var(--accent-soft)] px-2.5 py-0.5 text-xs font-medium text-[var(--accent)] underline-offset-2 hover:underline"
-                            >
+                            <button type="button" onClick={() => openCitation(message, citation.kcId)} title={`查看「${citation.title}」引用原文`} className="inline-flex items-center rounded-full bg-[var(--accent-soft)] px-2.5 py-0.5 text-xs font-medium text-[var(--accent)] underline-offset-2 hover:underline">
                               {citation.title} [{citation.kcId}]
-                            </Link>
+                            </button>
                             {badge !== null ? (
                               <Pill tone={badge.tone}>{badge.label}</Pill>
                             ) : null}
@@ -2388,7 +2400,7 @@ export default function TutorPage() {
                   />
 
                   {message.note !== undefined && message.note !== "" ? (
-                    <p className="text-xs text-[var(--ink-faint)]">{message.note}</p>
+                    <details className="text-xs text-[var(--ink-faint)]"><summary className="cursor-pointer">回答方式与运行详情</summary><p className="mt-2 leading-relaxed">{message.note}</p></details>
                   ) : null}
 
                   {message.text.trim() !== "" ? (

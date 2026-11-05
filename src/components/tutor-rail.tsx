@@ -1,13 +1,20 @@
 "use client";
 
-import { Children, useId, useRef, useState, type ReactNode } from "react";
+import { Children, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AppDialog } from "@/components/primitives/dialog";
 import { Icon } from "@/components/icons";
 
 /** The same material/settings panels serve the desktop reading rail and mobile drawer. */
-export function TutorRail({ children, course }: { children: ReactNode; course: string }) {
+export function TutorRail({ children, course, sourceRequest = 0, sourcePanel }: { children: ReactNode; course: string; sourceRequest?: number; sourcePanel?: ReactNode }) {
   const [tab, setTab] = useState(0);
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!sourceRequest) return;
+    setTab(0);
+    if (window.matchMedia("(max-width: 1023px)").matches) setOpen(true);
+    const timer = window.setTimeout(() => document.querySelector<HTMLElement>("[data-citation-source]")?.focus(), 50);
+    return () => window.clearTimeout(timer);
+  }, [sourceRequest]);
   const panels = Children.toArray(children);
   const id = useId();
   const tabs = useRef<HTMLDivElement>(null);
@@ -31,6 +38,7 @@ export function TutorRail({ children, course }: { children: ReactNode; course: s
     </div>
     {labels.map((label, index) => <div key={label} role="tabpanel" aria-labelledby={`${id}-tab-${index}`} id={`${id}-panel-${index}`} hidden={tab !== index} className="tutor-rail-panel" tabIndex={0}>
       <p className="mb-4 border-b border-[var(--line)] pb-3 text-xs text-[var(--ink-faint)]">{course} · {label}</p>
+      {index === 0 ? sourcePanel : null}
       {panels[index]}
     </div>)}
   </div>;

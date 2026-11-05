@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LearningJourney } from "@/components/learning-journey";
 import { Nav, Card, SectionTitle, Pill, ButtonLink } from "@/components/ui";
 import { SUBJECTS } from "@/data/subjects";
 
@@ -133,7 +134,7 @@ export default function GuidePage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-3xl px-5 py-10">
+      <main id="main" className="mx-auto max-w-6xl px-5 py-10">
         <div className="mb-8">
           <Pill tone="accent">新手必读</Pill>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight">使用指南</h1>
@@ -142,6 +143,8 @@ export default function GuidePage() {
             每一步的按钮都直达对应功能。
           </p>
         </div>
+
+        <LearningJourney />
 
         {/* 五步流程 */}
         <SectionTitle hint="按顺序做效果最好；第 4、5 步是可选增强，随时可以回来补。">
