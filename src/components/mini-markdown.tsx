@@ -15,10 +15,13 @@ import { tokenizeMiniMarkdown } from "@/components/mini-markdown-tokenizer";
 export function MiniMarkdown({
   text,
   trailing,
+  onCitation,
 }: {
   readonly text: string;
   /** 追加在正文末尾、参与同一段排版的节点（例如流式光标）。 */
   readonly trailing?: ReactNode;
+  /** Tutor callers open the corresponding source without leaving the conversation. */
+  readonly onCitation?: (kcId: string) => void;
 }) {
   const tokens = tokenizeMiniMarkdown(text);
 
@@ -45,6 +48,7 @@ export function MiniMarkdown({
               </code>
             );
           case "pill":
+            if (onCitation) return <button key={index} type="button" onClick={() => onCitation(token.kcId)} aria-label={`查看知识点 ${token.kcId} 的引用原文`} className="inline-flex items-center rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[0.85em] font-medium text-[var(--accent)] underline underline-offset-2">[{token.kcId}]</button>;
             /*
              * 与引用区的 Pill 同一条跳转：/path?kc=<id> 由路径页滚动并高亮。
              * 用普通 <a>：组件不依赖路由，静态渲染（测试）也能拿到 href。

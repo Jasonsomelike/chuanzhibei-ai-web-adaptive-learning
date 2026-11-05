@@ -8,6 +8,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
+  interactiveWidget: "resizes-content",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#faf6ef" },
     { media: "(prefers-color-scheme: dark)", color: "#17140f" },

@@ -52,3 +52,18 @@ Canvas 在 Chromium 6 倍 CPU 降速的 2 秒窗口绘制 61 帧，采样约 **3
 - 最终：四个核心页面桌面/手机对照、交互与性能验收；主分支 CI 与提交推送核验。
 
 `AGENTS.md` 仅保留本地并被 Git 忽略。已有作品文档、生成脚本与视频的未提交改动未纳入本轮提交。
+
+## 第二轮：诊断与导师工作台
+
+`diagnose/page.tsx` 将设置放在答题任务之后；主知识点始终可见，难度、先修深度和题源放入可展开信息，依据异常与仅练习警告继续直接显示。选项整行保留原生单选输入与键盘行为，采用字母框、选中边线和明确的对错文字。预留反馈文字位置，浏览器验证提交前后所有选项行的位置与高度一致。沿用现有 GSAP 进度和答案/证据递进反馈，不改变判分、UUID 或证据权重。
+
+`tutor/page.tsx` 与样式将教材和对话分别放在两个纸面区域；增加阅读行高、段落间距和来源标记。保留实际教材、上传资料、设置和三档帮助。`mini-markdown.tsx` 为导师正文引用增加真正的按钮语义，直接打开原文栏，不再通过拦截路径链接实现；通用引用链接默认行为保持不变。流式等待和正文光标采用静态提示，避免持续闪烁。`layout.tsx` 为支持的移动浏览器设置 `interactive-widget=resizes-content`。
+
+对照检查了主标题、题干与选项比例、实际资料段落、引用标记、两栏留白、手机输入区。正式系统保留学情辅助栏、完整题源警告、多行输入和学习设置；原型中的单条固定问题与固定答复没有迁入。
+
+检查：typecheck、lint、2064 项单测、生产构建通过；286 项学习流程、36 项账号、18 项 MCP 通过。额外检查 390×600 的较小窗口，输入框底部约 483px、底部导航顶部 533px，可继续输入；这是浏览器视口缩小测试，并非实体手机键盘测试。
+
+| 页面 | 桌面原型 | 桌面改造前 / 后 | 手机原型 | 手机改造前 / 后 |
+| --- | --- | --- | --- | --- |
+| 诊断 | [原型](../screenshots/ui-v3/reference-diagnose-1440.png) | [前](../screenshots/ui-v3/before-diagnose-1440.png) / [后](../screenshots/ui-v3/after-diagnose-1440.png) | [原型](../screenshots/ui-v3/reference-diagnose-390.png) | [前](../screenshots/ui-v3/before-diagnose-390.png) / [后](../screenshots/ui-v3/after-diagnose-390.png) |
+| 导师 | [原型](../screenshots/ui-v3/reference-tutor-1440.png) | [前](../screenshots/ui-v3/before-tutor-1440.png) / [后](../screenshots/ui-v3/after-tutor-1440.png) | [原型](../screenshots/ui-v3/reference-tutor-390.png) | [前](../screenshots/ui-v3/before-tutor-390.png) / [后](../screenshots/ui-v3/after-tutor-390.png) |

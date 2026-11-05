@@ -1039,8 +1039,8 @@ export default function DiagnosePage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} data-focus={focusMode} className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-4" data-motion="hero">
+      <main id="main" ref={mainRef} data-focus={focusMode} className="diagnostic-page mx-auto max-w-7xl px-5 py-8 sm:px-8">
+        <div className="workspace-heading mb-6 flex flex-wrap items-start justify-between gap-4" data-motion="hero">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程诊断</h1>
             <p className="mt-1 text-sm text-[var(--ink-soft)]">
@@ -1049,56 +1049,6 @@ export default function DiagnosePage() {
           </div>
           <Hint label="隐藏辅助材料与历史概览，专注当前题目。随时可以退出。"><button type="button" aria-pressed={focusMode} onClick={() => setFocusMode(value => !value)} className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm text-[var(--accent)]"><Icon name="expand" size={17} />{focusMode ? "退出专注" : "专注模式"}</button></Hint>
         </div>
-
-        <details className="mb-5 rounded-xl border border-[var(--line)] px-4 py-3">
-          <summary className="cursor-pointer text-sm text-[var(--ink-soft)]">诊断设置 · {target.name}</summary>
-          <div className="mt-4">
-        {/* 目标切换 */}
-        <Card className="mb-5" motion="target">
-          <p className="mb-2 text-sm font-medium">当前学习目标</p>
-          <TargetPicker
-            current={targetId}
-            onChange={setTargetId}
-            onNewDirection={() => setShowNewDirection((v) => !v)}
-          />
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
-          {/*
-            上传资料只在本浏览器、按方向隔离；只有绑定了知识点的文档会进出题与核对。
-            kbLoading 时不显示「0 份」，避免把「还没读完」误报成「没有资料」。
-          */}
-          {directionId !== "" && (kbLoading || kbError !== null || kbDocs.length > 0) ? (
-            <p className="mt-1 text-xs text-[var(--ink-faint)]">
-              {kbError ??
-                (kbLoading
-                  ? "正在读取本浏览器的上传资料…"
-                  : `本方向上传资料 ${kbDocs.length} 份 · ${kbChunks.length} 段（仅本浏览器；绑定知识点的文档会进入出题与依据核对）`)}
-            </p>
-          ) : null}
-          {targetError ? (
-            <p className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]">
-              {targetError}
-            </p>
-          ) : null}
-        </Card>
-          <button type="button" onClick={clearAll} className="mt-2 rounded px-2 py-2 text-xs text-[var(--bad)] underline">清空当前目标记录（含掌握度）</button>
-          </div>
-        </details>
-        {requestedKc && kcName.has(requestedKc) ? <p className="mb-4 text-xs text-[var(--ink-faint)]">优先测评「{kcName.get(requestedKc)}」；该点证据充足或题目用尽后，继续按先修顺序诊断。</p> : null}
-
-        {/* 内联新建方向 */}
-        {showNewDirection ? (
-          <NewDirectionPanel
-            onCancel={() => setShowNewDirection(false)}
-            onSaved={(id, name, g) => {
-              setShowNewDirection(false);
-              setTarget({ kind: "direction", id, name, graph: g });
-              const url = new URL(window.location.href);
-              url.searchParams.set("direction", id);
-              url.searchParams.delete("subject");
-              window.history.replaceState(null, "", url.toString());
-            }}
-          />
-        ) : null}
 
         <div className="diagnostic-layout">
         <section className="diagnostic-main" aria-label="当前诊断题目">
@@ -1419,8 +1369,9 @@ export default function DiagnosePage() {
         {current && !done ? (
           <div ref={questionCardRef} data-motion="question-card" data-motion-manual>
           <Card className="mb-5 question-paper">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="question-context mb-3 flex flex-wrap items-center gap-2">
               <Pill tone="accent">{current.kcName}</Pill>
+              <details className="question-metadata"><summary>题目信息</summary><div>
               <Pill>难度 {current.question.difficulty}</Pill>
               <Pill>先修深度 {current.depth}</Pill>
               {current.origin === "generated" ? (
@@ -1432,10 +1383,12 @@ export default function DiagnosePage() {
               ) : current.origin === "borrowed" ? (
                 <Pill tone="warn">借用自内置题库</Pill>
               ) : null}
+              </div></details>
               {/* 依据核对未过 / 未完成单列，不混进「已通过 N 项」 */}
               {current.evidenceFailed ? (
                 <Pill tone="bad">依据核对未通过或未完成</Pill>
               ) : null}
+
               {current.practiceOnly ? <Pill tone="warn">仅练习，不计入掌握度</Pill> : null}
             </div>
             <h2 tabIndex={-1} className="text-lg font-semibold leading-[1.8] sm:text-xl">{current.question.stem}</h2>
@@ -1468,6 +1421,7 @@ export default function DiagnosePage() {
                 return (
                   <label
                     key={i}
+                    data-answer-state={revealed ? isCorrect ? "correct" : isSelected ? "incorrect" : "neutral" : isSelected ? "selected" : "idle"}
                     className={`question-option flex items-start gap-3 rounded-lg border px-4 py-4 text-sm transition-colors ${tone} ${revealed ? "cursor-default" : "cursor-pointer"}`}
                   >
                     <input
@@ -1477,8 +1431,8 @@ export default function DiagnosePage() {
                       onChange={() => setSelected(i)}
                       className="mt-1"
                     />
-                    <span className="font-medium text-[var(--ink-faint)]">{String.fromCharCode(65 + i)}.</span><span className="min-w-0 flex-1">{opt}</span>
-                    {revealed && (isCorrect || isSelected) ? <span className={`shrink-0 text-xs ${isCorrect ? "text-[var(--good)]" : "text-[var(--bad)]"}`}>{isCorrect ? "正确答案" : "你的选择"}</span> : null}
+                    <span className="option-letter font-medium text-[var(--ink-faint)]">{String.fromCharCode(65 + i)}</span><span className="min-w-0 flex-1">{opt}</span>
+                    <span aria-hidden={!revealed || (!isCorrect && !isSelected)} className={`option-outcome shrink-0 text-xs ${isCorrect ? "text-[var(--good)]" : "text-[var(--bad)]"}`}>{revealed && (isCorrect || isSelected) ? isCorrect ? "正确答案" : "你的选择" : null}</span>
                   </label>
                 );
               })}
@@ -1715,6 +1669,58 @@ export default function DiagnosePage() {
           <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />历史与错题复习</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /><ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} onRetrainQuestion={retrainQuestion} className="mb-5" /></div></details>
           <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
         </aside>
+        </div>
+        <div className="diagnostic-settings-area">
+        <details className="mb-5 rounded-xl border border-[var(--line)] px-4 py-3">
+          <summary className="cursor-pointer text-sm text-[var(--ink-soft)]">诊断设置 · {target.name}</summary>
+          <div className="mt-4">
+        {/* 目标切换 */}
+        <Card className="mb-5" motion="target">
+          <p className="mb-2 text-sm font-medium">当前学习目标</p>
+          <TargetPicker
+            current={targetId}
+            onChange={setTargetId}
+            onNewDirection={() => setShowNewDirection((v) => !v)}
+          />
+          <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
+          {/*
+            上传资料只在本浏览器、按方向隔离；只有绑定了知识点的文档会进出题与核对。
+            kbLoading 时不显示「0 份」，避免把「还没读完」误报成「没有资料」。
+          */}
+          {directionId !== "" && (kbLoading || kbError !== null || kbDocs.length > 0) ? (
+            <p className="mt-1 text-xs text-[var(--ink-faint)]">
+              {kbError ??
+                (kbLoading
+                  ? "正在读取本浏览器的上传资料…"
+                  : `本方向上传资料 ${kbDocs.length} 份 · ${kbChunks.length} 段（仅本浏览器；绑定知识点的文档会进入出题与依据核对）`)}
+            </p>
+          ) : null}
+          {targetError ? (
+            <p className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]">
+              {targetError}
+            </p>
+          ) : null}
+        </Card>
+          <button type="button" onClick={clearAll} className="mt-2 rounded px-2 py-2 text-xs text-[var(--bad)] underline">清空当前目标记录（含掌握度）</button>
+          </div>
+        </details>
+        {requestedKc && kcName.has(requestedKc) ? <p className="mb-4 text-xs text-[var(--ink-faint)]">优先测评「{kcName.get(requestedKc)}」；该点证据充足或题目用尽后，继续按先修顺序诊断。</p> : null}
+
+        {/* 内联新建方向 */}
+        {showNewDirection ? (
+          <NewDirectionPanel
+            onCancel={() => setShowNewDirection(false)}
+            onSaved={(id, name, g) => {
+              setShowNewDirection(false);
+              setTarget({ kind: "direction", id, name, graph: g });
+              const url = new URL(window.location.href);
+              url.searchParams.set("direction", id);
+              url.searchParams.delete("subject");
+              window.history.replaceState(null, "", url.toString());
+            }}
+          />
+        ) : null}
+
         </div>
       </main>
     </>

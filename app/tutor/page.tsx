@@ -391,13 +391,13 @@ function splitAnswerBlocks(text: string): AnswerBlock[] {
  * 回答正文的块级渲染：段落用 <p>、有序列表用 <ol>，行内交给 MiniMarkdown。
  * 流式光标只挂在最后一个块的最后一项，不会每段都闪一个。
  */
-function AnswerBody({ text, streaming }: { readonly text: string; readonly streaming: boolean }) {
+function AnswerBody({ text, streaming, onCitation }: { readonly text: string; readonly streaming: boolean; readonly onCitation: (kcId: string) => void }) {
   const blocks = splitAnswerBlocks(text);
   return (
-    <div className="text-sm leading-[1.75]">
+    <div className="tutor-answer-body text-sm leading-[1.75]">
       {blocks.map((block, index) => {
         const last = index === blocks.length - 1;
-        const trailing = last && streaming ? <span className="animate-pulse">▍</span> : null;
+        const trailing = last && streaming ? <span aria-hidden="true">▍</span> : null;
         if (block.kind === "list") {
           return (
             <ol key={index} className="my-2 list-decimal space-y-1 pl-5">
@@ -405,6 +405,7 @@ function AnswerBody({ text, streaming }: { readonly text: string; readonly strea
                 <li key={itemIndex}>
                   <MiniMarkdown
                     text={item}
+                    onCitation={onCitation}
                     trailing={
                       last && itemIndex === block.items.length - 1 ? trailing : null
                     }
@@ -423,7 +424,7 @@ function AnswerBody({ text, streaming }: { readonly text: string; readonly strea
                 : "mt-2 whitespace-pre-wrap wrap-anywhere"
             }
           >
-            <MiniMarkdown text={block.text} trailing={last ? trailing : null} />
+            <MiniMarkdown text={block.text} trailing={last ? trailing : null} onCitation={onCitation} />
           </p>
         );
       })}
@@ -1990,9 +1991,9 @@ export default function TutorPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-[1440px] px-5 py-7 sm:px-8">
-        <div className="mb-6 flex flex-wrap items-center gap-4" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程导师</h1>
+      <main id="main" ref={mainRef} className="tutor-page mx-auto max-w-[1440px] px-5 py-7 sm:px-8">
+        <div className="workspace-heading mb-6 flex flex-wrap items-center justify-between gap-4" data-motion="hero">
+          <div><h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程导师</h1><p className="mt-2 text-sm text-[var(--ink-soft)]">对照课程资料，围绕当前知识点提问。</p></div>
           <span className="rounded-lg border border-[var(--line)] px-3 py-1 text-sm text-[var(--ink-soft)]">{target.name}</span>
         </div>
 
@@ -2209,16 +2210,10 @@ export default function TutorPage() {
                  * 阅读列：段落与有序列表按块渲染，行内仍是 MiniMarkdown
                  * （**粗体**、`行内代码`、[kcId] pill、换行），不引 Markdown 依赖。
                  */
-                <div onClick={event => {
-                  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href^="/path?kc="]') : null;
-                  if (!link) return;
-                  const kcId = new URL(link.href).searchParams.get("kc");
-                  if (!kcId) return;
-                  event.preventDefault(); openCitation(message, kcId);
-                }}><AnswerBody text={message.text} streaming={message.streaming} /></div>
+                <AnswerBody text={message.text} streaming={message.streaming} onCitation={kcId => openCitation(message, kcId)} />
               ) : message.streaming ? (
                 <div className="flex items-center gap-2 text-sm text-[var(--ink-soft)]">
-                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]" />
+                  <Icon name="book" size={17} />
                   {message.reasoning !== ""
                     ? "模型仍在思考，正文尚未开始…"
                     : `正在检索课程知识库${webOn ? "与网络" : ""}并生成回答…`}

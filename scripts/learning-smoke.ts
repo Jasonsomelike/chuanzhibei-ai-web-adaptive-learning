@@ -57,7 +57,7 @@ try {
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page.getByText("结论：", { exact: false }).waitFor();
   check((await page.locator("main").innerText()).includes("[c09]"), "完整讲解可检索并引用课程依据");
-  await page.getByRole("button", { name: "栈 [c09]", exact: true }).last().click();
+  await page.getByRole("button", { name: "查看知识点 c09 的引用原文", exact: true }).last().click();
   const original = page.getByRole("region", { name: "回答引用原文", exact: true });
   check(await original.isVisible() && (await original.innerText()).includes("后进先出"), "点击引用在侧栏展示该回答的原文快照");
   check(new URL(page.url()).pathname === "/tutor", "查看引用保留导师对话位置");
@@ -70,10 +70,13 @@ try {
 
   await visit("/diagnose?subject=data-structures");
   check(await page.locator("[data-answer-feedback]").count() === 0 && !await page.getByText("内置题库（无页级出处）", { exact: false }).isVisible(), "提交前不展示答案与材料出处");
+  const answerRows = await page.locator(".question-option").evaluateAll(rows => rows.map(row => ({ y: row.getBoundingClientRect().y, height: row.getBoundingClientRect().height })));
   await page.locator('input[type="radio"][name="answer"]').first().check();
   await page.getByRole("button", { name: "提交答案", exact: true }).click();
   await page.getByRole("button", { name: "下一题", exact: true }).waitFor();
   check(await page.getByText("内置题库（无页级出处）", { exact: false }).isVisible(), "提交后显示真实题目出处");
+  const feedbackRows = await page.locator(".question-option").evaluateAll(rows => rows.map(row => ({ y: row.getBoundingClientRect().y, height: row.getBoundingClientRect().height })));
+  check(answerRows.every((row, index) => Math.abs(row.y - feedbackRows[index].y) < 1 && Math.abs(row.height - feedbackRows[index].height) < 1), "答题反馈不改变选项行位置与高度");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("alp.learner.v2") ?? "{}"));
   const progress = saved.subjects["data-structures"];
   check(progress.attempts.length === 1 && progress.attempts[0].selectedIndex === 0, "真实答题保存选项与历史");
@@ -118,6 +121,8 @@ try {
   check(await page.getByRole("dialog", { name: "课程学习材料", exact: true }).isVisible(), "移动端材料抽屉可打开");
   await page.getByRole("button", { name: "围绕这段提问", exact: true }).first().click();
   check(await page.getByRole("dialog").count() === 0 && await page.locator("#q").evaluate(el => el === document.activeElement), "移动端引用原文后关闭抽屉，焦点回到问题");
+  await page.locator("#q").scrollIntoViewIfNeeded();
+  check(await page.locator("#q").evaluate(el => el.getBoundingClientRect().bottom <= document.querySelector(".mobile-learning-nav")!.getBoundingClientRect().top), "手机输入框不被底部导航遮挡");
   await page.getByRole("button", { name: "教材与学习设置", exact: true }).click(); await page.keyboard.press("Escape");
   check(await page.getByRole("button", { name: "教材与学习设置", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
   await page.setViewportSize({ width: 1440, height: 1000 });
