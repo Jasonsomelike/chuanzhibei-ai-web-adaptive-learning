@@ -1,12 +1,13 @@
 /** 学习闭环浏览器回归。只允许本机地址，测试账号写入隔离的内存服务。 */
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { chromium } from "playwright";
 import { createServer } from "node:http";
 import { SUBJECTS } from "../src/data/subjects/index";
 import { createSubjectProgress } from "../src/lib/learner";
+import { instrumentContour, auditContour } from "./visual-canvas-smoke";
 
 const base = process.env.BASE_URL ?? "http://localhost:3218";
 assert(["localhost", "127.0.0.1", "[::1]"].includes(new URL(base).hostname), "E2E 仅允许本机测试服务");
@@ -15,6 +16,7 @@ await mkdir(output, { recursive: true });
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
 const page = await context.newPage();
+await instrumentContour(page);
 const runtimeErrors: string[] = [];
 page.on("pageerror", (error) => runtimeErrors.push(error.message));
 let checks = 0;
@@ -27,9 +29,11 @@ async function visit(path: string) {
 
 try {
   await visit("/");
-  await page.getByRole("heading", { name: "今天先学什么？", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "学习概览", exact: true }).waitFor();
   check((await page.title()).includes("自适应学习路径"), "标题正确且首页非空");
   check(!(await page.locator(".daily-task").innerText()).includes("%"), "未测评的首页任务不把先验显示成掌握度");
+  const canvasMetrics = await auditContour(page, check);
+  await writeFile(join(output, "canvas-performance.json"), JSON.stringify(canvasMetrics, null, 2));
   await page.getByLabel("当前学习目标").selectOption("network");
   await page.getByRole("button", { name: "60 分钟", exact: true }).click();
   const planLink = page.getByRole("link", { name: "查看完整计划", exact: true });

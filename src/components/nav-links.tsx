@@ -114,3 +114,15 @@ export function NavLinks() {
     </nav>
   );
 }
+
+/** Four reachable destinations, with the same routes and keyboard behavior as desktop. */
+export function MobileNav() {
+  const pathname = usePathname();
+  const links = [
+    { href: "/", label: "概览", name: "学习概览", icon: "home" as const },
+    { href: "/diagnose", label: "诊断", name: "课程诊断", icon: "clipboard" as const },
+    { href: "/path", label: "路径", name: "学习路径", icon: "graph" as const },
+    { href: "/tutor", label: "导师", name: "课程导师", icon: "chat" as const },
+  ];
+  return <nav className="mobile-learning-nav" aria-label="手机主导航">{links.map(link => <Link key={link.href} href={link.href} aria-label={link.name} aria-current={pathname === link.href ? "page" : undefined}><Icon name={link.icon} size={21} /><span>{link.label}</span></Link>)}</nav>;
+}

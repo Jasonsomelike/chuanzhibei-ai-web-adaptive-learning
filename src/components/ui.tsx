@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
-import { NavLinks } from "@/components/nav-links";
+import { NavLinks, MobileNav } from "@/components/nav-links";
 import { BrandMark } from "@/components/brand-mark";
 
 /* ── 表单与设置页的排版原语 ───────────────────────────────── */
@@ -409,6 +409,7 @@ export function ButtonLink({
  */
 export function Nav() {
   return (
+    <>
     <header className="app-header border-b border-[var(--line)] bg-[var(--surface)]">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3 sm:px-8 sm:py-4">
         <Link href="/" className="app-brand flex min-w-0 max-w-full items-center gap-2.5 font-semibold">
@@ -418,5 +419,7 @@ export function Nav() {
         <NavLinks />
       </div>
     </header>
+    <MobileNav />
+    </>
   );
 }

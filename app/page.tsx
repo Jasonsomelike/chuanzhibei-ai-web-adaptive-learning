@@ -11,15 +11,15 @@ export default function HomePage() {
   return (
     <>
       <Nav />
-      <main id="main" className="mx-auto max-w-7xl px-5 pb-10 sm:px-8">
+      <main id="main" className="home-workspace mx-auto max-w-7xl px-5 pb-10 sm:px-8">
         <LearningDashboard />
 
 
         <section className="mb-10">
           <SectionTitle hint="9 门课程，学习记录分别保存。选一门课，直接开始。">课程列表</SectionTitle>
-          <div className="border-t border-[var(--line)]">
+          <div className="course-library">
             {SUBJECTS.map((subject) => <Link key={subject.id} href={`/diagnose?subject=${subject.id}`}
-              className="course-row group">
+              className="course-tile group">
               <h3 className="flex items-center gap-3 text-sm font-medium group-hover:text-[var(--accent)]"><Icon name="layers" size={19} className="shrink-0 text-[var(--ink-faint)]" />{subject.name}</h3>
               <p className="course-description text-xs leading-relaxed text-[var(--ink-soft)] sm:text-sm">{subject.tagline}</p>
               <span className="flex items-center gap-3 text-xs text-[var(--accent)] sm:text-sm">开始学习<Icon name="arrow" size={17} /></span>
