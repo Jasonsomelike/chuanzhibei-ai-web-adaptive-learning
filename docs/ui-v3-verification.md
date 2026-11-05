@@ -45,7 +45,7 @@ Canvas 在 Chromium 6 倍 CPU 降速的 2 秒窗口绘制 61 帧，采样约 **3
 | --- | --- | --- | --- | --- |
 | 首页 | [原型](../screenshots/ui-v3/reference-home-1440.png) | [前](../screenshots/ui-v3/before-home-1440.png) / [后](../screenshots/ui-v3/after-home-1440.png) | [原型](../screenshots/ui-v3/reference-home-390.png) | [前](../screenshots/ui-v3/before-home-390.png) / [后](../screenshots/ui-v3/after-home-390.png) |
 
-## 后续阶段
+## 分阶段安排（已执行）
 
 - 第二轮：诊断焦点、答题反馈与导师阅读工作台；检查手机输入区不被底部导航遮挡。
 - 第三轮：路径节点、预算变化与清单同屏呈现；保留原有算法、先修边、手动调整与路径指纹。
@@ -67,3 +67,38 @@ Canvas 在 Chromium 6 倍 CPU 降速的 2 秒窗口绘制 61 帧，采样约 **3
 | --- | --- | --- | --- | --- |
 | 诊断 | [原型](../screenshots/ui-v3/reference-diagnose-1440.png) | [前](../screenshots/ui-v3/before-diagnose-1440.png) / [后](../screenshots/ui-v3/after-diagnose-1440.png) | [原型](../screenshots/ui-v3/reference-diagnose-390.png) | [前](../screenshots/ui-v3/before-diagnose-390.png) / [后](../screenshots/ui-v3/after-diagnose-390.png) |
 | 导师 | [原型](../screenshots/ui-v3/reference-tutor-1440.png) | [前](../screenshots/ui-v3/before-tutor-1440.png) / [后](../screenshots/ui-v3/after-tutor-1440.png) | [原型](../screenshots/ui-v3/reference-tutor-390.png) | [前](../screenshots/ui-v3/before-tutor-390.png) / [后](../screenshots/ui-v3/after-tutor-390.png) |
+
+## 第三轮：路径工作区与最终验收
+
+`path/page.tsx` 将真实下一步任务置于预算之前，合并时间、图谱显隐和章节入口，学习清单位于证据与高级调整之前。章节采用现有 Radix 抽屉，避免手机弹出区域溢出；可滚动、可键盘访问，Escape 关闭并恢复触发点焦点。
+
+`learning-graph.tsx` 在同一工作区展示由 `displayed` 得到的实际学习顺序，点击步骤同步选中节点与推荐理由；增加预算时，真实新增步骤同时在节点和清单中标注。保留 React Flow 的受控节点测量、先修边、缩放与键盘操作；GSAP 继续负责完整学习清单的重排。节点使用纸面与语义色边线，暂缓虚线和阻塞方形标识继续保留。输入、算法路径和手动顺序指纹仍在可展开技术区域。
+
+对照再次检查了原型与最终 1440×960 / 390×960 截图的标题、颜色、表面、间距、图谱与详情布局、顺序标识、手机主操作、引用和输入区。修复了桌面图谱被上方控件挤出首屏的问题；手机保留“先任务、后设置、清单优先”的实际工作流，没有复制原型里默认显示的模拟 Canvas 图谱。实际图谱始终是 React Flow。
+
+| 页面 | 桌面原型 | 桌面改造前 / 后 | 手机原型 | 手机改造前 / 后 |
+| --- | --- | --- | --- | --- |
+| 路径 | [原型](../screenshots/ui-v3/reference-path-1440.png) | [前](../screenshots/ui-v3/before-path-1440.png) / [后](../screenshots/ui-v3/after-path-1440.png) | [原型](../screenshots/ui-v3/reference-path-390.png) | [前](../screenshots/ui-v3/before-path-390.png) / [后](../screenshots/ui-v3/after-path-390.png) |
+
+### 最终验证证据
+
+| 要求 | 当前证据 |
+| --- | --- |
+| 类型、规范、单测、构建 | typecheck、lint（无错误）、105 个文件 / 2064 项测试、30 路由生产构建通过 |
+| 桌面与手机真实流程 | 学习流程 **291 项**、认证 **36 项**、MCP **18 项**通过；覆盖 1440 / 1280 / 853 / 390 / 360px，十个页面 |
+| 主题、动态效果与键盘 | 五套主题的明暗切换、节点对比度≥4.5、减少动态效果、真实 Flip、命令搜索、材料与章节抽屉 Escape 焦点恢复、图谱键盘选择通过 |
+| 真实数据与不变式 | `plan.ts`、`mastery.ts`、`graph.ts`、`learner.ts`、课程数据、题库和 API 没有修改；真实选项判分、学习证据更新、先修冲突和账号隔离检查保留 |
+| 指纹 | 黄金输入 `f9f9999230b4c06be74c235e4f7bedc39dcb7c4b947dea80f4dbb89539e61ecd`，路径 `ad7ccec537db36ee7b0070aca3f9f99006e92521e16ce2608def4df76f2b9e66`，版本仍为 plan-v2 / kg-v1 |
+| Canvas 降级 | 在 DPR=3 的浏览器中确认实际采样比为 2；禁用全部 2D context 后仍可进入实际诊断；模拟 2 核环境在 400ms 窗口内绘制次数保持 2→2；模拟 visibilitychange 事件可暂停并恢复绘制 |
+| Canvas 开销 | 最终 6 倍 CPU 降速样本约 30.00fps / 61 帧，位图复制 JS 调用最大 3.30ms；[最终采样](../screenshots/ui-v3/canvas-performance-final.json) |
+| 额外性能记录 | [浏览器指标](../screenshots/ui-v3/release-browser-metrics.json)：本机热服务、各页面新浏览器上下文的单次样本；桌面 FCP 为首页160ms、诊断48ms、路径32ms、导师36ms；不能外推为生产网络性能或低端手机表现 |
+| 人工浏览器交互 | ego 在当前页面用键盘选择第二个答案并提交，反馈“回答正确”，实际作答数增加为 1。指定尺寸截图与综合回归使用 Playwright；不将 ego 失败的截图调用算作通过 |
+| 仓库交付 | 每阶段检查后独立提交并推送 UI 分支，最终同步主分支；GitHub Actions 与部署结果由对应提交的远端状态证明，非本地检查的替代品 |
+
+### 范围与限制
+
+- 保留真实品牌图标、现有顶栏、完整业务入口与五套主题；不复制原型中的英文眉题、演示账号、固定题目、模拟周学习时长或固定导师回复。上述适配已在逐项对照中说明，按这一正式系统适配方案核对了实际渲染。
+- 不增加整套 shadcn/Ant Design/Mantine 或第二个动画引擎；现有 Radix 已覆盖本轮需要的抽屉、命令菜单等交互。
+- 背景可见性使用浏览器事件模拟验证；实体低端手机的耗电、GPU 开销、真实后台标签调度和虚拟键盘行为**未实测**。CPU 降速、较小视口与 DPR 测试不能替代真机；手册允许对无法实测的项目明确标注。
+- 没有调用收费真实模型；模型侧闭环使用本机 mock，检索、认证、题库判分与真实 API 逻辑照常执行。
+- 本地 `AGENTS.md` 保留且被 `.gitignore` 排除；作品文档、生成脚本与视频的原有未提交工作保持原状。

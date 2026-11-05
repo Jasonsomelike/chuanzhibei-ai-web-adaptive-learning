@@ -13,20 +13,20 @@ import type { KnowledgeGraph } from "@/lib/graph";
 import type { MasteryState } from "@/lib/mastery";
 import type { PathStep, PlanResult } from "@/lib/plan";
 
-type ConceptNode = Node<{ concept: LearningGraphNode }, "concept">;
+type ConceptNode = Node<{ concept: LearningGraphNode; added: boolean }, "concept">;
 const Concept = memo(function Concept({ data, selected }: NodeProps<ConceptNode>) {
   const item = data.concept;
-  return <div className={`knowledge-node node-${item.status} ${selected ? "node-selected" : ""}`}>
+  return <div data-new-step={data.added || undefined} className={`knowledge-node node-${item.status} ${selected ? "node-selected" : ""}`}>
     <Handle type="target" position={Position.Left} isConnectable={false} />
     <span className="block text-sm font-semibold">{item.name}</span>
-    <span className="mt-1.5 flex items-center gap-1.5 text-[11px]"><span className="status-dot" />{item.order ? `${item.order} · ` : ""}{LEARNING_STATUS_LABELS[item.status]}</span>
+    <span className="mt-1.5 flex items-center gap-1.5 text-[11px]"><span className="status-dot" />{item.order ? `${item.order} · ` : ""}{LEARNING_STATUS_LABELS[item.status]}{data.added ? " · 新增" : ""}</span>
     <Handle type="source" position={Position.Right} isConnectable={false} />
   </div>;
 });
 const nodeTypes = { concept: Concept };
 
-export default function LearningGraph({ graph, mastery, plan, steps, query, selectedId, onSelect, onLocate }: {
-  graph: KnowledgeGraph; mastery: readonly MasteryState[]; plan: PlanResult; steps: readonly PathStep[]; query: string; selectedId: string | null; onSelect: (id: string) => void; onLocate: (id: string) => void;
+export default function LearningGraph({ graph, mastery, plan, steps, query, selectedId, addedKcIds, onSelect, onLocate }: {
+  graph: KnowledgeGraph; mastery: readonly MasteryState[]; plan: PlanResult; steps: readonly PathStep[]; query: string; addedKcIds: readonly string[]; selectedId: string | null; onSelect: (id: string) => void; onLocate: (id: string) => void;
 }) {
   const [showAll, setShowAll] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -46,6 +46,7 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
     });
   }, [onSelect]);
   const id = useId();
+  const added = useMemo(() => new Set(addedKcIds), [addedKcIds]);
   const models = useMemo(() => learningGraphNodes(graph, mastery, plan, steps), [graph, mastery, plan, steps]);
   const selected = models.find(item => item.id === selectedId) ?? models.find(item => item.order === 1) ?? models[0];
   const related = useMemo(() => relatedLearningNodes(graph, steps), [graph, steps]);
@@ -54,7 +55,7 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
   const byId = useMemo(() => new Map(models.map(item => [item.id, item])), [models]);
   // Controlled nodes must retain measured dimensions so React Flow preserves handle bounds.
   // Recreating unmeasured nodes after a resize can otherwise erase every edge without an error.
-  const nodes = useMemo<ConceptNode[]>(() => visibleModels.map(item => ({ id: item.id, type: "concept", position: item.position, initialWidth: 210, initialHeight: 78, measured: dimensions[item.id], data: { concept: item }, selected: item.id === selectedNodeId, draggable: false, ariaLabel: `${item.name}，${LEARNING_STATUS_LABELS[item.status]}，${item.evidenceN ? `${item.evidenceN} 条作答证据` : "尚未测评"}` })), [visibleModels, dimensions, selectedNodeId]);
+  const nodes = useMemo<ConceptNode[]>(() => visibleModels.map(item => ({ id: item.id, type: "concept", position: item.position, initialWidth: 210, initialHeight: 78, measured: dimensions[item.id], data: { concept: item, added: added.has(item.id) }, selected: item.id === selectedNodeId, draggable: false, ariaLabel: `${item.name}，${LEARNING_STATUS_LABELS[item.status]}${added.has(item.id) ? "，新增安排" : ""}，${item.evidenceN ? `${item.evidenceN} 条作答证据` : "尚未测评"}` })), [visibleModels, dimensions, selectedNodeId, added]);
   const stepSignature = steps.map(step => step.kcId).join(",");
   useEffect(() => { if (flow) { const frame = requestAnimationFrame(() => { void flow.fitView({ padding: 0.14, maxZoom: 1, duration: prefersReducedMotion() ? 0 : 300 }); }); return () => cancelAnimationFrame(frame); } }, [flow, showAll, stepSignature]);
   const edges = useMemo(() => {
@@ -95,6 +96,10 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
         <label htmlFor={id} className="sr-only">定位知识点</label><select id={id} value={selected?.id ?? ""} onChange={event => focus(event.target.value)} className="max-w-48 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-2 py-1.5 text-xs">{models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
       </div>
     </div>
+    {steps.length ? <section className="knowledge-path-outline" aria-label="本次学习顺序">
+      <p>本次清单 · {steps.length} 步</p>
+      <ol>{steps.map((step, index) => <li key={step.kcId}><button type="button" aria-pressed={selectedNodeId === step.kcId} onClick={() => focus(step.kcId)}><span className="tabular">{String(index + 1).padStart(2, "0")}</span><span>{byId.get(step.kcId)?.name ?? step.kcId}<small>{step.estMinutes} 分钟{added.has(step.kcId) ? " · 新增安排" : ""}</small></span></button></li>)}</ol>
+    </section> : null}
     <div className="knowledge-layout">
       <div className="knowledge-canvas" role="region" aria-label="可缩放的课程先修关系图">
         <ReactFlow<ConceptNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodeClick={(_event, node) => { onSelect(node.id); if (window.matchMedia("(max-width: 1023px)").matches) setDetailsOpen(true); }} onNodesChange={onNodesChange} fitView fitViewOptions={{ padding: 0.14, maxZoom: 1 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} deleteKeyCode={null} panOnScroll={false} zoomOnScroll={false} preventScrolling={false} attributionPosition="bottom-right" ariaLabelConfig={{ "controls.zoomIn.ariaLabel": "放大图谱", "controls.zoomOut.ariaLabel": "缩小图谱", "controls.fitView.ariaLabel": "查看完整图谱", "controls.interactive.ariaLabel": "切换图谱交互" }}>

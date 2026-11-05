@@ -31,7 +31,17 @@ export async function auditContour(page: Page, check: (condition: unknown, name:
   const staticFrames = await frameCount();
   await page.waitForTimeout(300);
   check(await frameCount() === staticFrames, "减少动态效果时 Canvas 保持静态");
+  const lowPower = await page.evaluate(() => navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 2 || Boolean((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData));
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  if (lowPower) {
+    await page.waitForFunction(() => !matchMedia("(prefers-reduced-motion: reduce)").matches);
+    await page.waitForTimeout(150);
+    const idleFrames = await frameCount();
+    await page.waitForTimeout(300);
+    check(await frameCount() === idleFrames, "低算力或节省流量环境自动保持静态");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    return { environment: "Chromium low-power branch", mode: "static", fps: null, samplingMs: 300 };
+  }
   await page.waitForFunction(() => (window as unknown as Capture).__contourFrames.length > 5);
   const session = await page.context().newCDPSession(page);
   await session.send("Emulation.setCPUThrottlingRate", { rate: 6 });

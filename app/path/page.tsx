@@ -8,6 +8,7 @@ import { useStaggerIn, useStepFlash } from "@/components/motion";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
 import { LearningEvidence } from "@/components/learning-evidence";
+import { AppDialog } from "@/components/primitives/dialog";
 import { usePathFlip } from "@/components/path-motion";
 import { targetQuery } from "@/lib/target";
 import { useSubject } from "@/lib/subject";
@@ -100,6 +101,7 @@ export default function PathPage() {
     setLearner,
     synced,
   } = useLearner(targetId, target?.graph);
+  const [chapterPickerOpen, setChapterPickerOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
   useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)");
@@ -418,21 +420,33 @@ export default function PathPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
-        <div className="mb-6" data-motion="hero">
+      <main id="main" ref={mainRef} className="path-page mx-auto max-w-7xl px-5 py-8 sm:px-8">
+        <div className="workspace-heading mb-6" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">我的学习路径</h1>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
             学习路径 · {target.name} · 每次作答都会更新推荐依据。
           </p>
         </div>
 
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
-          <fieldset className="flex flex-wrap items-center gap-3"><legend className="sr-only">学习预算</legend><span className="text-sm font-medium">学习预算</span><div className="flex flex-wrap gap-1.5">{BUDGET_OPTIONS.map(minutes => <button type="button" key={minutes} aria-label={`把本周预算设为 ${minutes} 分钟`} aria-pressed={minutes === budget} onClick={() => changeBudget(minutes)} className={`tabular rounded-lg border px-3 py-2 text-xs ${budget === minutes ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]" : "border-[var(--line)] text-[var(--ink-soft)]"}`}>{minutes} 分钟</button>)}</div></fieldset>
+        {displayed[0] ? <Card className="mb-5 border-[var(--accent)] path-next-step">
+          <p className="text-sm text-[var(--accent)]">{target.name} · 下一步建议</p>
+          <h2 className="mt-2 text-xl font-semibold">{kcById.get(displayed[0].kcId)?.name}</h2>
+          <p className="mt-2 text-sm text-[var(--ink-soft)]">
+            {(progress.mastery.find((m) => m.kcId === displayed[0].kcId)?.evidenceN ?? 0) === 0 ? "尚未测评，建议先了解基础，再用练习确认掌握情况。" : displayed[0].reason}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3 text-sm">
+            <Link className="rounded-lg bg-[var(--accent)] px-4 py-2 font-medium text-[var(--on-accent)]" href={`/tutor${targetQuery(target)}&q=${encodeURIComponent(`请引导我学习${kcById.get(displayed[0].kcId)?.name}，先给一个思考问题。`)}`}>学习这一步 →</Link>
+            <Link className="rounded-lg border border-[var(--line-strong)] px-4 py-2" href={`/diagnose${targetQuery(target)}`}>用练习检验</Link>
+          </div>
+        </Card> : null}
+        <div className="path-control-bar">
+        <div className="path-budget-controls mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
+          <fieldset className="flex flex-wrap items-center gap-3"><legend className="sr-only">学习预算</legend><span className="text-sm font-medium">学习预算</span><div className="flex flex-wrap gap-1.5">{BUDGET_OPTIONS.map(minutes => <button type="button" key={minutes} aria-label={`把本次预算设为 ${minutes} 分钟`} aria-pressed={minutes === budget} onClick={() => changeBudget(minutes)} className={`tabular rounded-lg border px-3 py-2 text-xs ${budget === minutes ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]" : "border-[var(--line)] text-[var(--ink-soft)]"}`}>{minutes} 分钟</button>)}</div></fieldset>
           <p className="text-xs text-[var(--ink-faint)]">修改预算，查看这次安排的变化。</p>
         </div>
+        <div className="path-view-controls">
         <button type="button" aria-expanded={graphOpen} aria-controls="path-graph" onClick={() => setGraphOpen(value => !value)} className="mb-4 rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--accent)]">{graphOpen ? "收起先修图谱" : "展开先修图谱"}</button>
-        <details className="mb-4 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4" data-chapter-controls>
-          <summary className="cursor-pointer text-sm font-medium">教材章节 · {chapters.length ? `已选 ${chapters.length} 章` : "整科"}</summary>
+        <AppDialog open={chapterPickerOpen} onOpenChange={setChapterPickerOpen} drawer title="教材章节" description="选择本次学习范围，系统会保留所需的跨章先修知识。" trigger={<button type="button" className="path-chapter-trigger">教材章节 · {chapters.length ? `已选 ${chapters.length} 章` : "整科"}</button>}>
           <div className="mt-4">        {/* 章节范围：只收窄 targets，不裁剪图谱 */}
         {target.kind === "direction" ? (
           <Card className="mb-5" motion="chapters">
@@ -455,131 +469,20 @@ export default function PathPage() {
 
 
 </div>
-        </details>
-        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
-        <div className="my-5 grid grid-cols-3 divide-x divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--surface)] py-4 text-center">
+        </AppDialog>
+        </div>
+        </div>
+
+        <div className="path-counts my-5 grid grid-cols-3 divide-x divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--surface)] py-4 text-center">
           {[{ label: "本次安排", value: displayed.length }, { label: "预算暂缓", value: plan?.deferred.length ?? 0 }, { label: "先修阻塞", value: plan?.blocked.length ?? 0 }].map(item => <div key={item.label}><span className="tabular text-xl font-semibold text-[var(--accent)]">{item.value}</span><span className="ml-2 text-xs text-[var(--ink-soft)]">{item.label}</span></div>)}
         </div>
-        <p role="status" className="mb-5 text-xs text-[var(--ink-faint)]">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
+        <p role="status" data-path-summary className="mb-5 text-xs text-[var(--ink-faint)]">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
+        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         {budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? <details className="mb-5 border-b border-[var(--line)] pb-4">
           <summary className="cursor-pointer text-sm text-[var(--accent)]">查看预算调整的具体变化</summary>
           <ul className="mt-3 space-y-2 text-sm">{[...displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => ({ id: step.kcId, label: "新增安排" })), ...budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).map(id => ({ id, label: plan?.blocked.some(item => item.kcId === id) ? "先修阻塞" : plan?.deferred.includes(id) ? "预算暂缓" : "不在本次清单" }))].map(item => <li key={item.id}><button type="button" className="text-[var(--accent)] underline" onClick={() => { selectConcept(item.id); setGraphOpen(true); requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ block: "start" })); }}>{kcById.get(item.id)?.name ?? item.id}</button><span className="ml-3 text-xs text-[var(--ink-soft)]">{item.label}</span></li>)}</ul>
           {plan?.blocked.length ? <p className="mt-3 text-xs text-[var(--ink-faint)]">先修阻塞表示所需的前置知识未排入本次预算；选中知识点可查看具体前置条件。</p> : null}
         </details> : null}
-        {displayed[0] ? <Card className="mb-5 border-[var(--accent)] path-next-step">
-          <p className="text-sm text-[var(--accent)]">{target.name} · 下一步建议</p>
-          <h2 className="mt-2 text-xl font-semibold">{kcById.get(displayed[0].kcId)?.name}</h2>
-          <p className="mt-2 text-sm text-[var(--ink-soft)]">
-            {(progress.mastery.find((m) => m.kcId === displayed[0].kcId)?.evidenceN ?? 0) === 0 ? "尚未测评，建议先了解基础，再用练习确认掌握情况。" : displayed[0].reason}
-          </p>
-          <div className="mt-4 flex flex-wrap gap-3 text-sm">
-            <Link className="rounded-lg bg-[var(--accent)] px-4 py-2 font-medium text-[var(--on-accent)]" href={`/tutor${targetQuery(target)}&q=${encodeURIComponent(`请引导我学习${kcById.get(displayed[0].kcId)?.name}，先给一个思考问题。`)}`}>学习这一步 →</Link>
-            <Link className="rounded-lg border border-[var(--line-strong)] px-4 py-2" href={`/diagnose${targetQuery(target)}`}>用练习检验</Link>
-          </div>
-        </Card> : null}
-        <LearningEvidence graph={graph} progress={progress} budgetMinutes={budget} />
-        <details className="mb-5 rounded-xl border border-[var(--line)] p-4">
-        <summary className="cursor-pointer text-sm font-medium">调整学习计划 · {target.name} · {budget} 分钟</summary>
-        <div className="mt-4">
-        {/* 目标切换 */}
-        <Card className="mb-5" motion="target">
-          <p className="mb-2 text-sm font-medium">当前学习目标</p>
-          <TargetPicker current={targetId} onChange={setTargetId} />
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
-          {targetError ? (
-            <p className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]">
-              {targetError}
-            </p>
-          ) : null}
-        </Card>
-
-        {/* 反事实对比 */}
-        <Card className="mb-5" motion="counterfactual">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium">比较不同学习时间</p>
-              <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
-                选一个对照预算，标出哪些步骤会被推迟或因先修阻塞
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => setCompareBudget(null)}
-                aria-pressed={compareBudget === null}
-                className={`rounded-lg px-3 py-1.5 text-sm ${
-                  compareBudget === null
-                    ? "bg-[var(--ink)] text-[var(--canvas)]"
-                    : "border border-[var(--line-strong)] text-[var(--ink-soft)]"
-                }`}
-              >
-                关闭
-              </button>
-              {BUDGET_OPTIONS.filter((b) => b !== budget).map((b) => (
-                <button
-                  key={b}
-                  type="button"
-                  onClick={() => setCompareBudget(b)}
-                  aria-pressed={compareBudget === b}
-                  aria-label={`对照预算 ${b} 分钟`}
-                  className={`tabular rounded-lg px-3 py-1.5 text-sm ${
-                    compareBudget === b
-                      ? "bg-[var(--ink)] text-[var(--canvas)]"
-                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
-                  }`}
-                >
-                  {b} 分
-                </button>
-              ))}
-            </div>
-          </div>
-          {counterfactual ? (
-            <div className="mt-3 border-t border-[var(--line)] pt-3">
-              <p className="text-sm text-[var(--ink-soft)]">
-                改成{" "}
-                <span className="tabular font-medium text-[var(--ink)]">{compareBudget}</span>{" "}
-                分后，可排{" "}
-                <span className="tabular font-medium text-[var(--ink)]">
-                  {counterfactual.steps.length}
-                </span>{" "}
-                步、共{" "}
-                <span className="tabular font-medium text-[var(--ink)]">
-                  {counterfactual.totalMinutes}
-                </span>{" "}
-                分钟；因时间不足推迟{" "}
-                <span className="tabular font-medium text-[var(--ink)]">
-                  {counterfactualSummary.deferred.length}
-                </span>{" "}
-                个知识点，因先修阻塞{" "}
-                <span className="tabular font-medium text-[var(--ink)]">
-                  {counterfactualSummary.blocked.length}
-                </span>{" "}
-                个知识点。
-              </p>
-              {counterfactualSummary.blockedNotInPath.length > 0 ? (
-                <div className="mt-2 text-xs text-[var(--ink-faint)]">
-                  <p>其中不在当前路径、因先修阻塞的点：</p>
-                  <ul className="mt-1 space-y-0.5">
-                    {counterfactualSummary.blockedNotInPath.map((kcId) => {
-                      const name = kcById.get(kcId)?.name ?? kcId;
-                      const by = counterfactualSummary
-                        .blockedByOf(kcId)
-                        .map((id) => kcById.get(id)?.name ?? id);
-                      return (
-                        <li key={kcId}>
-                          · {name} ← {by.join("、")}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </Card>
-
-        </div>
-        </details>
         {/* 路径 */}
         <section id="learning-steps" className="mb-5 scroll-mt-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2" data-motion="steps-heading">
@@ -748,6 +651,110 @@ export default function PathPage() {
             </ol>
           )}
         </section>
+
+        <LearningEvidence graph={graph} progress={progress} budgetMinutes={budget} />
+        <details className="mb-5 rounded-xl border border-[var(--line)] p-4">
+        <summary className="cursor-pointer text-sm font-medium">调整学习计划 · {target.name} · {budget} 分钟</summary>
+        <div className="mt-4">
+        {/* 目标切换 */}
+        <Card className="mb-5" motion="target">
+          <p className="mb-2 text-sm font-medium">当前学习目标</p>
+          <TargetPicker current={targetId} onChange={setTargetId} />
+          <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
+          {targetError ? (
+            <p className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]">
+              {targetError}
+            </p>
+          ) : null}
+        </Card>
+
+        {/* 反事实对比 */}
+        <Card className="mb-5" motion="counterfactual">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">比较不同学习时间</p>
+              <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
+                选一个对照预算，标出哪些步骤会被推迟或因先修阻塞
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCompareBudget(null)}
+                aria-pressed={compareBudget === null}
+                className={`rounded-lg px-3 py-1.5 text-sm ${
+                  compareBudget === null
+                    ? "bg-[var(--ink)] text-[var(--canvas)]"
+                    : "border border-[var(--line-strong)] text-[var(--ink-soft)]"
+                }`}
+              >
+                关闭
+              </button>
+              {BUDGET_OPTIONS.filter((b) => b !== budget).map((b) => (
+                <button
+                  key={b}
+                  type="button"
+                  onClick={() => setCompareBudget(b)}
+                  aria-pressed={compareBudget === b}
+                  aria-label={`对照预算 ${b} 分钟`}
+                  className={`tabular rounded-lg px-3 py-1.5 text-sm ${
+                    compareBudget === b
+                      ? "bg-[var(--ink)] text-[var(--canvas)]"
+                      : "border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                  }`}
+                >
+                  {b} 分
+                </button>
+              ))}
+            </div>
+          </div>
+          {counterfactual ? (
+            <div className="mt-3 border-t border-[var(--line)] pt-3">
+              <p className="text-sm text-[var(--ink-soft)]">
+                改成{" "}
+                <span className="tabular font-medium text-[var(--ink)]">{compareBudget}</span>{" "}
+                分后，可排{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactual.steps.length}
+                </span>{" "}
+                步、共{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactual.totalMinutes}
+                </span>{" "}
+                分钟；因时间不足推迟{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactualSummary.deferred.length}
+                </span>{" "}
+                个知识点，因先修阻塞{" "}
+                <span className="tabular font-medium text-[var(--ink)]">
+                  {counterfactualSummary.blocked.length}
+                </span>{" "}
+                个知识点。
+              </p>
+              {counterfactualSummary.blockedNotInPath.length > 0 ? (
+                <div className="mt-2 text-xs text-[var(--ink-faint)]">
+                  <p>其中不在当前路径、因先修阻塞的点：</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {counterfactualSummary.blockedNotInPath.map((kcId) => {
+                      const name = kcById.get(kcId)?.name ?? kcId;
+                      const by = counterfactualSummary
+                        .blockedByOf(kcId)
+                        .map((id) => kcById.get(id)?.name ?? id);
+                      return (
+                        <li key={kcId}>
+                          · {name} ← {by.join("、")}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </Card>
+
+        </div>
+        </details>
 
         {/* 可复现性面板 */}
         <details className="rounded-xl border border-[var(--line)] p-4" data-technical-details>

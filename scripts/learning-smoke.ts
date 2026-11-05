@@ -42,7 +42,7 @@ try {
   await page.getByRole("heading", { name: "我的学习路径", exact: true }).waitFor();
   check((await page.locator("main").innerText()).includes("下一步建议"), "路径首屏突出下一步");
   await page.getByText("调整学习计划 ·", { exact: false }).click();
-  check(await page.getByRole("button", { name: "把本周预算设为 60 分钟" }).getAttribute("aria-pressed") === "true", "首页预算在路径页实际生效");
+  check(await page.getByRole("button", { name: "把本次预算设为 60 分钟" }).getAttribute("aria-pressed") === "true", "首页预算在路径页实际生效");
   await page.getByRole("link", { name: "学习这一步 →" }).click();
   await page.locator("#q").waitFor();
   check((await page.locator("#q").inputValue()).includes("请引导我学习"), "学习任务传入导师输入框且不自动发送");
@@ -125,6 +125,12 @@ try {
   check(await page.locator("#q").evaluate(el => el.getBoundingClientRect().bottom <= document.querySelector(".mobile-learning-nav")!.getBoundingClientRect().top), "手机输入框不被底部导航遮挡");
   await page.getByRole("button", { name: "教材与学习设置", exact: true }).click(); await page.keyboard.press("Escape");
   check(await page.getByRole("button", { name: "教材与学习设置", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
+  await visit("/path?subject=data-structures");
+  await page.getByRole("button", { name: "教材章节 · 整科", exact: true }).click();
+  await page.getByRole("dialog", { name: "教材章节", exact: true }).waitFor();
+  check(await page.getByRole("dialog").getByRole("button", { name: "全选", exact: true }).isVisible(), "手机章节选择在可滚动抽屉中完整可用");
+  await page.keyboard.press("Escape");
+  check(await page.getByRole("button", { name: "教材章节 · 整科", exact: true }).evaluate(el => el === document.activeElement), "章节抽屉 Escape 关闭后恢复入口焦点");
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await visit("/path?subject=data-structures&budget=60");
@@ -136,6 +142,7 @@ try {
   });
   check(await page.locator(".react-flow__node").count() > 0 && await page.locator(".react-flow__edge-path").count() > 0, "图谱先修连线已绘制，初始视野无基础节点裁切");
   check(!await page.locator("[data-technical-details]").getAttribute("open"), "技术指纹默认收起");
+  check(await page.locator(".knowledge-path-outline button").count() === await page.locator("[data-flip-id]").count(), "图谱同屏清单展示实际步骤数");
   const firstStep = page.locator("[data-flip-id]").first();
   const firstKc = await firstStep.getAttribute("data-motion-step");
   await firstStep.getByRole("button", { name: /^在图谱中定位/ }).click();
@@ -152,8 +159,10 @@ try {
   await page.locator('input[name="answer"]').first().waitFor();
   check((await page.locator(".question-paper").innerText()).includes("顺序表"), "图谱进入选中知识点的实际练习");
   await visit("/path?subject=data-structures&budget=60");
-  await page.getByRole("button", { name: "把本周预算设为 90 分钟", exact: true }).click();
-  check((await page.getByRole("status").innerText()).includes("相比 60 分钟预算"), "预算变化报告实际新增与移出数量");
+  await page.getByRole("button", { name: "把本次预算设为 90 分钟", exact: true }).click();
+  check((await page.locator("[data-path-summary]").innerText()).includes("相比 60 分钟预算"), "预算变化报告实际新增与移出数量");
+  await page.waitForFunction(() => document.querySelectorAll(".knowledge-node[data-new-step=true]").length > 0);
+  check((await page.locator(".knowledge-path-outline").innerText()).includes("新增安排"), "增加预算同时标注新增节点与清单步骤");
   const identity = await page.locator("[data-flip-id]").first().elementHandle();
   const originalId = await identity!.getAttribute("data-flip-id");
   await page.getByRole("button", { name: /^把「.*」下移一位$/ }).first().click();

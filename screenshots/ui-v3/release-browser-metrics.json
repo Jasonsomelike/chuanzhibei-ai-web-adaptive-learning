@@ -1,0 +1,77 @@
+{
+  "navigation": [
+    {
+      "view": "home",
+      "width": 1440,
+      "ttfbMs": 7,
+      "domReadyMs": 21,
+      "fcpMs": 160,
+      "scriptTransferBytes": 606681
+    },
+    {
+      "view": "diagnose",
+      "width": 1440,
+      "ttfbMs": 3,
+      "domReadyMs": 15,
+      "fcpMs": 48,
+      "scriptTransferBytes": 595243
+    },
+    {
+      "view": "path",
+      "width": 1440,
+      "ttfbMs": 3,
+      "domReadyMs": 29,
+      "fcpMs": 32,
+      "scriptTransferBytes": 657862
+    },
+    {
+      "view": "tutor",
+      "width": 1440,
+      "ttfbMs": 3,
+      "domReadyMs": 30,
+      "fcpMs": 36,
+      "scriptTransferBytes": 601215
+    },
+    {
+      "view": "home",
+      "width": 390,
+      "ttfbMs": 4,
+      "domReadyMs": 16,
+      "fcpMs": 84,
+      "scriptTransferBytes": 595243
+    },
+    {
+      "view": "diagnose",
+      "width": 390,
+      "ttfbMs": 3,
+      "domReadyMs": 30,
+      "fcpMs": 32,
+      "scriptTransferBytes": 595243
+    },
+    {
+      "view": "path",
+      "width": 390,
+      "ttfbMs": 3,
+      "domReadyMs": 27,
+      "fcpMs": 36,
+      "scriptTransferBytes": 595243
+    },
+    {
+      "view": "tutor",
+      "width": 390,
+      "ttfbMs": 3,
+      "domReadyMs": 29,
+      "fcpMs": 36,
+      "scriptTransferBytes": 462028
+    }
+  ],
+  "canvas": {
+    "dpr3SamplingRatio": 2,
+    "no2dContextStillAllowsDiagnosis": true,
+    "twoCoreStaticFallback": {
+      "paintCountStart": 2,
+      "paintCountEnd": 2
+    },
+    "visibilityEventSimulationPausesAndResumes": true
+  }
+}

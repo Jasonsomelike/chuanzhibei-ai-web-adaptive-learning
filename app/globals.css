@@ -646,3 +646,81 @@ body {
   .diagnostic-page .workspace-heading > div { min-width: 0; flex: 1; }
   .diagnostic-page .workspace-heading > button { flex-shrink: 0; padding-inline: 10px; font-size: 12px; }
 }
+
+/* V3 path workspace: one visible task, compact controls, graph + actual sequence. */
+.path-next-step { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; padding: 20px 24px; border-color: var(--line); background: var(--surface); box-shadow: var(--shadow-panel); }
+.path-next-step > p:first-child { grid-column: 1; font-size: 12px; }
+.path-next-step > h2 { grid-column: 1; margin-top: 5px; font-size: 22px; font-weight: 650; }
+.path-next-step > p:nth-of-type(2) { grid-column: 1; margin-top: 7px; font-size: 13px; }
+.path-next-step > div { grid-column: 2; grid-row: 1 / span 3; align-self: center; margin: 0; }
+.path-next-step a { display: inline-flex; align-items: center; min-height: 44px; border-radius: 9px; }
+.path-control-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.path-budget-controls { flex: 1; margin: 0; padding: 0; border: 0; background: transparent; }
+.path-budget-controls > p { display: none; }
+.path-budget-controls button { min-height: 40px; }
+.path-view-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.path-view-controls > button { margin: 0; min-height: 44px; font-size: 12px; }
+.path-counts { margin-block: 12px 8px; padding-block: 10px; border: 0; background: transparent; }
+.path-counts span:first-child { font-size: 20px; }
+.path-page [data-path-summary] { margin-bottom: 16px; }
+.knowledge-workspace { border-radius: 16px; box-shadow: var(--shadow-panel); }
+.knowledge-path-outline { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.knowledge-path-outline > p { margin-bottom: 8px; color: var(--ink-faint); font-size: 12px; }
+.knowledge-path-outline ol { display: flex; gap: 9px; overflow-x: auto; padding-bottom: 5px; scrollbar-width: thin; }
+.knowledge-path-outline li { flex-shrink: 0; }
+.knowledge-path-outline button { display: flex; align-items: center; gap: 9px; min-height: 52px; max-width: 210px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; text-align: left; font-size: 13px; }
+.knowledge-path-outline button > span:first-child { color: var(--ink-faint); font-size: 12px; }
+.knowledge-path-outline small { display: block; margin-top: 2px; color: var(--ink-faint); font-size: 12px; }
+.knowledge-path-outline button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.knowledge-canvas, .knowledge-desktop-inspector { height: 380px; }
+.knowledge-node { background: var(--surface); color: var(--ink); border-color: color-mix(in srgb, var(--node-color) 36%, var(--line)); box-shadow: 0 3px 12px color-mix(in srgb, var(--ink) 3%, transparent); }
+.knowledge-node > span:nth-of-type(2) { color: var(--node-color); font-size: 12px; }
+.knowledge-node.node-selected { border-color: var(--node-color); box-shadow: 0 0 0 2px color-mix(in srgb, var(--node-color) 22%, transparent); }
+.knowledge-node[data-new-step="true"] { outline: 2px solid var(--accent); outline-offset: 3px; }
+.knowledge-inspector-main { padding: 20px 22px; }
+.knowledge-inspector-main dl { margin-top: 16px; }
+.knowledge-inspector-main dl > div { padding-top: 12px; }
+.knowledge-actions a, .knowledge-actions button { min-height: 40px; display: inline-flex; align-items: center; }
+@media (max-width: 1023px) {
+  .knowledge-canvas { height: 350px; }
+}
+@media (max-width: 767px) {
+  .path-next-step { display: block; padding: 20px; }
+  .path-next-step > div { margin-top: 18px; }
+  .path-next-step a { flex: 1; justify-content: center; padding-inline: 10px; font-size: 13px; }
+  .path-control-bar { padding: 16px; gap: 14px; }
+  .path-budget-controls { flex-basis: 100%; }
+  .path-budget-controls button { min-height: 44px; }
+  .path-view-controls { justify-content: space-between; width: 100%; gap: 8px; }
+  .path-counts { margin-block: 8px; }
+  .path-counts span:last-child { display: block; margin-left: 0; margin-top: 3px; }
+  .knowledge-path-outline { padding-inline: 12px; }
+  .knowledge-actions a, .knowledge-actions button { min-height: 44px; }
+  .knowledge-path-outline button { min-height: 54px; }
+}
+
+@media (min-width: 1024px) {
+  .path-page { padding-top: 24px; }
+  .path-page > .workspace-heading { margin-bottom: 18px; }
+  .path-next-step { padding: 16px 22px; margin-bottom: 16px; }
+  .path-next-step > h2 { font-size: 21px; line-height: 1.4; margin-top: 3px; }
+  .path-next-step > p:nth-of-type(2) { margin-top: 5px; }
+  .path-counts { padding-block: 4px; margin-block: 6px; }
+  .path-counts span:first-child { font-size: 18px; }
+  .path-page [data-path-summary] { margin-bottom: 12px; }
+  .knowledge-path-outline { display: flex; align-items: center; gap: 14px; }
+  .knowledge-path-outline > p { margin: 0; flex-shrink: 0; }
+  .knowledge-path-outline ol { min-width: 0; flex: 1; padding-bottom: 0; }
+  .knowledge-canvas, .knowledge-desktop-inspector { height: 340px; }
+}
+
+.path-chapter-trigger { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 8px; font-size: 12px; color: var(--ink-soft); }
+@media (max-width: 767px) {
+  .path-page #learning-steps button { min-width: 44px; min-height: 44px; }
+  .app-dialog button, .app-dialog select { min-height: 44px; }
+}
+@media (max-width: 767px) {
+  .app-dialog button { min-width: 44px; }
+  .knowledge-canvas .react-flow__controls-button { width: 44px; height: 44px; }
+  .knowledge-workspace select, .knowledge-workspace label:has(input[type="checkbox"]) { min-height: 44px; }
+}
