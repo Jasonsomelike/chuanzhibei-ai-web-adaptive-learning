@@ -65,6 +65,8 @@ vi.mock("@/lib/ssrfGuard", async (importOriginal) => {
 });
 
 const { POST } = await import("../../app/api/agent/route");
+const { POST: answer } = await import("../../app/api/agent/answer/route");
+const { GET: session } = await import("../../app/api/agent/session/route");
 const { __resetMemoryDbForTests, __setDbBackendForTests, getDb } = await import("@/lib/db");
 const { saveUserSecret } = await import("@/lib/userSecrets");
 const { saveMcpServer } = await import("@/lib/mcpStore");
@@ -221,7 +223,7 @@ describe("/api/agent：守卫", () => {
 });
 
 describe("/api/agent：SSE 主路径", () => {
-  it("工具轮 → 工具结果 → 文本 → done，事件只有五类之一", async () => {
+  it("教学状态 → 工具循环 → 规则核验 → 检查点 → done", async () => {
     await saveLlm();
     upstream.replies = [
       { payload: openAiToolCall("list_subjects", {}) },
@@ -233,14 +235,15 @@ describe("/api/agent：SSE 主路径", () => {
     expect(res.headers.get("content-type")).toContain("text/event-stream");
 
     const events = parseEvents(await res.text());
-    expect(events.map((event) => event.type)).toEqual(["tool_call", "tool_result", "text", "done"]);
-    expect(events[0]).toMatchObject({ type: "tool_call", name: "list_subjects", serverId: null });
+    expect(events.filter(e => e.type !== "workflow").map((event) => event.type)).toEqual(["tool_call", "tool_result", "text", "done"]);
+    expect(events.find(e => e.type === "tool_call")).toMatchObject({ type: "tool_call", name: "list_subjects", serverId: null });
+    expect(doneOf(events).workflow).toMatchObject({ version: "learning-workflow-v1", intent: "explain", status: "complete", persisted: true });
     expect(doneOf(events)).toMatchObject({ stopReason: "stop", steps: 2, toolCalls: 1 });
 
     // 第一轮：工具集是 5 个本地只读工具，system 里带学科与预算。
     const first = upstream.requests[0];
     const tools = first.body.tools as { function: { name: string } }[];
-    expect(tools.map((tool) => tool.function.name)).toEqual([...READ_ONLY_TOOL_NAMES]);
+    expect(tools.map((tool) => tool.function.name)).toEqual(READ_ONLY_TOOL_NAMES.filter(n => n !== "plan_path"));
     const messages = first.body.messages as { role: string; content: unknown }[];
     expect(messages[0].role).toBe("system");
     expect(String(messages[0].content)).toContain("os");
@@ -332,7 +335,7 @@ describe("/api/agent：降级路径", () => {
     expect(doneOf(events).stopReason).toBe("stop");
 
     const tools = upstream.requests[0].body.tools as { function: { name: string } }[];
-    expect(tools.map((tool) => tool.function.name)).toEqual([...READ_ONLY_TOOL_NAMES]);
+    expect(tools.map((tool) => tool.function.name)).toEqual(READ_ONLY_TOOL_NAMES.filter(n => n !== "plan_path"));
   });
 
   it("上游把密钥回显进错误体时，错误消息已脱敏", async () => {
@@ -344,5 +347,35 @@ describe("/api/agent：降级路径", () => {
     expect(text).not.toContain(API_KEY);
     const events = parseEvents(text);
     expect(doneOf(events).stopReason).toBe("error");
+  });
+});
+
+describe("teaching workflow HTTP contracts", () => {
+  it("persists history server-side and resets explicitly without losing account learning evidence", async () => {
+    await saveLlm();
+    upstream.replies = [{ payload: openAiText("第一轮的引导") }, { payload: openAiText("第二轮") }, { payload: openAiText("新任务") }];
+    await (await postAgent({ question: "讲解线性表", helpLevel: "explain" })).text();
+    const second = parseEvents(await (await postAgent({ question: "继续给我提示" })).text());
+    expect(doneOf(second).workflow).toMatchObject({ resumedTurns: 1, intent: "hint", persisted: true });
+    expect(JSON.stringify(upstream.requests[1].body.messages)).toContain("第一轮的引导");
+    await (await postAgent({ question: "新任务", resetSession: true })).text();
+    expect(JSON.stringify(upstream.requests[2].body.messages)).not.toContain("第一轮的引导");
+  });
+
+  it("practice -> answer -> fresh path -> recover completed task, no model needed for grading", async () => {
+    await saveLlm();
+    const events = parseEvents(await (await postAgent({ question: "出一道题", intent: "practice", budgetMinutes: 30 })).text());
+    const workflow = doneOf(events).workflow as { runId: string; targetId: string; exercise: { questionId: string } };
+    expect(upstream.requests).toHaveLength(0);
+    const makeAnswer = (extra = {}) => new Request("http://localhost/api/agent/answer", { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" }, body: JSON.stringify({ targetId: workflow.targetId, runId: workflow.runId, questionId: workflow.exercise.questionId, selectedIndex: 0, ...extra }) });
+    expect((await answer(makeAnswer({ correct: true }))).status).toBe(400);
+    const response = await answer(makeAnswer());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ evidenceN: 1, workflow: { status: "complete", plan: { totalMinutes: expect.any(Number) } } });
+    const recovered = await session(new Request(`http://localhost/api/agent/session?targetId=${workflow.targetId}`));
+    expect(await recovered.json()).toMatchObject({ workflow: { runId: workflow.runId, status: "complete" }, assessment: { evidenceN: 1 } });
+    authState.user = null;
+    expect((await answer(makeAnswer())).status).toBe(401);
+    expect((await session(new Request(`http://localhost/api/agent/session?targetId=${workflow.targetId}`))).status).toBe(401);
   });
 });

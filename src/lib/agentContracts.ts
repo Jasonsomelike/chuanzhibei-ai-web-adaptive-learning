@@ -8,7 +8,7 @@
  * - **上限从宽、可覆盖**：默认值不是产品限制，而是「跑飞保护」。MAX_STEPS=8、
  *   每步 5 个并行工具、单工具 20s、单结果 4000 字符、全会话 180s 全部可以由
  *   ALP_AGENT_* 环境变量调整；代码里不出现「4 步」这类写死的产品口径。
- * - **事件只有五类**：text / tool_call / tool_result / notice / done。done 一定发，
+ * - **事件共六类**：workflow / text / tool_call / tool_result / notice / done。done 一定发，
  *   且只发一次——前端据此结束 loading，任何一条路径漏掉 done 都会让界面永远转圈。
  */
 
@@ -16,6 +16,7 @@ import { z } from "zod";
 
 import { SUBJECTS } from "@/data/subjects";
 import type { UploadHit } from "@/lib/knowledge";
+import { teachingIntent, type WorkflowSnapshot } from "@/lib/learningWorkflowContracts";
 
 // ── 请求契约 ──────────────────────────────────────────────────────
 
@@ -37,7 +38,7 @@ const DATA_IMAGE_URL = /^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/]+
 const SUBJECT_IDS = SUBJECTS.map((s) => s.id) as [string, ...string[]];
 
 /**
- * 客户端只发这四项。
+ * 客户端发送教学问题、课程、偏好与任务选项，不提供历史或模型配置。
  *
  * 刻意没有 baseUrl / apiKey / model / mode：模型配置一律来自账号保存的 llm 配置，
  * 「local 模式」由服务端根据配置是否存在判定，客户端不能自报模式绕过。
@@ -55,6 +56,9 @@ export const agentRequest = z.strictObject({
   materialSourceIds: z.array(z.string().min(1).max(64)).max(20).optional(),
   /** 用户本次可投入的学习时间，用于 plan_path 的预算；不是服务端的运行时限。 */
   budgetMinutes: z.number().int().min(5).max(480).optional(),
+  intent: teachingIntent.optional(),
+  /** Start a new teaching task without carrying previous conversation text. */
+  resetSession: z.boolean().optional(),
 }).refine((body) => !(body.subject && body.directionId), "subject 与 directionId 不能同时指定");
 
 export type AgentRequest = z.infer<typeof agentRequest>;
@@ -222,9 +226,11 @@ export interface AgentDoneEvent {
   readonly uploads?: readonly UploadHit[];
   readonly materialContext?: string;
   readonly materialSources?: readonly string[];
+  readonly workflow?: WorkflowSnapshot;
 }
 
 export type AgentEvent =
+  | { readonly type: "workflow"; readonly workflow: WorkflowSnapshot }
   | AgentTextEvent
   | AgentToolCallEvent
   | AgentToolResultEvent

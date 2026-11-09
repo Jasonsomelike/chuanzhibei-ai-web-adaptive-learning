@@ -39,6 +39,8 @@ import {
 } from "@/lib/knowledge";
 import { useKnowledgeBase } from "@/lib/kbStore";
 import { useAuth } from "@/lib/useAuth";
+import { TeachingTaskCard } from "@/components/teaching-task-card";
+import { assessmentResult, workflowSnapshot, INTENT_LABELS, type AssessmentResult, type TeachingIntent, type WorkflowSnapshot } from "@/lib/learningWorkflowContracts";
 import {
   DEFAULT_SEARCH_CONFIG,
   loadSearchConfig,
@@ -160,6 +162,7 @@ interface AgentDoneSummary {
   readonly uploads?: readonly UploadHit[];
   readonly materialContext?: string;
   readonly materialSources?: readonly string[];
+  readonly workflow?: WorkflowSnapshot;
 }
 
 /** 一次上传资料检索的结果与降级原因；界面直接展示。 */
@@ -212,6 +215,7 @@ interface Message {
   agentTools: AgentToolTrace[];
   agentNotices: AgentNotice[];
   agentDone: AgentDoneSummary | null;
+  workflow: WorkflowSnapshot | null;
 }
 
 /**
@@ -256,6 +260,7 @@ function emptyMessage(id: string, role: Message["role"]): Message {
     agentTools: [],
     agentNotices: [],
     agentDone: null,
+    workflow: null,
   };
 }
 
@@ -433,6 +438,7 @@ function AnswerBody({ text, streaming, onCitation }: { readonly text: string; re
 }
 
 type AgentStreamEvent =
+  | { readonly type: "workflow"; readonly workflow: WorkflowSnapshot }
   | { readonly type: "text"; readonly text: string }
   | {
       readonly type: "tool_call";
@@ -460,6 +466,7 @@ type AgentStreamEvent =
       readonly uploads?: readonly UploadHit[];
       readonly materialContext?: string;
       readonly materialSources?: readonly string[];
+      readonly workflow?: WorkflowSnapshot;
     };
 
 interface AgentStreamOutcome {
@@ -494,6 +501,11 @@ function parseAgentEvent(raw: unknown): AgentStreamEvent | null {
   const record = asRecord(raw);
   if (record === null) return null;
   const type = record.type;
+
+  if (type === "workflow") {
+    const parsed = workflowSnapshot.safeParse(record.workflow);
+    return parsed.success ? { type, workflow: parsed.data } : null;
+  }
 
   if (type === "text") {
     return typeof record.text === "string" ? { type, text: record.text } : null;
@@ -539,6 +551,7 @@ function parseAgentEvent(raw: unknown): AgentStreamEvent | null {
       steps: numberOr(record.steps, 0),
       toolCalls: numberOr(record.toolCalls, 0),
       elapsedMs: numberOr(record.elapsedMs, 0),
+      workflow: workflowSnapshot.safeParse(record.workflow).success ? workflowSnapshot.parse(record.workflow) : undefined,
       materialContext: typeof record.materialContext === "string" ? record.materialContext : "",
       materialSources: Array.isArray(record.materialSources) ? record.materialSources.filter((source): source is string => typeof source === "string").slice(0, 100) : [],
       uploads: Array.isArray(record.uploads) ? record.uploads.slice(0, 3).filter((hit): hit is UploadHit => {
@@ -647,7 +660,7 @@ function similarHitsOf(payload: unknown): SimilarHit[] {
 export default function TutorPage() {
   const { target, targetId, setTargetId, ready, loadingTarget } = useSubject();
   const { user } = useAuth();
-  const { learner, ready: learnerReady } = useLearner(targetId, target?.graph);
+  const { learner, ready: learnerReady, refreshProgress } = useLearner(targetId, target?.graph);
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -662,7 +675,30 @@ export default function TutorPage() {
   const [webOn, setWebOn] = useState(false);
   const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
   /** 智能体开关：只在服务端模式可用；local / 未登录时禁用并给出原因。 */
-  const [agentOn, setAgentOn] = useState(false);
+  const [agentOn, setAgentOn] = useState(true);
+  const [teachingMode, setTeachingMode] = useState<TeachingIntent | "auto">("auto");
+  const [teachingBudget, setTeachingBudget] = useState<number | null>(null);
+  const [resetTeachingSession, setResetTeachingSession] = useState(false);
+  const [restoredTask, setRestoredTask] = useState<{ owner: string; targetId: string; workflow: WorkflowSnapshot; assessment: AssessmentResult | null } | null>(null);
+  const ownerId = user?.id ?? null;
+  useEffect(() => {
+    if (!ownerId || !agentOn) return;
+    const controller = new AbortController();
+    void fetch(`/api/agent/session?targetId=${encodeURIComponent(targetId)}`, { cache: "no-store", signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) return;
+        const raw = await response.json() as { workflow?: unknown; assessment?: unknown };
+        const parsed = workflowSnapshot.safeParse(raw.workflow);
+        if (!parsed.success || controller.signal.aborted) return;
+        const grade = assessmentResult.safeParse(raw.assessment);
+        setRestoredTask({ owner: ownerId, targetId, workflow: parsed.data, assessment: grade.success ? grade.data : null });
+      }).catch(() => undefined);
+    return () => controller.abort();
+  }, [ownerId, targetId, agentOn]);
+  const prepareFollowup = (intent: TeachingIntent, question: string) => {
+    setTeachingMode(intent); setInput(question);
+    document.getElementById("q")?.focus();
+  };
   const [images, setImages] = useState<AttachedImage[]>([]);
   /** 图片发送失败后的显式恢复入口；question 是用户原本输入的文字（可能为空）。 */
   const [imageRetry, setImageRetry] = useState<{ question: string; message: string } | null>(null);
@@ -1033,7 +1069,7 @@ export default function TutorPage() {
   /**
    * 跑一次 /api/agent 并实时把事件写进消息。
    *
-   * 事件只有五类；这里只认 text / tool_call / tool_result / notice / done。
+   * 六类事件，包含教学状态 workflow；未收到 done 按失败处理。
    * 没收到 done 或 done=error 都算失败，由调用方退回普通流式问答；
    * done=budget / max_steps / loop_detected 时正文照常保留（服务端已收口）。
    */
@@ -1056,6 +1092,10 @@ export default function TutorPage() {
           ...(target?.kind === "direction" ? { directionId: targetId } : {}),
           tone: loadTutorTone(),
           helpLevel,
+          ...(teachingMode === "auto" ? {} : { intent: teachingMode }),
+          // In auto mode, allow an explicit time in the question to drive the Supervisor.
+          ...(teachingBudget === null ? {} : { budgetMinutes: teachingBudget }),
+          resetSession: resetTeachingSession,
           materialSourceIds: materialSelection.sourceIds.slice(0, 20),
         }),
         signal,
@@ -1099,6 +1139,10 @@ export default function TutorPage() {
 
     const handle = (event: AgentStreamEvent): void => {
       switch (event.type) {
+        case "workflow": {
+          patchMessage(assistantId, () => ({ workflow: event.workflow }));
+          return;
+        }
         case "text": {
           if (event.text === "") return;
           text += event.text;
@@ -1174,10 +1218,12 @@ export default function TutorPage() {
             uploads: event.uploads,
             materialContext: event.materialContext,
             materialSources: event.materialSources,
+            workflow: event.workflow,
           };
           const summary = doneSummary;
           patchMessage(assistantId, (message) => ({
             agentDone: summary,
+            workflow: event.workflow ?? message.workflow,
             // 已收口仍未返回结果的工具不会有后续 tool_result：标成失败，不让它一直停在「执行中」
             agentTools: message.agentTools.map((trace) =>
               trace.ok === null
@@ -1429,10 +1475,13 @@ export default function TutorPage() {
       }
 
       if (outcome.ok) {
+        setResetTeachingSession(false);
         const uploads = [...(outcome.done?.uploads ?? [])];
         const serverMaterial = outcome.done?.materialContext ?? "";
         const agentPlan = buildAnswerPlan({ materialHits: uploads.length + (serverMaterial.trim() ? 1 : 0), webHits: 0, generalAllowed: true });
-        const reply = applyVisionDeclaration(outcome.text, agentPlan);
+        const workflowIntent = outcome.done?.workflow?.intent;
+        const reply = workflowIntent === "practice" || workflowIntent === "review_path"
+          ? outcome.text : applyVisionDeclaration(outcome.text, agentPlan);
         const answerPart = splitVisionReply(reply).answer;
         const citationDocs = target.graph.concepts.map((concept) => ({ kcId: concept.id, title: concept.name, snippet: concept.summary, score: 0 }));
         const citations = extractCitedKcIds(answerPart, citationDocs);
@@ -1516,6 +1565,7 @@ export default function TutorPage() {
           { level: "warn", message: `智能体调用失败（${reason}），已退回普通流式问答。` },
         ],
         agentDone: null,
+        workflow: null,
       }));
     } else if (useAgent && agentProblem !== null) {
       patchMessage(assistantId, (message) => ({
@@ -1924,6 +1974,7 @@ export default function TutorPage() {
   const searchProvider = resolveSearchProvider(searchConfig, searchRuntime);
   /** 智能体开关为什么不能开；与 send 里的判断同源，避免两处漂移。 */
   const agentBlocked = agentDisabledReason(user !== null, activeProvider);
+  const resumableTask = agentOn && restoredTask?.owner === ownerId && restoredTask.targetId === targetId && !messages.some(m => m.workflow) ? restoredTask : null;
 
   /** 语音按钮：开 / 停都只操作识别器，不自动发送。 */
   const toggleSpeech = async (): Promise<void> => {
@@ -2117,7 +2168,7 @@ export default function TutorPage() {
                 disabled={agentBlocked !== null || busy}
                 className="h-4 w-4"
               />
-              智能体（服务端工具循环）
+              智能体（教学工作流）
             </label>
             <span
               className={
@@ -2125,7 +2176,7 @@ export default function TutorPage() {
               }
             >
               {agentBlocked === null
-                ? "回答前可调用只读工具；失败会自动退回普通流式问答并留下提示。"
+                ? "按学习意图组织路径、辅导与练习，保存教学检查点；失败时给出提示。"
                 : agentBlocked}
             </span>
           </div>
@@ -2135,9 +2186,15 @@ export default function TutorPage() {
         </TutorRail>
         <section className="tutor-chat" aria-label="学习辅导对话">
         <div className="tutor-chat-title"><h2 className="text-base font-semibold sm:text-lg">向课程导师提问</h2><p className="mt-1 text-xs text-[var(--ink-faint)]">{activeProvider ? "回答优先依据课程资料，引用可以展开核对。" : "当前为资料检索模式；配置模型后可获得生成式辅导。"}</p></div>
+        {agentOn && agentBlocked === null ? <div className="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3 text-xs">
+          <label>教学任务 <select aria-label="教学任务类型" value={teachingMode} onChange={event => setTeachingMode(event.target.value as TeachingIntent | "auto")} disabled={busy} className="ml-1 rounded border border-[var(--line)] bg-[var(--surface)] px-2 py-1.5"><option value="auto">自动识别</option>{Object.entries(INTENT_LABELS).map(([intent, label]) => <option key={intent} value={intent}>{label}</option>)}</select></label>
+          <label>学习时间 <select aria-label="教学学习时间" value={teachingBudget ?? ""} onChange={event => setTeachingBudget(event.target.value === "" ? null : Number(event.target.value))} disabled={busy} className="ml-1 rounded border border-[var(--line)] bg-[var(--surface)] px-2 py-1.5"><option value="">按问题或上次预算</option>{[15, 30, 60, 90, 120].map(n => <option key={n} value={n}>{n} 分钟</option>)}</select></label>
+          <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={resetTeachingSession} onChange={event => setResetTeachingSession(event.target.checked)} disabled={busy} />新任务，不衔接前文</label>
+        </div> : null}
         {/* 对话区 */}
-        <div className={`tutor-messages space-y-4 ${messages.length === 0 ? "is-empty" : ""}`} role="log" aria-label="辅导消息" aria-live="polite" aria-relevant="additions">
-          {messages.length === 0 ? (
+        <div className={`tutor-messages space-y-4 ${messages.length === 0 && !resumableTask ? "is-empty" : ""}`} role="log" aria-label="辅导消息" aria-live="polite" aria-relevant="additions">
+          {resumableTask ? <div><p className="text-xs text-[var(--ink-faint)]">上次教学任务 · 已从当前账号恢复</p><TeachingTaskCard key={`restored-${ownerId}-${resumableTask.workflow.runId}`} workflow={resumableTask.workflow} query={target ? targetQuery(target) : ""} initialAssessment={resumableTask.assessment} disabled={busy} onFollowup={prepareFollowup} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /></div> : null}
+          {messages.length === 0 && !resumableTask ? (
             <div data-motion="suggestions" className="tutor-empty">
               <Icon name="chat" size={46} className="mx-auto text-[var(--accent)]" />
               <h3 className="mt-5 text-lg font-medium">选择一个问题开始</h3>
@@ -2220,6 +2277,7 @@ export default function TutorPage() {
                 </div>
               ) : null}
 
+              {message.workflow && target ? <TeachingTaskCard key={`${ownerId}-${message.workflow.runId}`} workflow={message.workflow} query={targetQuery(target)} disabled={busy || message.workflow.targetId !== targetId} onFollowup={prepareFollowup} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /> : null}
               {/* 智能体轨迹：可折叠；只显示服务端给的 preview，完整结果不回传 */}
               {message.agentNotices
                 .filter((notice) => notice.level === "warn")

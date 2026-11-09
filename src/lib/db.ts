@@ -307,6 +307,7 @@ function createMemoryDb(): Db {
   const users = new Map<string, Record<string, unknown>>();
   const sessions = new Map<string, Record<string, unknown>>();
   const progress = new Map<string, Record<string, unknown>>();
+  const learningSessions = new Map<string, Record<string, unknown>>();
   const directions = new Map<string, Record<string, unknown>>();
   /** key = `${direction_id}|${content_hash}`，对应 Postgres 的唯一约束。 */
   const directionItems = new Map<string, Record<string, unknown>>();
@@ -339,6 +340,15 @@ function createMemoryDb(): Db {
   return {
     async run(text, params = []) {
       const q = norm(text);
+
+      if (q.startsWith("insert into learning_sessions")) {
+        const [user_id, target_id, revision, data, base] = params;
+        const key = `${user_id}|${target_id}`;
+        const existing = learningSessions.get(key);
+        if (existing && (base === null || existing.revision !== base)) return 0;
+        learningSessions.set(key, { user_id, target_id, revision, data });
+        return 1;
+      }
 
       if (q.startsWith("insert into users")) {
         const [id, email, password_hash, display_name, created_at] = params as string[];
@@ -912,6 +922,10 @@ function createMemoryDb(): Db {
     async one<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
 
+      if (q.includes("from learning_sessions")) {
+        return (learningSessions.get(`${params[0]}|${params[1]}`) ?? null) as T | null;
+      }
+
       // 必须放在 from users 之前：`from user_secrets` 也含 `user` 前缀
       if (q.includes("from user_secrets") && q.includes("kind =")) {
         const found = userSecrets.get(`${params[0]}|${params[1]}`);
@@ -1042,6 +1056,13 @@ export const SCHEMA = [
     data TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, subject_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS learning_sessions (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (user_id, target_id)
   )`,
   `CREATE TABLE IF NOT EXISTS directions (
     id TEXT PRIMARY KEY,

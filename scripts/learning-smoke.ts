@@ -276,7 +276,7 @@ try {
     await page.getByRole("button", { name: /^严格/ }).click();
     await visit("/tutor?subject=data-structures");
     await page.getByRole("tab", { name: "学习设置", exact: true }).click();
-    await page.getByLabel("智能体（服务端工具循环）", { exact: true }).check();
+    await page.getByLabel("智能体（教学工作流）", { exact: true }).check();
     await page.getByRole("button", { name: "3 · 完整讲解" }).click();
     await page.locator("#q").fill("栈为什么遵循后进先出？");
     await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -288,6 +288,39 @@ try {
     check(toolContext.includes("server-validated-attempts") && /"observedCount":[1-9]/.test(toolContext), "Agent 首次调用已携带验证后的真实学习证据");
     check(toolContext.includes("回归讲义原文") && toolContext.includes("资料1") && toolContext.includes("栈顶"), "Agent 检索包含账号上传原文、教材与一致的引用编号");
     check(!((modelRequests[0].tools as { function: { parameters: { properties: unknown } } }[]).some((tool) => JSON.stringify(tool.function.parameters.properties).includes('"mastery"'))), "Agent 工具不允许模型自报掌握度");
+    await page.locator("[data-teaching-task]").waitFor();
+    check(await page.locator("[data-teaching-task]").last().getByText("任务完成", { exact: true }).isVisible(), "知识辅导工作流完成并显示教学卡");
+    await page.getByLabel("教学任务类型", { exact: true }).selectOption("review_path");
+    await page.getByLabel("教学学习时间", { exact: true }).selectOption("30");
+    await page.locator("#q").fill("今天只有30分钟，安排一下学习路径");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.locator("[data-workflow-plan]").last().waitFor();
+    await page.getByRole("button", { name: "发送", exact: true }).waitFor({ state: "visible" });
+    check(await page.locator("[data-workflow-plan]").last().innerText().then(t => t.includes("30 分钟预算")), "路径工作流输出实际30分钟方案");
+    await page.getByLabel("教学任务类型", { exact: true }).selectOption("practice");
+    await page.locator("#q").fill("请出一道独立练习");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    const task = page.locator("[data-teaching-task]").last();
+    await task.getByRole("button", { name: "提交练习并更新计划", exact: true }).waitFor();
+    await task.getByRole("radio").first().check();
+    await task.getByRole("button", { name: "提交练习并更新计划", exact: true }).click();
+    await task.locator("[data-assessment]").waitFor();
+    check(await task.innerText().then(t => t.includes("作答后的学习计划")), "独立练习经服务端判分并重新计算路径");
+    await page.reload();
+    await page.locator("[data-assessment]").waitFor();
+    check(await page.getByText("上次教学任务 · 已从当前账号恢复", { exact: true }).isVisible(), "刷新恢复教学检查点和已核对作答");
+    await page.locator("[data-assessment]").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(output, "workflow-assessment-1280.png"), fullPage: false });
+    await page.setViewportSize({ width: 390, height: 844 });
+    check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "移动端教学卡无横向溢出");
+    check(await page.evaluate(() => {
+      const task = document.querySelector("[data-teaching-task]");
+      const log = document.querySelector(".tutor-messages");
+      return !!task && !!log && log.contains(task) && log.scrollHeight > log.clientHeight;
+    }), "恢复后的长练习卡保留在消息滚动区域");
+    await page.locator("[data-assessment]").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(output, "workflow-mobile-390.png"), fullPage: false });
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.screenshot({ path: join(output, "agent-learning-1280.png"), fullPage: false });
     check(runtimeErrors.length === 0, `Agent 交互后无浏览器运行错误：${runtimeErrors.join("; ")}`);
   } finally { await new Promise<void>((resolve) => mock.close(() => resolve())); }

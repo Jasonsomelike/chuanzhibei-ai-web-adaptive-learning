@@ -88,6 +88,8 @@ export interface AgentRunOptions {
   readonly question: string;
   readonly images?: readonly string[];
   readonly systemPrompt: string;
+  /** Server-owned bounded teaching history, never client-supplied system/tool messages. */
+  readonly history?: readonly { readonly question: string; readonly answer: string }[];
   readonly initialToolResults?: readonly { readonly name: string; readonly text: string; readonly arguments?: Record<string, unknown> }[];
   readonly tools: readonly AgentToolSpec[];
   readonly limits: AgentLimits;
@@ -289,9 +291,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunSummar
 
   const messages: AgentMessage[] = [
     { role: "system", content: options.systemPrompt },
+    ...(options.history ?? []).slice(-4).flatMap((turn): AgentMessage[] => [
+      { role: "user", content: turn.question.slice(0, 1000) },
+      { role: "assistant", content: turn.answer.slice(0, 1500) },
+    ]),
     userMessage(options.question, options.images),
   ];
-  const initialResults = (options.initialToolResults ?? []).slice(0, 2).filter((result) => byName.has(result.name));
+  const initialResults = (options.initialToolResults ?? []).slice(0, 5).filter((result) => byName.has(result.name));
   if (initialResults.length > 0) {
     messages.push({ role: "assistant", content: "", toolCalls: initialResults.map((result, index) => ({
       id: `context_${index}`, name: result.name, arguments: JSON.stringify(result.arguments ?? {}),
@@ -302,7 +308,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunSummar
     }
   } else if (toolset.length === 0) {
     // 不支持工具协议的供应商仍获得相同学习上下文，以隔离的数据消息提供。
-    for (const result of (options.initialToolResults ?? []).slice(0, 2)) {
+    for (const result of (options.initialToolResults ?? []).slice(0, 5)) {
       const prepared = prepareToolText(result.text, options.limits.maxResultChars);
       messages.push({ role: "user", content: wrapToolResult({ name: result.name, ...prepared }) });
     }

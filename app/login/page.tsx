@@ -71,7 +71,7 @@ export default function LoginPage() {
           <p className="mt-1 text-sm text-[var(--ink-soft)]">
             {mode === "login"
               ? "登录后学习进度会保存在服务端，换设备也能继续。"
-              : "账号只用于保存进度与自定义方向，不需要验证邮箱。"}
+              : "账号用于保存学习进度、自定义方向与教学任务，不需要验证邮箱。"}
           </p>
         </div>
 
@@ -223,6 +223,7 @@ export default function LoginPage() {
             <ul className="mt-1.5 space-y-1 text-[var(--ink-soft)]">
               <li>· 邮箱、昵称、密码的加盐哈希（不存明文）</li>
               <li>· 各学科的作答记录与掌握度</li>
+              <li>· 智能体最近教学任务与最多四轮问答（不含图片和模型凭据）</li>
               <li>· 你创建的自定义方向（是否公开由你决定）</li>
             </ul>
             <p className="mt-1.5 text-[var(--ink-faint)]">

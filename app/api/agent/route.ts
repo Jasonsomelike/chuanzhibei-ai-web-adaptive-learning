@@ -1,7 +1,7 @@
 /**
- * POST /api/agent —— 服务端有界工具调用循环 + SSE 事件流。
+ * POST /api/agent —— Learning Supervisor + 专业化教学工作流 + SSE。
  *
- * 请求体只有 {question, images?, subject?, budgetMinutes?}（agentContracts.ts）：
+ * 请求体由 agentContracts.ts 约束：问题、课程、教学任务与偏好；
  * 模型地址与密钥一律来自当前账号保存的 llm 配置，客户端不能自报模式，
  * 也不能在参数里塞服务器地址（那是 MCP 配置的事）。
  *
@@ -9,7 +9,7 @@
  * - 必须登录（requireApiUser）+ 同源（assertMutationOrigin）；请求体用 readLimitedText 限量；
  * - 模型出站必须先 assertUpstreamAllowed 再 guardedRequest，本文件不出现全局 fetch；
  * - 远程 MCP 工具的地址只来自 mcp_servers 表，工具集在 run 开始时冻结；
- * - kind=anthropic 不发 tools（协议不支持），只给一条 notice，然后按普通问答跑；
+ * - 当前 Anthropic 适配器不发 tools，教学工作流仍可使用服务端预载数据；
  * - local 模式（没有服务端 llm 配置）给明确 notice，不静默降级成「没有工具的回答」；
  * - 工具结果只回 preview，完整结果不回传浏览器；done 事件在每条路径上都会发。
  */
@@ -25,7 +25,6 @@ import {
   buildAgentSystemPrompt,
   filterRemoteTools,
   remoteAgentToolSpec,
-  runAgent,
   type AgentMessage,
   type AgentModelReply,
   type AgentModelRequest,
@@ -50,6 +49,8 @@ import { isReadOnlyToolName } from "@/lib/tools";
 import { callLearningTool, learningAgentTools, loadLearningContext, LearningContextError } from "@/lib/learningContext";
 import { tutorSystemPrompt } from "@/lib/tutorPersona";
 import { tutoringPolicy } from "@/lib/tutorPreferences";
+import { prepareTeachingTask, runTeachingWorkflow } from "@/lib/learningWorkflow";
+import { readLearningSession, saveLearningSession } from "@/lib/learningSession";
 import {
   buildUpstreamChatBody,
   endpointFor,
@@ -421,10 +422,7 @@ export async function POST(request: Request): Promise<Response> {
       error instanceof LearningContextError ? error.message : "读取学习上下文失败");
   }
 
-  /*
-   * Anthropic 不发 tools（协议不支持工具循环），只给 notice。
-   * 这不是静默降级：notice 会明说「当前供应商未启用工具」。
-   */
+  // 当前适配器未实现 Anthropic 工具消息；确定性工作流仍然可用。
   const toolsSupported = config.api !== "anthropic";
   const localTools = learningAgentTools();
   if (learningContext.uploadScanLimited) notices.push({ type: "notice", level: "warn", message: "本方向资料较多，本轮 Agent 只检索前 2000 段。可改用普通导师检索其他资料。" });
@@ -436,7 +434,7 @@ export async function POST(request: Request): Promise<Response> {
     notices.push({
       type: "notice",
       level: "warn",
-      message: "当前供应商（Anthropic 协议）未启用工具调用，本次只做普通问答。",
+      message: "当前供应商（Anthropic 适配器）未启用工具调用，教学工作流使用服务端预载结果。",
     });
   } else {
     let servers: PublicMcpServer[];
@@ -528,8 +526,25 @@ export async function POST(request: Request): Promise<Response> {
   const toolset: AgentToolSpec[] = toolsSupported ? [...localTools, ...remoteSpecs] : [];
   const materialTexts = new Set<string>();
   const materialSources = new Set<string>();
+  const db = await getDb();
+  const previous = await readLearningSession(db, auth.user.id, learningContext.course.id).catch(() => {
+    notices.push({ type: "notice", level: "warn", message: "读取教学会话失败，本轮不携带历史；存档冲突时不会覆盖旧会话。" });
+    return { revision: null, session: null };
+  });
+  if (!body.resetSession && /^(继续|再|那|它|这个|这道|上面|刚才|没懂|还是|换一)/u.test(body.question) && previous.session?.snapshot.focusName &&
+      learningContext.course.graph.concepts.some(c => c.id === previous.session!.snapshot.focusKcId)) {
+    learningContext = await loadLearningContext(db, auth.user.id, learningContext.course.id,
+      `${previous.session.snapshot.focusName} ${body.question}`, body.materialSourceIds);
+  }
+  const task = prepareTeachingTask(learningContext, body, previous.session);
+  for (const result of task.initialToolResults) {
+    if (result.name !== "search_knowledge") continue;
+    const data = JSON.parse(result.text) as { material?: string; materialSources?: string[] };
+    if (data.material) materialTexts.add(data.material);
+    for (const source of data.materialSources ?? []) materialSources.add(source);
+  }
   const executeLearningTool = (name: string, args: Record<string, unknown>): string => {
-    const text = callLearningTool(learningContext, name, args, body.budgetMinutes);
+    const text = callLearningTool(learningContext, name, args, task.snapshot.budgetMinutes);
     if (name === "search_knowledge") {
       const result = JSON.parse(text) as { material?: string; materialSources?: string[] };
       if (result.material) materialTexts.add(result.material);
@@ -671,21 +686,25 @@ export async function POST(request: Request): Promise<Response> {
       return { ok: result.ok, text: result.text };
     };
 
-    await runAgent({
-      question: body.question,
-      ...(body.images === undefined ? {} : { images: body.images }),
-      systemPrompt,
-      initialToolResults: [
-        { name: "get_learner_state", text: executeLearningTool("get_learner_state", {}) },
-        { name: "search_knowledge", arguments: { query: body.question }, text: executeLearningTool("search_knowledge", { query: body.question }) },
-      ],
-      tools: toolset,
-      limits,
-      callModel,
-      callTool,
+    await runTeachingWorkflow({
+      task,
+      context: learningContext,
+      checkpoint: (snapshot, text) => saveLearningSession(db, auth.user.id, learningContext.course.id, previous.revision, {
+        version: 1, snapshot,
+        turns: [...task.history, { question: body.question.slice(0, 1000), answer: text.slice(0, 1500) }].slice(-4),
+      }),
+      runner: {
+        question: body.question,
+        ...(body.images === undefined ? {} : { images: body.images }),
+        systemPrompt,
+        tools: toolset,
+        limits,
+        callModel,
+        callTool,
+        signal,
+      },
       emit: (event) => emit(event.type === "done" ? { ...event, uploads: learningContext.uploadHits,
         materialContext: [...materialTexts].join("\n\n"), materialSources: [...materialSources] } : event),
-      signal,
     });
   }, request.signal);
 }

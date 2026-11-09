@@ -110,10 +110,11 @@ export default function PathPage() {
     return () => media.removeEventListener("change", update);
   }, []);
   const [budget, setBudget] = useState(90);
+  const [workflowTargets, setWorkflowTargets] = useState<{ targetId: string; ids: string[] } | null>(null);
   const [budgetBaseline, setBudgetBaseline] = useState<{ targetId: string; progress: typeof progress; chapters: readonly string[]; budget: number; ids: readonly string[] } | null>(null);
   useEffect(() => {
     const fromUrl = Number(new URLSearchParams(window.location.search).get("budget"));
-    if (BUDGET_OPTIONS.includes(fromUrl)) setBudget(fromUrl);
+    if (Number.isInteger(fromUrl) && fromUrl >= 5 && fromUrl <= 480) setBudget(fromUrl);
   }, []);
   const [compareBudget, setCompareBudget] = useState<number | null>(null);
   /*
@@ -165,6 +166,9 @@ export default function PathPage() {
   // 切目标时重新读取该目标的章节选择；图谱里已不存在的章名直接丢弃
   useEffect(() => {
     if (!graph || !target) return;
+    const params = new URLSearchParams(window.location.search);
+    const requested = (params.get("targets") ?? "").split(",").filter(id => graph.concepts.some(c => c.id === id)).slice(0, 200);
+    setWorkflowTargets(requested.length ? { targetId, ids: requested } : null);
     if (target.kind === "direction") {
       setChapterSelection({ targetId, names: [] });
       return;
@@ -177,6 +181,7 @@ export default function PathPage() {
   const updateChapters = useCallback(
     (names: readonly string[]) => {
       setBudgetBaseline(null);
+      setWorkflowTargets(null);
       setChapterSelection({ targetId, names });
       writeChapterSelection(targetId, names);
     },
@@ -198,7 +203,7 @@ export default function PathPage() {
   const wholeSubject =
     scope !== null && graph !== undefined && scope.targets.length === graph.concepts.length;
   const chapterTargets =
-    scope && scope.targets.length > 0 && !wholeSubject ? scope.targets : undefined;
+    workflowTargets?.targetId === targetId ? workflowTargets.ids : scope && scope.targets.length > 0 && !wholeSubject ? scope.targets : undefined;
 
   /*
    * 手动改写按目标持久化：挂载与切目标时读回该目标的存档，没有存档则回到算法序。
@@ -439,6 +444,7 @@ export default function PathPage() {
             <Link className="rounded-lg border border-[var(--line-strong)] px-4 py-2" href={`/diagnose${targetQuery(target)}`}>用练习检验</Link>
           </div>
         </Card> : null}
+        {workflowTargets?.targetId === targetId ? <p className="mb-4 text-sm text-[var(--ink-soft)]">教学任务目标：{workflowTargets.ids.map(id => kcById.get(id)?.name).join("、")}（包含所需先修内容）。<button type="button" onClick={() => setWorkflowTargets(null)} className="ml-2 text-[var(--accent)] underline">返回课程范围</button></p> : null}
         <div className="path-control-bar">
         <div className="path-budget-controls mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
           <fieldset className="flex flex-wrap items-center gap-3"><legend className="sr-only">学习预算</legend><span className="text-sm font-medium">学习预算</span><div className="flex flex-wrap gap-1.5">{BUDGET_OPTIONS.map(minutes => <button type="button" key={minutes} aria-label={`把本次预算设为 ${minutes} 分钟`} aria-pressed={minutes === budget} onClick={() => changeBudget(minutes)} className={`tabular rounded-lg border px-3 py-2 text-xs ${budget === minutes ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]" : "border-[var(--line)] text-[var(--ink-soft)]"}`}>{minutes} 分钟</button>)}</div></fieldset>

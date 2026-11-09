@@ -125,6 +125,8 @@ export interface UseLearnerResult {
   readonly synced: boolean;
   /** 清空当前学科进度。 */
   readonly resetSubject: () => void;
+  /** Pull explicit server-side assessment writes into this page without discarding local evidence. */
+  readonly refreshProgress: () => Promise<void>;
 }
 
 /**
@@ -503,6 +505,23 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     };
   }, []);
 
+  const refreshProgress = useCallback(async () => {
+    const owner = authStore.getSnapshot().user?.id;
+    const target = subjectIdRef.current;
+    if (!owner) return;
+    const response = await fetch("/api/progress", { cache: "no-store", signal: AbortSignal.timeout(15_000) });
+    if (!response.ok || authStore.getSnapshot().user?.id !== owner || subjectIdRef.current !== target) return;
+    const body = await response.json() as { progress?: Record<string, unknown>; revisions?: unknown };
+    if (authStore.getSnapshot().user?.id !== owner || subjectIdRef.current !== target) return;
+    const remote = sanitizeProgress(body.progress?.[target]);
+    const current = learnerRef.current;
+    if (!remote || !current) return;
+    rememberProgressRevisions(owner, body.revisions);
+    const local = current.subjects[target];
+    const merged = local ? mergeProgressEvidence(remote, local) : remote;
+    setLearner({ ...current, subjects: { ...current.subjects, [target]: { ...merged, mastery: remote.mastery, memories: local?.memories } } });
+  }, [setLearner]);
+
   return {
     learner,
     ready: ready && !authLoading && loadedFor === userId,
@@ -510,5 +529,6 @@ export function useLearner(subjectId: string, graph?: KnowledgeGraph): UseLearne
     setLearner,
     synced,
     resetSubject,
+    refreshProgress,
   };
 }

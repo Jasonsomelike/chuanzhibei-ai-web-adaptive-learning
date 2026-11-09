@@ -1,5 +1,9 @@
 # 自适应学习路径系统设计与实现
 
+## 2026-11-09 Learning Supervisor
+
+导师通过有状态的三类教学工作流组织学情与路径、知识辅导、练习与测评。`learningWorkflow.ts` 负责路由、节点策略、规则核验与产物；`learningSession.ts` 以 CAS 保存账号/课程检查点；`learningAssessment.ts` 对学生显式提交的选项判分、幂等写进度并重算路径。前端教学卡消费 `workflow` SSE，并可刷新恢复。原有 `runAgent` 成为辅导节点内部的有界工具 Runtime。完整状态图、协议、参考来源及边界见 [教学编排](learning-supervisor.md)。
+
 ## 2026-11-05 V3 视觉工作台
 
 首页以真实下一任务为主，Canvas 只作固定装饰图案，缓存静态图层、限制采样与绘制频率，并按可见性和用户动态效果偏好暂停。移动端使用底部四入口；诊断保留原生单选与递进反馈，导师正文引用直接打开原文，路径工作区将真实清单与 React Flow 同屏联动。业务算法、学情证据、API 与数据库保持原实现。详见 [V3 实施与验收](ui-v3-verification.md)。
