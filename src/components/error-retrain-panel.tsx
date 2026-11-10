@@ -12,7 +12,7 @@
  * 没配密钥也能看；解释文案如实标注来源是题库解析。
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { Question } from "@/data/questions";
 import type { AttemptRecord } from "@/lib/learner";
 import {
@@ -77,6 +77,9 @@ export function ErrorRetrainPanel({
   const [expandedKc, setExpandedKc] = useState<string | null>(null);
   /** 导出失败原因（下载被浏览器拦截等）；成功时不显示。 */
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  /** 面板折叠状态：标题与计数始终可见，正文可收起还给侧栏。 */
+  const [collapsed, setCollapsed] = useState(false);
+  const bodyId = useId();
 
   const questionById = useMemo(
     () => new Map(questions.map((q) => [q.id, q] as const)),
@@ -144,12 +147,28 @@ export function ErrorRetrainPanel({
       aria-label="错题重训"
       className={`rounded-xl border bg-[var(--surface)] p-5 ${emphasis ? "error-retrain-emphasis" : "border-[var(--line)]"} ${className}`}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">错题重训与总结</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold tracking-tight">
+          <button
+            type="button"
+            aria-expanded={!collapsed}
+            aria-controls={bodyId}
+            onClick={() => setCollapsed(value => !value)}
+            className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+          >
+            错题重训与总结
+            <span className="text-xs font-normal text-[var(--ink-soft)]">
+              {retrainQuestions.length} 道题待重训
+            </span>
+            <span
+              aria-hidden="true"
+              className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
+            >
+              ▾
+            </span>
+          </button>
+        </h2>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-[var(--ink-soft)]">
-            {retrainQuestions.length} 道题最近一次做错 · 答对后自动移出队列
-          </span>
           <button
             type="button"
             onClick={downloadSummary}
@@ -165,6 +184,8 @@ export function ErrorRetrainPanel({
           {downloadError}
         </p>
       ) : null}
+      {!collapsed ? (
+        <>
       <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">
         重做答对会毕业对应的错题记忆卡；答错则记忆卡重新到期、回到复习队列。
         同一道题只计一次证据（防刷分），所以重做不改动掌握度——想让掌握度真正回升，
@@ -282,6 +303,8 @@ export function ErrorRetrainPanel({
             })}
           </ul>
         </div>
+      ) : null}
+        </>
       ) : null}
     </section>
   );
