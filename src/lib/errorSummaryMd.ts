@@ -12,6 +12,23 @@ import type { Question } from "@/data/questions";
 import type { AttemptRecord } from "@/lib/learner";
 import { lastWrongQuestionIds, summarizeErrorsByKc } from "@/lib/errorRetrain";
 
+export interface SummaryReadingEntry {
+  /** 引用抬头，例如「[教材·《数据结构（C 语言版）》·第3章 栈·第45–46页]」。 */
+  readonly label: string;
+  /** 原文正文（可含换行）。 */
+  readonly text: string;
+}
+
+/** 知识点的背景信息，让总结文档脱离应用也能读懂。 */
+export interface SummaryKcOverview {
+  readonly chapter: string;
+  /** 图谱里的一句话概述；可为空串。 */
+  readonly summary: string;
+  readonly prerequisiteNames: readonly string[];
+  /** 已格式化的掌握度标签（如「42% ±18（3 条证据）」）；未测评时为 null。 */
+  readonly masteryLabel: string | null;
+}
+
 export interface SummaryExportInput {
   /** 学习目标显示名，写进文档标题。 */
   readonly targetName: string;
@@ -22,6 +39,45 @@ export interface SummaryExportInput {
   readonly kcName: (kcId: string) => string;
   /** 导出日期（ISO 或 yyyy-mm-dd），写进文档头部。 */
   readonly exportedAt: string;
+  /**
+   * 按知识点准备的教材 / 讲义 / 上传资料摘录，与出题引用同源（同一合并包与口径）。
+   * 缺省或某知识点缺项时该节省略——资料是增强，不是硬依赖。
+   */
+  readonly readingByKc?: Readonly<Record<string, readonly SummaryReadingEntry[]>>;
+  /** 知识点背景信息（章节 / 概述 / 先修 / 掌握度）；缺省时文档不含概况块。 */
+  readonly kcOverview?: Readonly<Record<string, SummaryKcOverview>>;
+}
+
+/** 每个 KC 最多写入的摘录段数；更多段落以计数说明，不无限拉长文档。 */
+const MAX_READING_ENTRIES_PER_KC = 4;
+
+/** 找一道题最近一次「计入证据的答错」作答，用于还原「你选了哪项」。 */
+export function lastWrongAttemptOf(
+  attempts: readonly AttemptRecord[],
+  questionId: string,
+): AttemptRecord | null {
+  for (let index = attempts.length - 1; index >= 0; index -= 1) {
+    const attempt = attempts[index];
+    if (attempt.questionId === questionId && !attempt.correct && attempt.counted !== false) {
+      return attempt;
+    }
+  }
+  return null;
+}
+
+/** 输出某知识点在文档里的背景块（章节 / 掌握度 / 概述 / 先修）。 */
+function pushKcOverview(lines: string[], overview: SummaryKcOverview | undefined): void {
+  if (!overview) return;
+  const facts: string[] = [];
+  if (overview.chapter.trim() !== "") facts.push(`章节：${overview.chapter}`);
+  if (overview.masteryLabel !== null) facts.push(`当前掌握度：${overview.masteryLabel}`);
+  if (facts.length === 0 && overview.summary.trim() === "" && overview.prerequisiteNames.length === 0) return;
+  lines.push("");
+  if (facts.length > 0) lines.push(`> ${facts.join(" · ")}`);
+  if (overview.summary.trim() !== "") lines.push(`> ${overview.summary}`);
+  if (overview.prerequisiteNames.length > 0) {
+    lines.push(`> 先修：${overview.prerequisiteNames.join("、")}`);
+  }
 }
 
 /** 转义 Markdown 表格与正文里有歧义的竖线，避免把表格撑破。 */
@@ -54,6 +110,7 @@ export function buildErrorSummaryMarkdown(input: SummaryExportInput): string {
 
   const questionById = new Map(input.questions.map((q) => [q.id, q] as const));
   const summaries = summarizeErrorsByKc(input.attempts);
+  const hasReading = Object.values(input.readingByKc ?? {}).some((entries) => entries.length > 0);
 
   const lines: string[] = [];
   lines.push(`# 错题知识点总结 · ${input.targetName}`);
@@ -65,6 +122,11 @@ export function buildErrorSummaryMarkdown(input: SummaryExportInput): string {
   lines.push(
     "- 说明：错因来自题库解析，不是模型生成。同一道题只计一次证据，重做毕业记忆卡但不改掌握度。",
   );
+  if (hasReading) {
+    lines.push(
+      "- 复习材料：摘自你当前口径选中的教材 / 讲义 / 上传资料，与出题引用同源。",
+    );
+  }
   lines.push("");
 
   // ── 知识点汇总表 ──
@@ -86,6 +148,7 @@ export function buildErrorSummaryMarkdown(input: SummaryExportInput): string {
   for (const row of summaries) {
     lines.push("");
     lines.push(`### ${input.kcName(row.kcId)}`);
+    pushKcOverview(lines, input.kcOverview?.[row.kcId]);
 
     const kcQuestions = retrainIds
       .map((id) => questionById.get(id))
@@ -98,13 +161,42 @@ export function buildErrorSummaryMarkdown(input: SummaryExportInput): string {
     }
 
     for (const question of kcQuestions) {
+      const wrongAttempt = lastWrongAttemptOf(input.attempts, question.id);
       lines.push("");
       lines.push(`**${escapeCell(question.stem)}**`);
       lines.push("");
+      lines.push("选项：");
+      question.options.forEach((option, index) => {
+        const marks: string[] = [];
+        if (index === question.answerIndex) marks.push("✓ 正确");
+        if (wrongAttempt?.selectedIndex === index) marks.push("✗ 你选了");
+        lines.push(
+          `- ${String.fromCharCode(65 + index)}. ${escapeCell(option)}${marks.length > 0 ? `（${marks.join("，")}）` : ""}`,
+        );
+      });
+      lines.push("");
+      if (wrongAttempt?.selectedIndex !== undefined) {
+        const chosen = question.options[wrongAttempt.selectedIndex] ?? "未记录";
+        lines.push(`- 你选了：${escapeCell(chosen)}`);
+      }
       const correct = question.options[question.answerIndex] ?? "";
       lines.push(`- 正确答案：${escapeCell(correct)}`);
       lines.push(`- 解析：${escapeCell(question.explanation)}`);
       lines.push(`- 难度：${question.difficulty}`);
+    }
+
+    const readings = input.readingByKc?.[row.kcId] ?? [];
+    if (readings.length > 0) {
+      lines.push("");
+      lines.push("教材与讲义摘录（当前口径选中来源，与出题引用同源）：");
+      const shown = readings.slice(0, MAX_READING_ENTRIES_PER_KC);
+      for (const entry of shown) {
+        lines.push(`- ${entry.label}`);
+        for (const textLine of entry.text.split(/\r?\n/)) lines.push(`  ${textLine}`);
+      }
+      if (readings.length > shown.length) {
+        lines.push(`（另有 ${readings.length - shown.length} 段摘录未列入，可在诊断页「教材原文」查看全部。）`);
+      }
     }
   }
 

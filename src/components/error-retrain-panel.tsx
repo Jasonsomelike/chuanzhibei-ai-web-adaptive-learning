@@ -23,6 +23,9 @@ import {
 import {
   buildErrorSummaryMarkdown,
   errorSummaryFileName,
+  lastWrongAttemptOf,
+  type SummaryKcOverview,
+  type SummaryReadingEntry,
 } from "@/lib/errorSummaryMd";
 
 export interface ErrorRetrainProps {
@@ -33,8 +36,14 @@ export interface ErrorRetrainProps {
   readonly kcName: (kcId: string) => string;
   /** 学习目标显示名，用于导出文档标题与文件名。 */
   readonly targetName: string;
+  /** 按知识点归组的教材 / 讲义 / 上传资料摘录（与出题引用同源）；缺省时文档不含摘录区块。 */
+  readonly readingByKc?: Readonly<Record<string, readonly SummaryReadingEntry[]>>;
+  /** 知识点背景信息（章节 / 概述 / 先修 / 掌握度）；缺省时总结只显示题面与解析。 */
+  readonly kcOverview?: Readonly<Record<string, SummaryKcOverview>>;
   /** 点击「重做这道题」：页面把该题设为当前题并滚动到答题区。 */
   readonly onRetrainQuestion: (question: Question) => void;
+  /** 面板独立于折叠区直接展示时加警示描边，提示「这里有错题要处理」。 */
+  readonly emphasis?: boolean;
   readonly className?: string;
 }
 
@@ -58,7 +67,10 @@ export function ErrorRetrainPanel({
   questions,
   kcName,
   targetName,
+  readingByKc,
+  kcOverview,
   onRetrainQuestion,
+  emphasis = false,
   className = "",
 }: ErrorRetrainProps) {
   /** 展开的总结知识点；null 表示全部收起。 */
@@ -80,6 +92,16 @@ export function ErrorRetrainPanel({
     [retrainIds, questionById],
   );
 
+  /** 每道重训题最近一次计入证据的错答下标，用于展开区还原「你选了」。 */
+  const chosenByQuestion = useMemo(() => {
+    const map = new Map<string, number | null>();
+    for (const question of retrainQuestions) {
+      const attempt = lastWrongAttemptOf(attempts, question.id);
+      map.set(question.id, attempt?.selectedIndex ?? null);
+    }
+    return map;
+  }, [retrainQuestions, attempts]);
+
   const summaries = useMemo(() => summarizeErrorsByKc(attempts), [attempts]);
 
   /** 生成 Markdown 并触发浏览器下载。纯前端，无网络请求。 */
@@ -91,6 +113,8 @@ export function ErrorRetrainPanel({
       attempts,
       questions,
       kcName,
+      readingByKc,
+      kcOverview,
       exportedAt,
     });
     if (markdown === "") return;
@@ -118,10 +142,10 @@ export function ErrorRetrainPanel({
   return (
     <section
       aria-label="错题重训"
-      className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
+      className={`rounded-xl border bg-[var(--surface)] p-5 ${emphasis ? "error-retrain-emphasis" : "border-[var(--line)]"} ${className}`}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">错题重训</h2>
+        <h2 className="text-lg font-semibold tracking-tight">错题重训与总结</h2>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-[var(--ink-soft)]">
             {retrainQuestions.length} 道题最近一次做错 · 答对后自动移出队列
@@ -176,12 +200,13 @@ export function ErrorRetrainPanel({
         <div className="mt-5 border-t border-[var(--line)] pt-4">
           <h3 className="text-sm font-semibold tracking-tight">错题知识点总结</h3>
           <p className="mt-1 text-xs text-[var(--ink-faint)]">
-            按知识点汇总历史错题；点开看每题的解析（来自题库，不是模型生成）。
+            按知识点汇总历史错题；点开看每题的完整选项、你的选择与解析（来自题库，不是模型生成）。
           </p>
           <ul className="mt-2 space-y-2">
             {summaries.map((row: ErrorKcSummary) => {
               const kcQuestions = retrainQuestions.filter((q) => q.kcId === row.kcId);
               const open = expandedKc === row.kcId;
+              const overview = kcOverview?.[row.kcId];
               return (
                 <li key={row.kcId} className="rounded-lg border border-[var(--line)] px-3 py-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -194,6 +219,18 @@ export function ErrorRetrainPanel({
                       {row.lastWrongAt !== null ? ` · 最近答错 ${formatAt(row.lastWrongAt)}` : ""}
                     </span>
                   </div>
+                  {overview ? (
+                    <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">
+                      {overview.chapter !== "" ? `${overview.chapter} · ` : ""}
+                      {overview.masteryLabel !== null ? `当前掌握度 ${overview.masteryLabel} · ` : ""}
+                      {overview.prerequisiteNames.length > 0
+                        ? `先修：${overview.prerequisiteNames.join("、")}`
+                        : "无先修，可从这里建立基础"}
+                    </p>
+                  ) : null}
+                  {overview !== undefined && overview.summary.trim() !== "" ? (
+                    <p className="mt-1 text-xs leading-relaxed text-[var(--ink-soft)]">{overview.summary}</p>
+                  ) : null}
                   {kcQuestions.length > 0 ? (
                     <>
                       <button
@@ -206,18 +243,36 @@ export function ErrorRetrainPanel({
                       </button>
                       {open ? (
                         <dl className="mt-2 space-y-2">
-                          {kcQuestions.map((question) => (
-                            <div
-                              key={question.id}
-                              className="rounded-md bg-[var(--canvas)] px-3 py-2"
-                            >
-                              <dt className="text-xs text-[var(--ink-soft)]">{question.stem}</dt>
-                              <dd className="mt-1 text-xs leading-relaxed text-[var(--ink-soft)]">
-                                正确答案：{question.options[question.answerIndex]}
-                                。{question.explanation}
-                              </dd>
-                            </div>
-                          ))}
+                          {kcQuestions.map((question) => {
+                            const chosenIndex = chosenByQuestion.get(question.id) ?? null;
+                            return (
+                              <div
+                                key={question.id}
+                                className="rounded-md bg-[var(--canvas)] px-3 py-2"
+                              >
+                                <dt className="text-xs text-[var(--ink-soft)]">{question.stem}</dt>
+                                <dd className="mt-1 text-xs leading-relaxed text-[var(--ink-soft)]">
+                                  <ul className="space-y-0.5">
+                                    {question.options.map((option, index) => {
+                                      const isCorrect = index === question.answerIndex;
+                                      const isChosen = chosenIndex === index;
+                                      return (
+                                        <li key={index} className={isChosen && !isCorrect ? "text-[var(--bad)]" : ""}>
+                                          {String.fromCharCode(65 + index)}. {option}
+                                          {isCorrect ? "（✓ 正确）" : ""}
+                                          {isChosen ? "（✗ 你选了）" : ""}
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                  <p className="mt-1.5">
+                                    正确答案：{question.options[question.answerIndex]}
+                                    。{question.explanation}
+                                  </p>
+                                </dd>
+                              </div>
+                            );
+                          })}
                         </dl>
                       ) : null}
                     </>

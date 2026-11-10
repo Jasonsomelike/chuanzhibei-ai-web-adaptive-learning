@@ -13,6 +13,7 @@ import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
 import { ErrorRetrainPanel } from "@/components/error-retrain-panel";
 import { MaterialReader } from "@/components/material-reader";
+import { kcReadingViews } from "@/lib/kcMaterialReading";
 import { useSubject } from "@/lib/subject";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
 import {
@@ -54,7 +55,7 @@ import {
   predictCorrect,
   hasEnoughEvidence,
 } from "@/lib/mastery";
-import { computeDepths } from "@/lib/graph";
+import { computeDepths, indexGraph } from "@/lib/graph";
 import {
   GENERATED_WEIGHT_SCALE,
   ITEMS_PER_KC,
@@ -235,14 +236,41 @@ export default function DiagnosePage() {
   );
   /*
    * 教材阅读模块用合并包：与 materialForConcept 的出题口径一致
-   * （内置教材/讲义 + 我的笔记 + 上传资料）。上传来源由阅读视图
-   * 按选中来源过滤——uploadsToPack 的来源 id 不在用户选择里时，
-   * 阅读模块同样不显示，保持「出题引用什么、阅读就有什么」。
+   * （内置教材/讲义 + 我的笔记 + 上传资料）。
+   *
+   * 口径对齐的关键一步：uploadsToPack 的来源 id（文档 id）不在用户的
+   * 教材选择里，materialForConcept 出题前会把它们追加进选择末尾
+   * （优先级低于教材 / 讲义）。阅读与总结导出必须做同样的追加，
+   * 否则上传片段「出题引用它、阅读和导出却看不到」。
    */
+  const readingSelection = useMemo(
+    () => ({
+      ...materialSelection,
+      sourceIds: [
+        ...materialSelection.sourceIds,
+        ...uploadedPack.sources
+          .map((source) => source.id)
+          .filter((id) => !materialSelection.sourceIds.includes(id)),
+      ],
+    }),
+    [materialSelection, uploadedPack],
+  );
   const readingPack = useMemo(
     () => (uploadedPack.chunks.length > 0 ? mergePacks([materialPack, uploadedPack]) : materialPack),
     [materialPack, uploadedPack],
   );
+  /** 按知识点归组的教材 / 讲义 / 上传资料摘录，供错题总结导出使用。 */
+  const readingByKc = useMemo(() => {
+    if (!graph) return {};
+    const map: Record<string, { label: string; text: string }[]> = {};
+    for (const view of kcReadingViews(readingPack, graph.concepts, readingSelection)) {
+      for (const item of view.items) {
+        if (!item.hasContent || item.entries.length === 0) continue;
+        map[item.kcId] = item.entries.map((entry) => ({ label: entry.label, text: entry.text }));
+      }
+    }
+    return map;
+  }, [graph, readingPack, readingSelection]);
   const depths = useMemo(
     () => (graph ? computeDepths(graph) : new Map<string, number>()),
     [graph],
@@ -251,6 +279,27 @@ export default function DiagnosePage() {
     () => new Map((graph?.concepts ?? []).map((c) => [c.id, c.name])),
     [graph],
   );
+  /** 知识点背景信息（章节 / 概述 / 先修 / 掌握度），让错题总结脱离应用也能读懂。 */
+  const kcOverview = useMemo(() => {
+    if (!graph) return {};
+    const index = indexGraph(graph);
+    const states = new Map((progress?.mastery ?? []).map((state) => [state.kcId, state]));
+    const map: Record<string, { chapter: string; summary: string; prerequisiteNames: string[]; masteryLabel: string | null }> = {};
+    for (const concept of graph.concepts) {
+      const state = states.get(concept.id);
+      const evidenceN = state?.evidenceN ?? 0;
+      map[concept.id] = {
+        chapter: concept.chapter,
+        summary: concept.summary ?? "",
+        prerequisiteNames: [...(index.predecessors.get(concept.id) ?? [])].map((id) => kcName.get(id) ?? id),
+        masteryLabel:
+          state && evidenceN > 0
+            ? `${Math.round(masteryMean(state) * 100)}% ±${Math.round(masterySd(state) * 100)}（${evidenceN} 条证据）`
+            : null,
+      };
+    }
+    return map;
+  }, [graph, progress, kcName]);
 
   /**
    * 「记入易混」的候选知识点：当前 KC 之外的全部知识点。
@@ -1665,8 +1714,14 @@ export default function DiagnosePage() {
             })}</ul>
             <p className="mt-4 text-[11px] leading-relaxed text-[var(--ink-faint)]">未测评不代表不会。证据与不确定性随作答更新。</p>
           </Card>
-          {revealed || done ? <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={materialSelection} /></div></details> : null}
-          <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />历史与错题复习</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /><ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} onRetrainQuestion={retrainQuestion} className="mb-5" /></div></details>
+          {revealed || done ? <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={readingSelection} /></div></details> : null}
+          {/*
+            错题重训与总结独立于折叠区直接展示：这是答错后最重要的下一步动作，
+            埋在「历史与错题复习」折叠里太隐蔽。面板自己会在没有可重训错题时
+            返回 null，所以未答题的新用户看到的侧栏依然是干净的。
+          */}
+          <ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} readingByKc={readingByKc} kcOverview={kcOverview} onRetrainQuestion={retrainQuestion} emphasis className="mb-5" />
+          <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />预测校准与历史</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /></div></details>
           <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
         </aside>
         </div>
