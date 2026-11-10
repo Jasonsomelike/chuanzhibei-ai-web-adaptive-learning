@@ -12,6 +12,8 @@
  */
 
 import { neon } from "@neondatabase/serverless";
+import { createConversationMemory } from "@/lib/conversationMemory";
+import { CONVERSATION_SCHEMA } from "@/lib/conversationSql";
 
 /** 一个可执行查询的最小接口，让内存实现与 Postgres 实现共用上层代码。 */
 export interface Db {
@@ -308,6 +310,7 @@ function createMemoryDb(): Db {
   const sessions = new Map<string, Record<string, unknown>>();
   const progress = new Map<string, Record<string, unknown>>();
   const learningSessions = new Map<string, Record<string, unknown>>();
+  const conversationArchive = createConversationMemory(id => users.has(id));
   const directions = new Map<string, Record<string, unknown>>();
   /** key = `${direction_id}|${content_hash}`，对应 Postgres 的唯一约束。 */
   const directionItems = new Map<string, Record<string, unknown>>();
@@ -340,6 +343,8 @@ function createMemoryDb(): Db {
   return {
     async run(text, params = []) {
       const q = norm(text);
+      const archiveResult = conversationArchive.run(text, params);
+      if (archiveResult !== undefined) return archiveResult;
 
       if (q.startsWith("insert into learning_sessions")) {
         const [user_id, target_id, revision, data, base] = params;
@@ -717,6 +722,8 @@ function createMemoryDb(): Db {
 
     async all<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
+      const archiveRows = conversationArchive.all(text, params);
+      if (archiveRows !== undefined) return archiveRows as T[];
 
       if (q.includes("from user_secrets")) {
         const rows = [...userSecrets.values()]
@@ -921,6 +928,8 @@ function createMemoryDb(): Db {
 
     async one<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
+      const archiveRows = conversationArchive.all(text, params);
+      if (archiveRows !== undefined) return (archiveRows[0] ?? null) as T | null;
 
       if (q.includes("from learning_sessions")) {
         return (learningSessions.get(`${params[0]}|${params[1]}`) ?? null) as T | null;
@@ -1064,6 +1073,7 @@ export const SCHEMA = [
     data TEXT NOT NULL,
     PRIMARY KEY (user_id, target_id)
   )`,
+  ...CONVERSATION_SCHEMA,
   `CREATE TABLE IF NOT EXISTS directions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
