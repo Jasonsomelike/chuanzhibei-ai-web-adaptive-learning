@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SUBJECTS } from "@/data/subjects";
 import { initialMastery } from "@/lib/mastery";
 import { planPath } from "@/lib/plan";
-import { layoutLearningNodes, learningGraphNodes, relatedLearningNodes } from "@/lib/learningGraph";
+import { layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes } from "@/lib/learningGraph";
 import type { KnowledgeGraph } from "@/lib/graph";
 
 describe("先修图谱使用真实规划与证据", () => {
@@ -49,5 +49,55 @@ describe("先修图谱使用真实规划与证据", () => {
     expect(first).toEqual(layoutLearningNodes(subset));
     expect(Math.max(...first.map(node => node.position.y))).toBeLessThan(first.length * 120);
     expect(new Set(first.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(first.length);
+  });
+});
+
+describe("learningEdgeVisual：先修边的视觉规则", () => {
+  const ctx = (overrides?: Partial<Parameters<typeof learningEdgeVisual>[2]>) => ({
+    selectedId: null as string | null,
+    showAll: false,
+    isBlockedTarget: (id: string) => id === "blocked-kc",
+    ...overrides,
+  });
+
+  it("常态：普通边全量显示", () => {
+    expect(learningEdgeVisual("a", "b", ctx())).toEqual({ tone: "plain", emphasized: false, opacity: 1, dashed: false });
+  });
+
+  it("选中节点的相连边高亮强调，其余边淡化", () => {
+    expect(learningEdgeVisual("a", "sel", ctx({ selectedId: "sel" }))).toEqual({ tone: "accent", emphasized: true, opacity: 1, dashed: false });
+    expect(learningEdgeVisual("sel", "b", ctx({ selectedId: "sel" }))).toEqual({ tone: "accent", emphasized: true, opacity: 1, dashed: false });
+    expect(learningEdgeVisual("a", "b", ctx({ selectedId: "sel" }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.3, dashed: false });
+  });
+
+  it("指向 blocked 节点的边永远是警示虚线，选中时加粗不改色", () => {
+    expect(learningEdgeVisual("a", "blocked-kc", ctx())).toEqual({ tone: "warn", emphasized: false, opacity: 1, dashed: true });
+    expect(learningEdgeVisual("sel", "blocked-kc", ctx({ selectedId: "blocked-kc" }))).toEqual({ tone: "warn", emphasized: true, opacity: 1, dashed: true });
+    expect(learningEdgeVisual("a", "blocked-kc", ctx({ selectedId: "other" }))).toEqual({ tone: "warn", emphasized: false, opacity: 0.3, dashed: true });
+  });
+
+  it("全科模式无选中时整体降权让节点颜色可读", () => {
+    expect(learningEdgeVisual("a", "b", ctx({ showAll: true }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.55, dashed: false });
+    // 有选中项时选中淡化规则优先于全科降权
+    expect(learningEdgeVisual("a", "b", ctx({ showAll: true, selectedId: "sel" }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.3, dashed: false });
+  });
+
+  it("源节点是 blocked 目标的判断只看 target，不影响反向边", () => {
+    expect(learningEdgeVisual("blocked-kc", "b", ctx()).tone).toBe("plain");
+  });
+});
+
+describe("learningGraphFileName：导出文件名", () => {
+  it("包含目标名与 ISO 日期段", () => {
+    expect(learningGraphFileName("数据结构", "2026-11-10T08:00:00.000Z")).toBe("先修图谱-数据结构-2026-11-10.png");
+  });
+
+  it("目标名里的非法字符替换为连字符", () => {
+    expect(learningGraphFileName('a/b:c "d"', "2026-11-10T08:00:00.000Z")).toBe("先修图谱-a-b-c-d-2026-11-10.png");
+  });
+
+  it("非法时间戳退回 export 段；空名退回默认", () => {
+    expect(learningGraphFileName("数据结构", "not-a-date")).toBe("先修图谱-数据结构-export.png");
+    expect(learningGraphFileName("///", "2026-11-10T08:00:00.000Z")).toBe("先修图谱-学习目标-2026-11-10.png");
   });
 });

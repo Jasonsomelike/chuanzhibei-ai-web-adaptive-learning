@@ -361,6 +361,8 @@ body {
 .knowledge-node.node-selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--node-color) 22%, transparent); }
 .knowledge-node .react-flow__handle { background: var(--node-color); border-color: var(--surface); width: 6px; height: 6px; }
 .status-dot { display: inline-block; width: 7px; height: 7px; flex-shrink: 0; border: 1px solid currentColor; border-radius: 50%; background: currentColor; }
+.knowledge-node .node-mastery { margin-left: auto; font-weight: 600; color: var(--node-color); }
+.knowledge-node .node-mastery-sd { margin-left: 2px; font-weight: 400; opacity: 0.75; }
 .node-label { padding: 2px 7px; font-size: 11px; border: 1px solid var(--node-color); color: var(--node-color); border-radius: 5px; }
 .node-legend { color: var(--node-color); }
 .knowledge-mobile-details { display: none; }
@@ -715,6 +717,8 @@ body {
 }
 
 .path-chapter-trigger { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 8px; font-size: 12px; color: var(--ink-soft); }
+/* 错题重训面板独立展示时的警示描边：有错题待处理时不该藏在折叠区里 */
+.error-retrain-emphasis { border-color: var(--warn); box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 24%, transparent); }
 @media (max-width: 767px) {
   .path-page #learning-steps button { min-width: 44px; min-height: 44px; }
   .app-dialog button, .app-dialog select { min-height: 44px; }
