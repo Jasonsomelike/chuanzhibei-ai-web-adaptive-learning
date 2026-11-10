@@ -34,7 +34,7 @@ export const MOTION_SELECTOR = "[data-motion]:not([data-motion-manual])";
 
 export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined") return true;
-  return window.matchMedia(REDUCE_QUERY).matches;
+  return document.documentElement.dataset.reducedMotion === "true" || window.matchMedia(REDUCE_QUERY).matches;
 }
 
 function hasPlayed(element: HTMLElement): boolean {

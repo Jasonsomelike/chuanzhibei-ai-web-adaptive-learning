@@ -10,8 +10,6 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
-import { NavLinks, MobileNav } from "@/components/nav-links";
-import { BrandMark } from "@/components/brand-mark";
 
 /* ── 表单与设置页的排版原语 ───────────────────────────────── */
 
@@ -407,19 +405,5 @@ export function ButtonLink({
  * 链接与登录态在 NavLinks 里，因为要根据登录状态渲染。
  * Nav 本身无状态，跟随本模块作为客户端组件渲染，不引入额外数据依赖。
  */
-export function Nav() {
-  return (
-    <>
-    <header className="app-header border-b border-[var(--line)] bg-[var(--surface)]">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3 sm:px-8 sm:py-4">
-        <Link href="/" className="app-brand flex min-w-0 max-w-full items-center gap-2.5 font-semibold">
-          <BrandMark size={28} className="shrink-0" />
-          <span className="truncate">自适应学习路径</span>
-        </Link>
-        <NavLinks />
-      </div>
-    </header>
-    <MobileNav />
-    </>
-  );
-}
+/** @deprecated The persistent root AppShell owns navigation. */
+export function Nav() { return null; }

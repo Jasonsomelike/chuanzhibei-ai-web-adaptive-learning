@@ -1,5 +1,8 @@
 import type { Metadata, Viewport } from "next";
+import { AppShell } from "@/components/app-shell";
+import { THEMES } from "@/lib/themes";
 import "./globals.css";
+import "./editorial.css";
 
 export const metadata: Metadata = {
   title: "自适应学习路径 · 个性化学习规划",
@@ -10,8 +13,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   interactiveWidget: "resizes-content",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#faf6ef" },
-    { media: "(prefers-color-scheme: dark)", color: "#17140f" },
+    { media: "(prefers-color-scheme: light)", color: "#fafaf7" },
+    { media: "(prefers-color-scheme: dark)", color: "#171b16" },
   ],
 };
 
@@ -24,15 +27,21 @@ export const viewport: Viewport = {
 const themeInitScript = `
 (function () {
   try {
-    var theme = localStorage.getItem('alp.theme') || 'sand';
-    var mode = localStorage.getItem('alp.mode') || 'system';
+    var storedTheme = localStorage.getItem('alp.theme');
+    var theme = ${JSON.stringify(THEMES.map(t => t.id))}.includes(storedTheme) ? storedTheme : 'olive';
+    var mode = localStorage.getItem('alp.mode');
+    if (!['light', 'dark'].includes(mode)) mode = 'system';
     var resolved = mode === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
       : mode;
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.mode = resolved;
+    document.documentElement.dataset.colorPreference = mode;
+    var layout = localStorage.getItem('alp.layout');
+    document.documentElement.dataset.layout = ['paper','atlas','chapters'].includes(layout) ? layout : 'atlas';
+    document.documentElement.dataset.reducedMotion = String(localStorage.getItem('alp.reducedMotion') === 'true');
   } catch (e) {
-    document.documentElement.dataset.theme = 'sand';
+    document.documentElement.dataset.theme = 'olive';
     document.documentElement.dataset.mode = 'light';
   }
 })();
@@ -40,7 +49,7 @@ const themeInitScript = `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" data-theme="sand" data-mode="light" suppressHydrationWarning>
+    <html lang="zh-CN" data-theme="olive" data-mode="light" data-layout="atlas" data-reduced-motion="false" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
@@ -51,7 +60,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         >
           跳到主要内容
         </a>
-        {children}
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

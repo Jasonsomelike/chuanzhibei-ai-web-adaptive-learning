@@ -2,6 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
+import { Check, CircleHelp, Palette, ShieldCheck, SlidersHorizontal, BookOpen } from "lucide-react";
+import paperPreview from "../../docs/design/editorial/path-paper.png";
+import atlasPreview from "../../docs/design/editorial/path-atlas.png";
+import chaptersPreview from "../../docs/design/editorial/path-chapters.png";
 import {
   Nav,
   Pill,
@@ -33,6 +38,7 @@ import { probeThinking } from "@/lib/chat";
 import type { ThinkingStrength } from "@/lib/reasoning";
 import { THEMES, MODES } from "@/lib/themes";
 import { useTheme } from "@/lib/theme";
+import { LAYOUTS, useAppearance } from "@/lib/appearance";
 import { useAuth } from "@/lib/useAuth";
 import {
   DEFAULT_CALL_MODE,
@@ -302,11 +308,12 @@ const LLM_FIELDS: readonly SecretField[] = [
 ];
 
 export default function SettingsPage() {
-  const { theme, mode, setTheme, setMode } = useTheme();
+  const { theme, mode, setTheme, setMode, resolvedMode } = useTheme();
+  const { layout, setLayout, reducedMotion, setReducedMotion } = useAppearance();
   const { user, loading: authLoading } = useAuth();
 
   // 分区导航：同一时刻只展示一个面板；所有面板保持挂载，避免切走再回来丢草稿
-  const [active, setActive] = useState<SectionId>("mode");
+  const [active, setActive] = useState<SectionId>("appearance");
   const mainRef = useRef<HTMLElement | null>(null);
 
   /*
@@ -565,27 +572,30 @@ export default function SettingsPage() {
     const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
     if (!keys.includes(event.key)) return;
     event.preventDefault();
-    let next = index;
+    const visible = SECTIONS.map((section, i) => ({ section, i })).filter(({ section }) => !["appearance", "materials", "privacy"].includes(section.id));
+    const position = visible.findIndex(item => item.i === index);
+    let next = position;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-      next = (index + 1) % SECTIONS.length;
+      next = (position + 1) % visible.length;
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-      next = (index - 1 + SECTIONS.length) % SECTIONS.length;
+      next = (position - 1 + visible.length) % visible.length;
     } else if (event.key === "Home") {
       next = 0;
     } else if (event.key === "End") {
-      next = SECTIONS.length - 1;
+      next = visible.length - 1;
     }
-    const target = SECTIONS[next];
+    const target = visible[next]?.section;
     if (target === undefined) return;
     setActive(target.id);
-    tabRefs.current[next]?.focus();
+    tabRefs.current[visible[next].i]?.focus();
   }
 
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-6xl px-5 py-8 sm:py-10">
-        <div className="mb-6 max-w-[62ch]" data-motion="hero">
+      <main id="main" ref={mainRef} className="settings-workspace mx-auto max-w-6xl px-5 py-8 sm:py-10">
+        <h1 className="sr-only">设置中心</h1>
+        <div className="settings-intro mb-6 max-w-[62ch]" data-motion="hero">
           <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
           <p className="mt-1 text-sm leading-relaxed text-[var(--ink-soft)]">
             按左侧分区逐项配置。调用模式决定请求由谁发出；其余分区各自保存，互不覆盖。
@@ -595,7 +605,8 @@ export default function SettingsPage() {
         {/* ── 当前状态：只读摘要，不参与编辑 ── */}
         <div
           data-motion="status"
-          className="mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm"
+          hidden={active === "appearance"}
+          className="settings-provider-status mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm"
         >
           <span className="text-[var(--ink-soft)]">当前状态</span>
           {effectiveMode === "server" ? (
@@ -643,13 +654,22 @@ export default function SettingsPage() {
           <p className="mb-8 max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--warn)]">{serverError}</p>
         ) : null}
 
-        <div className="lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10">
+        <div className="settings-layout lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10">
           {/* 窄屏：分区标签换行铺满，11 个分区始终可见；lg 以上改为左侧竖向导航 */}
           <nav aria-label="设置分区" data-motion="nav" className="lg:sticky lg:top-8 lg:self-start">
+            <div className="settings-category-nav">
+              {[{ id: "appearance", label: "外观", icon: Palette }, { id: "mode", label: "模型与工具", icon: SlidersHorizontal }, { id: "materials", label: "资料与口径", icon: BookOpen }, { id: "privacy", label: "账号与隐私", icon: ShieldCheck }].map(category => {
+                const selected = category.id === "mode" ? !["appearance", "materials", "privacy"].includes(active) : active === category.id;
+                return <button key={category.id} type="button" aria-current={selected ? "true" : undefined} onClick={() => setActive(category.id as SectionId)}><category.icon size={20} />{category.label}</button>;
+              })}
+              <a href="/guide"><CircleHelp size={20} />使用帮助</a>
+            </div>
             <div
               role="tablist"
+              aria-label="模型与工具分区"
               aria-orientation="vertical"
-              className="-mx-1 flex flex-wrap gap-1 px-1 pb-2 lg:mx-0 lg:flex-col lg:flex-nowrap lg:gap-0.5 lg:px-0 lg:pb-0"
+              hidden={["appearance", "materials", "privacy"].includes(active)}
+              className="settings-model-tabs -mx-1 flex flex-wrap gap-1 px-1 pb-2 lg:mx-0 lg:flex-col lg:flex-nowrap lg:gap-0.5 lg:px-0 lg:pb-0"
             >
               {SECTIONS.map((section, index) => {
                 const selected = active === section.id;
@@ -664,7 +684,8 @@ export default function SettingsPage() {
                     id={`settings-tab-${section.id}`}
                     aria-selected={selected}
                     aria-controls={`settings-panel-${section.id}`}
-                    tabIndex={selected ? 0 : -1}
+                      tabIndex={selected ? 0 : -1}
+                      hidden={["appearance", "materials", "privacy"].includes(section.id)}
                     onClick={() => setActive(section.id)}
                     onKeyDown={(event) => onTabKeyDown(event, index)}
                     className={`shrink-0 rounded-lg px-3 py-2 text-left text-sm transition-colors lg:w-full ${
@@ -1125,8 +1146,25 @@ export default function SettingsPage() {
             <div {...panelAttrs("appearance", active)}>
               <SettingsSection
                 title="外观"
-                hint="5 套配色 × 明暗两种模式，选择会保存在本浏览器。"
+                hint="布局与配色可以独立选择。"
               >
+                <SettingsGroup title="布局" hint="切换后保留当前课程、选中知识点和学习记录。">
+                  <div className="layout-preferences" role="group" aria-label="工作台布局">
+                    {LAYOUTS.map(item => <button key={item.id} type="button" aria-pressed={layout === item.id} onClick={() => setLayout(item.id)}>
+                      <span className="layout-preview"><Image src={{ paper: paperPreview, atlas: atlasPreview, chapters: chaptersPreview }[item.id]} alt={`${item.name}布局示意`} sizes="(max-width: 767px) 85vw, 24vw" /></span>
+                      <span className="preference-label"><span className="preference-radio" />{item.name}{item.id === "atlas" ? <span className="default-label">默认</span> : null}</span>
+                      <span className="preference-note">{item.note}</span>
+                    </button>)}
+                  </div>
+                </SettingsGroup>
+                <SettingsGroup title="配色主题" hint="配色独立于布局；每套主题均提供浅色与深色。">
+                  <div className="theme-preferences" role="group" aria-label="配色主题">
+                    {THEMES.map(item => <button key={item.id} type="button" aria-pressed={theme === item.id} onClick={() => setTheme(item.id)} title={item.note}>
+                      <span className="theme-swatch" data-theme={item.id} data-mode={resolvedMode}><span /><span /><span /></span>
+                      <span className="preference-label"><span className="preference-radio" />{item.name}</span>
+                    </button>)}
+                  </div>
+                </SettingsGroup>
                 <SettingsGroup title="明暗模式" hint="跟随系统时会实时响应系统的切换。">
                   <div className="flex flex-wrap gap-1.5">
                     {MODES.map((m) => (
@@ -1147,37 +1185,10 @@ export default function SettingsPage() {
                   </div>
                 </SettingsGroup>
 
-                <SettingsGroup
-                  title="配色主题"
-                  hint="5 套配色全部通过 WCAG AAA 正文对比度（≥7:1），可随时切换。"
-                >
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {THEMES.map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => setTheme(t.id)}
-                        aria-pressed={theme === t.id}
-                        className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left ${
-                          theme === t.id
-                            ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                            : "border-[var(--line-strong)] hover:bg-[var(--line)]"
-                        }`}
-                      >
-                        <span className="min-w-0">
-                          <span className="block text-sm font-medium">{t.name}</span>
-                          <span className="mt-0.5 block text-xs leading-relaxed text-[var(--ink-faint)]">
-                            {t.note}
-                          </span>
-                        </span>
-                        {theme === t.id ? <Pill tone="accent">当前</Pill> : null}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="mt-3 max-w-[62ch] text-xs leading-relaxed text-[var(--ink-faint)]">
-                    主题与明暗是两个独立维度，5 × 2 = 10 个组合。
-                  </p>
+                <SettingsGroup title="动态效果" hint="减少位移与缩放，保留学习状态反馈。系统的减少动效偏好也会生效。">
+                  <label className="motion-preference"><input type="checkbox" checked={reducedMotion} onChange={event => setReducedMotion(event.target.checked)} /><span>减少动态效果</span></label>
                 </SettingsGroup>
+                <p className="appearance-saved"><Check size={17} />已自动应用，保存在本浏览器。</p>
               </SettingsSection>
             </div>
 

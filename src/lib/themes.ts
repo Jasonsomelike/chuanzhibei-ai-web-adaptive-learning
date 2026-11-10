@@ -6,6 +6,7 @@
  */
 
 export const THEMES = [
+  { id: "olive", name: "橄榄", note: "暖白与橄榄绿，舒适专注" },
   { id: "sand", name: "暖砂", note: "暖纸底，沉稳阅读" },
   { id: "forest", name: "森林", note: "冷绿灰，专注沉静" },
   { id: "indigo", name: "深蓝", note: "蓝灰底，专业理性" },
