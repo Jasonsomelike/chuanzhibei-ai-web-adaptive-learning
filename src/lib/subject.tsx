@@ -59,7 +59,7 @@ export function useSubject(): UseTargetResult {
 
   const updateUrl = useCallback((id: string) => {
     const url = new URL(window.location.href);
-    if ((url.searchParams.get("subject") ?? url.searchParams.get("direction")) !== id) url.searchParams.delete("targets");
+    if ((url.searchParams.get("subject") ?? url.searchParams.get("direction")) !== id) { url.searchParams.delete("targets"); url.searchParams.delete("kc"); }
     url.searchParams.delete("subject");
     url.searchParams.delete("direction");
     url.searchParams.set(isBuiltin(id) ? "subject" : "direction", id);

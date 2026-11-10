@@ -23,6 +23,7 @@
 import { MATERIALS_STORAGE_KEY } from "@/lib/materials";
 import { clearProgressSyncCache } from "@/lib/progressClient";
 import { CHAPTERS_STORAGE_KEY } from "@/lib/chapters";
+import { PATH_VIEW_KEY } from "@/lib/pathView";
 import { MATERIALS_CHANGED_EVENT } from "@/lib/materialStore";
 import { clearKbDatabase } from "@/lib/kbStore";
 import { resetKbStorageCache } from "@/lib/kbRemote";
@@ -154,6 +155,7 @@ function clearMaterialsAndChapters(): void {
   try {
     window.localStorage.removeItem(MATERIALS_STORAGE_KEY);
     window.localStorage.removeItem(CHAPTERS_STORAGE_KEY);
+    window.localStorage.removeItem(PATH_VIEW_KEY);
   } catch {
     /* ignore */
   }

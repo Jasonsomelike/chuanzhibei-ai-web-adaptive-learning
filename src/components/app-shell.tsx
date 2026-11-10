@@ -7,8 +7,10 @@ import { BookOpen, CircleHelp, Compass, LogOut, Settings, UserRound } from "luci
 import { BrandMark } from "@/components/brand-mark";
 import { NavLinks, MobileNav } from "@/components/nav-links";
 import { AppDialog } from "@/components/primitives/dialog";
+import { CommandMenu } from "@/components/command-menu";
 import { useAuth } from "@/lib/useAuth";
 import { useTheme } from "@/lib/theme";
+import { useAppearance } from "@/lib/appearance";
 
 const titles: Record<string, string> = {
   "/": "学习概览", "/path": "知识图谱", "/diagnose": "课程诊断", "/tutor": "课程导师",
@@ -16,6 +18,7 @@ const titles: Record<string, string> = {
 };
 export function AppShell({ children }: { children: ReactNode }) {
   useTheme();
+  useAppearance();
   const pathname = usePathname();
   const { user, loading, logout } = useAuth();
   const [accountOpen, setAccountOpen] = useState(false);
@@ -30,6 +33,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     </aside>
     <header className="shell-header">
       <Link className="shell-wordmark" href="/">自适应学习路径</Link><span className="shell-page-title">{titles[pathname] ?? "学习工作台"}</span>
+      <CommandMenu />
       <Link href="/settings?panel=appearance" className="shell-mobile-settings" aria-label="设置中心"><Settings size={21} /><span>设置</span></Link>
     </header>
     <div className="editorial-content">{children}</div>

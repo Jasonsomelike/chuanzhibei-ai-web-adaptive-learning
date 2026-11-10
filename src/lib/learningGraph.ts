@@ -41,10 +41,11 @@ export function learningGraphNodes(graph: KnowledgeGraph, mastery: readonly Mast
   });
 }
 
-/** The complete prerequisite chain plus at most two upcoming nodes keeps the opening graph readable. */
-export function relatedLearningNodes(graph: KnowledgeGraph, steps: readonly PathStep[]): Set<string> {
+/** Keep the prerequisite chain and nearby branches; the selected concept anchors exploration. */
+export function relatedLearningNodes(graph: KnowledgeGraph, steps: readonly PathStep[], focusedId?: string): Set<string> {
   const index = indexGraph(graph);
   const related = new Set(steps.map(step => step.kcId));
+  if (focusedId && index.byId.has(focusedId)) related.add(focusedId);
   const visited = new Set<string>();
   const visit = (id: string) => {
     if (visited.has(id)) return;
@@ -54,18 +55,37 @@ export function relatedLearningNodes(graph: KnowledgeGraph, steps: readonly Path
     }
   };
   for (const step of steps) visit(step.kcId);
+  if (focusedId && index.byId.has(focusedId)) visit(focusedId);
   const depths = computeDepths(graph);
   const upcoming = new Set<string>();
+  if (focusedId) {
+    const byDepth = (a: string, b: string) => (depths.get(a) ?? 0) - (depths.get(b) ?? 0) || a.localeCompare(b);
+    // Balance two immediate applications with two nearby alternatives. Cross-course
+    // uses (e.g. stacks in DFS) remain available in the full graph and search.
+    [...(index.successors.get(focusedId) ?? [])].filter(id => !related.has(id)).sort(byDepth).slice(0, 2).forEach(id => upcoming.add(id));
+    const siblings = new Set<string>();
+    for (const predecessor of index.predecessors.get(focusedId) ?? []) for (const sibling of index.successors.get(predecessor) ?? []) if (!related.has(sibling)) siblings.add(sibling);
+    const chapter = index.byId.get(focusedId)?.chapter;
+    [...siblings].sort((a,b) => Number(index.byId.get(b)?.chapter === chapter) - Number(index.byId.get(a)?.chapter === chapter) || byDepth(a,b)).slice(0, 2).forEach(id => upcoming.add(id));
+  }
+  const nearby = [...upcoming].sort((a, b) => (depths.get(a) ?? 0) - (depths.get(b) ?? 0) || a.localeCompare(b));
   for (const step of steps) for (const successor of index.successors.get(step.kcId) ?? []) if (!related.has(successor)) upcoming.add(successor);
-  const limit = steps.length > 4 ? 0 : 2;
-  [...upcoming].sort((a, b) => (depths.get(a) ?? 0) - (depths.get(b) ?? 0) || (a < b ? -1 : a > b ? 1 : 0)).slice(0, limit).forEach(id => related.add(id));
+  const limit = focusedId ? 4 : steps.length > 4 ? 0 : 2;
+  const ordered = [...nearby, ...[...upcoming].filter(id => !nearby.includes(id)).sort((a, b) => (depths.get(a) ?? 0) - (depths.get(b) ?? 0) || (a < b ? -1 : a > b ? 1 : 0))];
+  ordered.slice(0, limit).forEach(id => related.add(id));
   return related;
 }
 
 /** Compact only visible rows; hidden siblings must never create large empty bands. */
-export function layoutLearningNodes(nodes: readonly LearningGraphNode[]): LearningGraphNode[] {
+export function layoutLearningNodes(nodes: readonly LearningGraphNode[], direction: "horizontal" | "vertical" = "horizontal"): LearningGraphNode[] {
   const columns = new Map<number, LearningGraphNode[]>();
   for (const node of nodes) { const list = columns.get(node.position.x) ?? []; list.push(node); columns.set(node.position.x, list); }
-  const maxRows = Math.max(1, ...[...columns.values()].map(list => list.length));
-  return [...columns.entries()].flatMap(([x, list]) => list.map((node, row) => ({ ...node, position: { x, y: row * 120 + (maxRows - list.length) * 60 } })));
+  const layers = [...columns.entries()].sort(([a], [b]) => a - b);
+  const bands = new Map<number, LearningGraphNode[]>();
+  for (const [depth, [, list]] of layers.entries()) {
+    const band = direction === "horizontal" && layers.length > 4 ? Math.floor((depth * 2 + 1) / 3) : depth;
+    bands.set(band, [...(bands.get(band) ?? []), ...list]);
+  }
+  const maxRows = Math.max(1, ...[...bands.values()].map(list => list.length));
+  return [...bands.entries()].flatMap(([depth, list]) => list.map((node, row) => ({ ...node, position: direction === "vertical" ? { x: row * 240 + (maxRows - list.length) * 120, y: depth * 112 } : { x: depth * 230, y: row * 160 + (maxRows - list.length) * 80 } })));
 }

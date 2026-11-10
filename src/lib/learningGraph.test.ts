@@ -50,4 +50,16 @@ describe("先修图谱使用真实规划与证据", () => {
     expect(Math.max(...first.map(node => node.position.y))).toBeLessThan(first.length * 120);
     expect(new Set(first.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(first.length);
   });
+  it("选中知识点呈现完整先修与相邻分支，切换方向不改变节点或证据", () => {
+    const focusedPlan = planPath({ graph: subject.graph, mastery, targets: ["c09"], budgetMinutes: 60 });
+    const related = relatedLearningNodes(subject.graph, focusedPlan.steps, "c09");
+    expect([...related].sort()).toEqual(["c01", "c02", "c05", "c06", "c09", "c10", "c11", "c12"]);
+    const subset = learningGraphNodes(subject.graph, mastery, focusedPlan, focusedPlan.steps).filter(node => related.has(node.id));
+    const horizontal = layoutLearningNodes(subset);
+    const vertical = layoutLearningNodes(subset, "vertical");
+    expect(vertical.map(({ position: _position, ...node }) => node)).toEqual(horizontal.map(({ position: _position, ...node }) => node));
+    expect(vertical.find(node => node.id === "c01")!.position.y).toBeLessThan(vertical.find(node => node.id === "c09")!.position.y);
+    expect(new Set(vertical.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(vertical.length);
+    expect(subset.every(node => node.mean === null)).toBe(true);
+  });
 });

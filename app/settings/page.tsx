@@ -595,12 +595,6 @@ export default function SettingsPage() {
       <Nav />
       <main id="main" ref={mainRef} className="settings-workspace mx-auto max-w-6xl px-5 py-8 sm:py-10">
         <h1 className="sr-only">设置中心</h1>
-        <div className="settings-intro mb-6 max-w-[62ch]" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
-          <p className="mt-1 text-sm leading-relaxed text-[var(--ink-soft)]">
-            按左侧分区逐项配置。调用模式决定请求由谁发出；其余分区各自保存，互不覆盖。
-          </p>
-        </div>
 
         {/* ── 当前状态：只读摘要，不参与编辑 ── */}
         <div

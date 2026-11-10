@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
-import { useStaggerIn, useStepFlash } from "@/components/motion";
+import { useStaggerIn, useStepFlash, prefersReducedMotion } from "@/components/motion";
+import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
 import { LearningEvidence } from "@/components/learning-evidence";
@@ -32,6 +33,7 @@ import { computeDepths } from "@/lib/graph";
 import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf } from "@/lib/chapters";
 import { summarizeCounterfactual } from "@/lib/planDiff";
 import { readManualPath, writeManualPath } from "@/lib/manualPath";
+import { readPathView, writePathView } from "@/lib/pathView";
 
 /**
  * 路径页的四个能力，对应评分表里的「交互模式创新」：
@@ -102,20 +104,10 @@ export default function PathPage() {
     synced,
   } = useLearner(targetId, target?.graph);
   const [chapterPickerOpen, setChapterPickerOpen] = useState(false);
-  const [graphOpen, setGraphOpen] = useState(false);
-  useEffect(() => {
-    const media = window.matchMedia("(min-width: 768px)");
-    const update = () => setGraphOpen(media.matches);
-    update(); media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-  const [budget, setBudget] = useState(90);
+  const [graphOpen, setGraphOpen] = useState(true);
+  const [budget, setBudget] = useState(60);
   const [workflowTargets, setWorkflowTargets] = useState<{ targetId: string; ids: string[] } | null>(null);
   const [budgetBaseline, setBudgetBaseline] = useState<{ targetId: string; progress: typeof progress; chapters: readonly string[]; budget: number; ids: readonly string[] } | null>(null);
-  useEffect(() => {
-    const fromUrl = Number(new URLSearchParams(window.location.search).get("budget"));
-    if (Number.isInteger(fromUrl) && fromUrl >= 5 && fromUrl <= 480) setBudget(fromUrl);
-  }, []);
   const [compareBudget, setCompareBudget] = useState<number | null>(null);
   /*
    * 手动改写只存「顺序 + 移除集合」，不存整份 steps。
@@ -134,6 +126,7 @@ export default function PathPage() {
    * 导师页的引用 Pill 会带这个参数跳过来；参数缺失或 id 不在当前路径里时什么都不做。
    */
   const [highlightKc, setHighlightKc] = useState<string | null>(null);
+  const [viewLoadedFor, setViewLoadedFor] = useState("");
 
   /*
    * 动效只包展示层：入场 stagger 覆盖标题与静态卡片，步骤列表作为一个整体入场；
@@ -221,9 +214,23 @@ export default function PathPage() {
    * 与 useSubject 同口径，避免 Next 把页面推进 Suspense 边界。
    */
   useEffect(() => {
-    const kc = new URLSearchParams(window.location.search).get("kc");
-    setHighlightKc(kc !== null && kc.trim() !== "" ? kc : null);
-  }, []);
+    if (!graph) return;
+    const params = new URLSearchParams(window.location.search);
+    const saved = readPathView(targetId);
+    const fromUrl = Number(params.get("budget"));
+    const kc = params.get("kc") ?? saved.kcId;
+    setBudget(Number.isInteger(fromUrl) && fromUrl >= 5 && fromUrl <= 480 ? fromUrl : saved.budget);
+    setHighlightKc(graph.concepts.some(item => item.id === kc) ? kc : null);
+    if (!params.has("targets")) {
+      const targets = saved.targets.filter(id => graph.concepts.some(item => item.id === id));
+      setWorkflowTargets(targets.length ? { targetId, ids: targets } : null);
+    }
+    setViewLoadedFor(targetId);
+  }, [graph, targetId]);
+  useEffect(() => {
+    if (viewLoadedFor !== targetId) return;
+    writePathView(targetId, { budget, kcId: highlightKc, targets: workflowTargets?.targetId === targetId ? workflowTargets.ids : [] });
+  }, [viewLoadedFor, targetId, budget, highlightKc, workflowTargets]);
 
   /*
    * 对照预算只跟目标走：换章节时保留它，
@@ -279,6 +286,9 @@ export default function PathPage() {
     capturePath();
     setBudgetBaseline({ targetId, progress, chapters, budget, ids: displayed.map(step => step.kcId) });
     setBudget(minutes);
+    const url = new URL(window.location.href);
+    url.searchParams.set("budget", String(minutes));
+    window.history.replaceState(window.history.state, "", url);
   };
 
   /** 相对算法顺序真的换了位置的点。只给这些点标「已手动调整」。 */
@@ -293,11 +303,15 @@ export default function PathPage() {
   const selectConcept = useCallback((id: string) => {
     scrolledKc.current = id;
     setHighlightKc(id);
+    const url = new URL(window.location.href);
+    url.searchParams.set("kc", id);
+    window.history.replaceState(window.history.state, "", url);
   }, []);
   const locateConcept = useCallback((id: string) => {
     scrolledKc.current = id; setHighlightKc(id);
-    if (window.matchMedia("(max-width: 767px)").matches) setGraphOpen(false);
-    requestAnimationFrame(() => document.getElementById(pathStepId(id))?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }));
+    const details = document.getElementById("path-step-editor") as HTMLDetailsElement | null;
+    if (details) details.open = true;
+    requestAnimationFrame(() => document.getElementById(pathStepId(id))?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" }));
   }, []);
 
   useEffect(() => {
@@ -310,7 +324,7 @@ export default function PathPage() {
      * behavior:"smooth" 是显式参数，不受 CSS scroll-behavior:auto 约束（规范行为），
      * 所以 reduced-motion 必须在这里单独判断，否则「减少动态效果」下仍会平滑滚动。
      */
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = prefersReducedMotion();
     el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
   }, [highlightKc, displayed]);
 
@@ -426,32 +440,18 @@ export default function PathPage() {
     <>
       <Nav />
       <main id="main" ref={mainRef} className="path-page mx-auto max-w-7xl px-5 py-8 sm:px-8">
-        <div className="workspace-heading mb-6" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">我的学习路径</h1>
-          <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            学习路径 · {target.name} · 每次作答都会更新推荐依据。
-          </p>
+        <div className="path-workspace-heading" data-motion="hero">
+          <h1>学习地图</h1>
+          <TargetPicker current={targetId} currentName={target.name} onChange={setTargetId} presentation="select" />
+          <label className="path-budget-select">学习预算<select aria-label="本次学习预算" value={budget} onChange={event => changeBudget(Number(event.target.value))}>{!BUDGET_OPTIONS.includes(budget) ? <option value={budget}>{budget} 分钟</option> : null}{BUDGET_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{minutes} 分钟</option>)}</select></label>
         </div>
 
-        {displayed[0] ? <Card className="mb-5 border-[var(--accent)] path-next-step">
-          <p className="text-sm text-[var(--accent)]">{target.name} · 下一步建议</p>
-          <h2 className="mt-2 text-xl font-semibold">{kcById.get(displayed[0].kcId)?.name}</h2>
-          <p className="mt-2 text-sm text-[var(--ink-soft)]">
-            {(progress.mastery.find((m) => m.kcId === displayed[0].kcId)?.evidenceN ?? 0) === 0 ? "尚未测评，建议先了解基础，再用练习确认掌握情况。" : displayed[0].reason}
-          </p>
-          <div className="mt-4 flex flex-wrap gap-3 text-sm">
-            <Link className="rounded-lg bg-[var(--accent)] px-4 py-2 font-medium text-[var(--on-accent)]" href={`/tutor${targetQuery(target)}&q=${encodeURIComponent(`请引导我学习${kcById.get(displayed[0].kcId)?.name}，先给一个思考问题。`)}`}>学习这一步 →</Link>
-            <Link className="rounded-lg border border-[var(--line-strong)] px-4 py-2" href={`/diagnose${targetQuery(target)}`}>用练习检验</Link>
-          </div>
-        </Card> : null}
-        {workflowTargets?.targetId === targetId ? <p className="mb-4 text-sm text-[var(--ink-soft)]">教学任务目标：{workflowTargets.ids.map(id => kcById.get(id)?.name).join("、")}（包含所需先修内容）。<button type="button" onClick={() => setWorkflowTargets(null)} className="ml-2 text-[var(--accent)] underline">返回课程范围</button></p> : null}
+        <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
+        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         <div className="path-control-bar">
-        <div className="path-budget-controls mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
-          <fieldset className="flex flex-wrap items-center gap-3"><legend className="sr-only">学习预算</legend><span className="text-sm font-medium">学习预算</span><div className="flex flex-wrap gap-1.5">{BUDGET_OPTIONS.map(minutes => <button type="button" key={minutes} aria-label={`把本次预算设为 ${minutes} 分钟`} aria-pressed={minutes === budget} onClick={() => changeBudget(minutes)} className={`tabular rounded-lg border px-3 py-2 text-xs ${budget === minutes ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]" : "border-[var(--line)] text-[var(--ink-soft)]"}`}>{minutes} 分钟</button>)}</div></fieldset>
-          <p className="text-xs text-[var(--ink-faint)]">修改预算，查看这次安排的变化。</p>
-        </div>
+        {workflowTargets?.targetId === targetId ? <p className="path-goal-caption">学习目标：{workflowTargets.ids.map(id => kcById.get(id)?.name).join("、")}<button type="button" onClick={() => { setWorkflowTargets(null); const url = new URL(window.location.href); url.searchParams.delete("targets"); window.history.replaceState(window.history.state, "", url); }} className="ml-3 text-[var(--accent)] underline">返回课程范围</button></p> : null}
         <div className="path-view-controls">
-        <button type="button" aria-expanded={graphOpen} aria-controls="path-graph" onClick={() => setGraphOpen(value => !value)} className="mb-4 rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm text-[var(--accent)]">{graphOpen ? "收起先修图谱" : "展开先修图谱"}</button>
+        <button type="button" aria-expanded={graphOpen} aria-controls="path-graph" onClick={() => { setGraphOpen(value => !value); if (graphOpen) { const details = document.getElementById("path-step-editor") as HTMLDetailsElement | null; if (details) details.open = true; } }} className="path-outline-toggle">{graphOpen ? "只看清单" : "展开先修图谱"}</button>
         <AppDialog open={chapterPickerOpen} onOpenChange={setChapterPickerOpen} drawer title="教材章节" description="选择本次学习范围，系统会保留所需的跨章先修知识。" trigger={<button type="button" className="path-chapter-trigger">教材章节 · {chapters.length ? `已选 ${chapters.length} 章` : "整科"}</button>}>
           <div className="mt-4">        {/* 章节范围：只收窄 targets，不裁剪图谱 */}
         {target.kind === "direction" ? (
@@ -479,17 +479,13 @@ export default function PathPage() {
         </div>
         </div>
 
-        <div className="path-counts my-5 grid grid-cols-3 divide-x divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--surface)] py-4 text-center">
-          {[{ label: "本次安排", value: displayed.length }, { label: "预算暂缓", value: plan?.deferred.length ?? 0 }, { label: "先修阻塞", value: plan?.blocked.length ?? 0 }].map(item => <div key={item.label}><span className="tabular text-xl font-semibold text-[var(--accent)]">{item.value}</span><span className="ml-2 text-xs text-[var(--ink-soft)]">{item.label}</span></div>)}
-        </div>
-        <p role="status" data-path-summary className="mb-5 text-xs text-[var(--ink-faint)]">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
-        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         {budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? <details className="mb-5 border-b border-[var(--line)] pb-4">
           <summary className="cursor-pointer text-sm text-[var(--accent)]">查看预算调整的具体变化</summary>
           <ul className="mt-3 space-y-2 text-sm">{[...displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => ({ id: step.kcId, label: "新增安排" })), ...budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).map(id => ({ id, label: plan?.blocked.some(item => item.kcId === id) ? "先修阻塞" : plan?.deferred.includes(id) ? "预算暂缓" : "不在本次清单" }))].map(item => <li key={item.id}><button type="button" className="text-[var(--accent)] underline" onClick={() => { selectConcept(item.id); setGraphOpen(true); requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ block: "start" })); }}>{kcById.get(item.id)?.name ?? item.id}</button><span className="ml-3 text-xs text-[var(--ink-soft)]">{item.label}</span></li>)}</ul>
           {plan?.blocked.length ? <p className="mt-3 text-xs text-[var(--ink-faint)]">先修阻塞表示所需的前置知识未排入本次预算；选中知识点可查看具体前置条件。</p> : null}
         </details> : null}
         {/* 路径 */}
+        <details id="path-step-editor" className="path-step-editor"><summary>编辑学习清单<span>{displayed.length} 步 · {totalMinutes} 分钟{manualEdit ? " · 已手动修改" : ""}</span></summary>
         <section id="learning-steps" className="mb-5 scroll-mt-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2" data-motion="steps-heading">
             <SectionTitle
@@ -581,7 +577,7 @@ export default function PathPage() {
                           <div className="flex flex-wrap items-center gap-2">
                             <button type="button" aria-label={`在图谱中定位「${c?.name ?? step.kcId}」`} aria-pressed={highlightKc === step.kcId} className="text-left font-medium text-[var(--accent)] underline underline-offset-4" onClick={() => {
                               scrolledKc.current = step.kcId; setHighlightKc(step.kcId); setGraphOpen(true);
-                              requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }));
+                              requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" }));
                             }}>{c?.name ?? step.kcId}</button>
                             <Pill>{step.kind === "learn" ? "新学" : "复习"}</Pill>
                             <Pill>{step.estMinutes} 分钟</Pill>
@@ -629,7 +625,7 @@ export default function PathPage() {
                             aria-label={`把「${c?.name}」上移一位`}
                             className="rounded border border-[var(--line-strong)] px-2 py-0.5 text-xs disabled:opacity-30"
                           >
-                            ↑
+                            <ArrowUp size={16} />
                           </button>
                           <button
                             type="button"
@@ -638,7 +634,7 @@ export default function PathPage() {
                             aria-label={`把「${c?.name}」下移一位`}
                             className="rounded border border-[var(--line-strong)] px-2 py-0.5 text-xs disabled:opacity-30"
                           >
-                            ↓
+                            <ArrowDown size={16} />
                           </button>
                           <button
                             type="button"
@@ -646,7 +642,7 @@ export default function PathPage() {
                             aria-label={`移除「${c?.name}」`}
                             className="rounded border border-[var(--line-strong)] px-2 py-0.5 text-xs text-[var(--bad)]"
                           >
-                            ×
+                            <X size={16} />
                           </button>
                         </div>
                       </div>
@@ -657,6 +653,7 @@ export default function PathPage() {
             </ol>
           )}
         </section>
+        </details>
 
         <LearningEvidence graph={graph} progress={progress} budgetMinutes={budget} />
         <details className="mb-5 rounded-xl border border-[var(--line)] p-4">
@@ -835,3 +832,4 @@ export default function PathPage() {
     </>
   );
 }
+

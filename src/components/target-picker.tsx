@@ -66,6 +66,8 @@ export function TargetPicker({
   onNewDirection,
   showNew = true,
   compact = false,
+  presentation = "buttons",
+  currentName,
 }: {
   /** 当前目标 id：内置学科 id 或方向 uuid。 */
   current: string;
@@ -74,6 +76,8 @@ export function TargetPicker({
   onNewDirection?: () => void;
   showNew?: boolean;
   compact?: boolean;
+  presentation?: "buttons" | "select";
+  currentName?: string;
 }) {
   const { user, loading } = useAuth();
   const [mine, setMine] = useState<DirectionSummary[]>([]);
@@ -114,6 +118,15 @@ export function TargetPicker({
   useEffect(() => {
     void loadMine();
   }, [loadMine]);
+
+  if (presentation === "select") return <div className="target-select-wrap">
+    <select aria-label="当前学习目标" value={current} onChange={event => onChange(event.target.value)}>
+      {!SUBJECTS.some(subject => subject.id === current) && !mine.some(item => item.id === current) ? <option value={current}>{currentName ?? "当前自定义方向"}</option> : null}
+      <optgroup label="内置课程">{SUBJECTS.map(subject => <option key={subject.id} value={subject.id}>{subject.name}</option>)}</optgroup>
+      {mine.length ? <optgroup label="我的方向">{mine.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</optgroup> : null}
+    </select>
+    {error ? <p role="alert" className="text-xs text-[var(--bad)]">{error}</p> : null}
+  </div>;
 
   return (
     <div className="space-y-3">

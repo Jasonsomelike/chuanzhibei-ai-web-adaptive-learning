@@ -95,7 +95,7 @@ export function useMotionSafe(): (run: () => void) => void {
 
   return useCallback((run: () => void) => {
     if (typeof window === "undefined") return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (document.documentElement.dataset.reducedMotion === "true" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const context = contextRef.current;
     if (context !== null) context.add(run);
     else run();

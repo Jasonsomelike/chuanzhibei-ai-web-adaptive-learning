@@ -37,7 +37,7 @@ try {
     await delay(250);
   }
   if (!ready) throw new Error("隔离测试服务启动超时");
-  for (const script of ["scripts/learning-smoke.ts", "scripts/auth-smoke.ts", "scripts/mcp-smoke.ts"]) {
+  for (const script of ["scripts/learning-smoke.ts", "scripts/editorial-smoke.ts", "scripts/auth-smoke.ts", "scripts/mcp-smoke.ts"]) {
     child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", script], { env, stdio: "inherit", windowsHide: true });
     const code = await new Promise((resolve) => child.once("exit", (value) => resolve(value ?? 1)));
     if (code !== 0) { process.exitCode = code; break; }
