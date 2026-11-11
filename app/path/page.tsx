@@ -448,7 +448,7 @@ export default function PathPage() {
           <label className="path-budget-select">学习预算<select aria-label="本次学习预算" value={budget} onChange={event => changeBudget(Number(event.target.value))}>{!BUDGET_OPTIONS.includes(budget) ? <option value={budget}>{budget} 分钟</option> : null}{BUDGET_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{minutes} 分钟</option>)}</select></label>
         </div>
 
-        <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
+        <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟，剩余 ${budget - totalMinutes} 分钟；随学习推进，达标的知识点会移出计划，剩余时间自动更新。`}</p>
         {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} targetName={target.name} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         <div className="path-control-bar">
         {workflowTargets?.targetId === targetId ? <p className="path-goal-caption">学习目标：{workflowTargets.ids.map(id => kcById.get(id)?.name).join("、")}<button type="button" onClick={() => { setWorkflowTargets(null); const url = new URL(window.location.href); url.searchParams.delete("targets"); window.history.replaceState(window.history.state, "", url); }} className="ml-3 text-[var(--accent)] underline">返回课程范围</button></p> : null}
@@ -582,7 +582,7 @@ export default function PathPage() {
                               requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" }));
                             }}>{c?.name ?? step.kcId}</button>
                             <Pill>{step.kind === "learn" ? "新学" : "复习"}</Pill>
-                            <Pill>{step.estMinutes} 分钟</Pill>
+                            <Pill>剩余 {budget - displayed.slice(0, i + 1).reduce((sum, s) => sum + s.estMinutes, 0)} 分钟</Pill>
                             <Pill>深度 {depths.get(step.kcId) ?? 0}</Pill>
                             {moved.has(step.kcId) ? <Pill tone="warn">已手动调整</Pill> : null}
                             {/* 只影响视觉：?kc= 跳转过来的定位标记，不参与路径计算 */}
