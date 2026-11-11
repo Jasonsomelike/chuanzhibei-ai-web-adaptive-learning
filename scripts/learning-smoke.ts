@@ -23,6 +23,7 @@ async function visit(path: string) {
   const response = await page.goto(`${base}${path}`, { waitUntil: "domcontentloaded" });
   check(response?.ok(), `页面 ${path} 返回成功`);
   await page.locator("main h1").waitFor();
+  if (path.startsWith("/tutor")) await page.waitForFunction(() => document.querySelector('[aria-label="辅导消息"]')?.getAttribute("aria-busy") === "false");
 }
 
 try {
@@ -42,6 +43,7 @@ try {
   check(await page.getByLabel("本次学习预算", { exact: true }).inputValue() === "60", "首页预算在路径页实际生效");
   await page.locator(".knowledge-sequence").getByRole("link", { name: "开始学习", exact: true }).click();
   await page.locator("#q").waitFor();
+  await page.waitForFunction(() => document.querySelector('[aria-label="辅导消息"]')?.getAttribute("aria-busy") === "false");
   check((await page.locator("#q").inputValue()).includes("请引导我理解"), "学习任务传入导师输入框且不自动发送");
 
   await visit("/tutor?subject=data-structures");
@@ -56,8 +58,10 @@ try {
   check((await page.locator("main").innerText()).includes("[c09]"), "完整讲解可检索并引用课程依据");
   await page.getByRole("button", { name: "查看知识点 c09 的引用原文", exact: true }).last().click();
   const original = page.getByRole("region", { name: "回答引用原文", exact: true });
+  await original.waitFor({ state: "visible" });
   check(await original.isVisible() && (await original.innerText()).includes("后进先出"), "点击引用在侧栏展示该回答的原文快照");
   check(new URL(page.url()).pathname === "/tutor", "查看引用保留导师对话位置");
+  await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "栈 [c09]", exact: true }).last().click();
   await page.getByRole("dialog", { name: "课程学习材料", exact: true }).waitFor();
@@ -106,22 +110,26 @@ try {
   check(await page.locator(".diagnostic-sidebar").isVisible(), "可退出专注并恢复辅助材料");
   await visit("/tutor?subject=data-structures");
   check(await page.locator("#q").evaluate(el => el.tagName === "TEXTAREA"), "导师支持多行问题输入");
+  await page.getByRole("button", { name: "教材与引用", exact: true }).click();
   await page.getByRole("button", { name: "围绕这段提问", exact: true }).first().click();
+  await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.id === "q");
   check((await page.locator("#q").inputValue()).includes("教材") && await page.locator("#q").evaluate(el => el === document.activeElement), "教材摘录进入输入框并保持出处");
   check(await page.getByRole("link", { name: "[top]", exact: true }).count() === 0, "教材数组下标不会误变成知识点链接");
+  await page.getByRole("button", { name: "教材与引用", exact: true }).click();
   await page.getByRole("tab", { name: "教材阅读", exact: true }).focus();
   await page.keyboard.press("End");
   check(await page.getByRole("tab", { name: "学习设置", exact: true }).getAttribute("aria-selected") === "true", "导师侧栏支持标准标签页键盘操作");
   await page.setViewportSize({ width: 390, height: 844 });
   await visit("/tutor?subject=data-structures");
-  await page.getByRole("button", { name: "教材与学习设置", exact: true }).click();
+  await page.getByRole("button", { name: "教材与引用", exact: true }).click();
   check(await page.getByRole("dialog", { name: "课程学习材料", exact: true }).isVisible(), "移动端材料抽屉可打开");
   await page.getByRole("button", { name: "围绕这段提问", exact: true }).first().click();
+  await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.id === "q");
   check(await page.getByRole("dialog").count() === 0 && await page.locator("#q").evaluate(el => el === document.activeElement), "移动端引用原文后关闭抽屉，焦点回到问题");
   await page.locator("#q").scrollIntoViewIfNeeded();
   check(await page.locator("#q").evaluate(el => el.getBoundingClientRect().bottom <= document.querySelector(".mobile-learning-nav")!.getBoundingClientRect().top), "手机输入框不被底部导航遮挡");
-  await page.getByRole("button", { name: "教材与学习设置", exact: true }).click(); await page.keyboard.press("Escape");
-  check(await page.getByRole("button", { name: "教材与学习设置", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
+  await page.getByRole("button", { name: "教材与引用", exact: true }).click(); await page.keyboard.press("Escape");
+  check(await page.getByRole("button", { name: "教材与引用", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
   await visit("/path?subject=data-structures");
   await page.getByRole("button", { name: "教材章节 · 整科", exact: true }).click();
   await page.getByRole("dialog", { name: "教材章节", exact: true }).waitFor();
@@ -279,8 +287,10 @@ try {
     await visit("/settings?panel=tone");
     await page.getByRole("button", { name: /^严格/ }).click();
     await visit("/tutor?subject=data-structures");
+    await page.getByRole("button", { name: "教材与引用", exact: true }).click();
     await page.getByRole("tab", { name: "学习设置", exact: true }).click();
     await page.getByLabel("智能体（教学工作流）", { exact: true }).check();
+    await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "3 · 完整讲解" }).click();
     await page.locator("#q").fill("栈为什么遵循后进先出？");
     await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -294,6 +304,7 @@ try {
     check(!((modelRequests[0].tools as { function: { parameters: { properties: unknown } } }[]).some((tool) => JSON.stringify(tool.function.parameters.properties).includes('"mastery"'))), "Agent 工具不允许模型自报掌握度");
     await page.locator("[data-teaching-task]").waitFor();
     check(await page.locator("[data-teaching-task]").last().getByText("任务完成", { exact: true }).isVisible(), "知识辅导工作流完成并显示教学卡");
+    await page.getByText("教学任务与学习时间", { exact: true }).click();
     await page.getByLabel("教学任务类型", { exact: true }).selectOption("review_path");
     await page.getByLabel("教学学习时间", { exact: true }).selectOption("30");
     await page.locator("#q").fill("今天只有30分钟，安排一下学习路径");
@@ -312,7 +323,7 @@ try {
     check(await task.innerText().then(t => t.includes("作答后的学习计划")), "独立练习经服务端判分并重新计算路径");
     await page.reload();
     await page.locator("[data-assessment]").waitFor();
-    check(await page.getByText("上次教学任务 · 已从当前账号恢复", { exact: true }).isVisible(), "刷新恢复教学检查点和已核对作答");
+    check(await page.locator(".tutor-user-message").count() === 3 && await page.locator("[data-teaching-task]").count() === 3, "刷新恢复完整三轮教学问答和已核对作答");
     await page.locator("[data-assessment]").scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(output, "workflow-assessment-1280.png"), fullPage: false });
     await page.setViewportSize({ width: 390, height: 844 });

@@ -4,15 +4,17 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { assessmentResult, INTENT_LABELS, type AssessmentResult, type TeachingIntent, type WorkflowSnapshot } from "@/lib/learningWorkflowContracts";
 
-export function TeachingTaskCard({ workflow, query, onFollowup, onAssessed, initialAssessment, disabled = false }: {
+export function TeachingTaskCard({ workflow, query, onFollowup, onAssessed, initialAssessment, conversationId, messageId, inherited = false, disabled = false }: {
   workflow: WorkflowSnapshot; query: string;
   onFollowup: (intent: TeachingIntent, question: string) => void;
-  onAssessed: () => void;
+  onAssessed: (result: AssessmentResult) => void;
   initialAssessment?: AssessmentResult | null;
   disabled?: boolean;
+  conversationId?: string; messageId?: string; inherited?: boolean;
 }) {
   const [selected, setSelected] = useState<number | null>(null);
-  const [assessment, setAssessment] = useState<AssessmentResult | null>(initialAssessment ?? null);
+  const [submittedAssessment, setAssessment] = useState<AssessmentResult | null>(initialAssessment ?? null);
+  const assessment = submittedAssessment ?? initialAssessment ?? null;
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,18 +23,19 @@ export function TeachingTaskCard({ workflow, query, onFollowup, onAssessed, init
   const focus = current.focusName ?? "当前知识点";
   const planUrl = `/path${query}&budget=${current.budgetMinutes}${current.focusKcId ? `&kc=${encodeURIComponent(current.focusKcId)}` : ""}${current.planTargets?.length ? `&targets=${encodeURIComponent(current.planTargets.join(","))}` : ""}`;
   const submit = async () => {
-    if (selected === null || !exercise || submitting.current || disabled) return;
+    if (selected === null || !exercise || submitting.current || disabled || inherited) return;
     submitting.current = true; setBusy(true); setError(null);
     try {
       const response = await fetch("/api/agent/answer", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ targetId: current.targetId, runId: current.runId, questionId: exercise.questionId, selectedIndex: selected }),
+        body: JSON.stringify({ targetId: current.targetId, runId: current.runId, questionId: exercise.questionId, selectedIndex: selected,
+          ...(conversationId && messageId ? { conversationId,messageId } : {}) }),
         signal: AbortSignal.timeout(20_000),
       });
       const raw: unknown = await response.json();
       if (!response.ok) throw new Error(typeof raw === "object" && raw !== null && "error" in raw && typeof raw.error === "string" ? raw.error : "练习提交失败");
       const parsed = assessmentResult.parse(raw);
-      setAssessment(parsed); onAssessed();
+      setAssessment(parsed); onAssessed(parsed);
     } catch (error) { setError(error instanceof Error ? error.message : "练习提交失败，请重试"); }
     finally { submitting.current = false; setBusy(false); }
   };
@@ -42,7 +45,8 @@ export function TeachingTaskCard({ workflow, query, onFollowup, onAssessed, init
       <span className="text-xs text-[var(--ink-faint)]" role="status">{current.status === "running" ? "正在处理" : current.status === "failed" ? "任务中断" : assessment ? "已核对作答并更新计划" : current.status === "awaiting_answer" ? "等待作答" : "任务完成"}</span>
     </div>
     <p className="mt-2 text-xs text-[var(--ink-soft)]">{current.routeReason}{current.resumedTurns > 0 ? ` 已衔接最近 ${current.resumedTurns} 轮教学记录。` : ""}</p>
-    {exercise ? <fieldset className="mt-4" disabled={busy || assessment !== null || disabled || !current.persisted || current.status === "failed"}>
+    {inherited && exercise && !assessment ? <p className="mt-3 text-xs text-[var(--ink-soft)]">这道练习继承自原会话。请回到原会话作答，或在此分支新发起练习。</p> : null}
+    {exercise ? <fieldset className="mt-4" disabled={busy || assessment !== null || disabled || inherited || !current.persisted || current.status === "failed"}>
       <legend className="font-medium leading-relaxed">{exercise.stem}</legend>
       <div className="mt-3 space-y-2">{exercise.options.map((option, index) => <label key={index} className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-3 has-checked:border-[var(--accent)]">
         <input className="mt-1" type="radio" name={`exercise-${current.runId}`} value={index} checked={(assessment?.selectedIndex ?? selected) === index} onChange={() => setSelected(index)} />

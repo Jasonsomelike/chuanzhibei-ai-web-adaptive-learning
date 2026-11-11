@@ -556,6 +556,8 @@ export class ProviderCapabilityError extends Error {
 export interface ChatBodyRequest {
   readonly system?: ChatContent;
   readonly user: ChatContent;
+  /** Bounded prompt history; the complete conversation is stored separately. */
+  readonly history?: readonly { role: "user" | "assistant"; content: string }[];
   readonly maxTokens?: number;
   readonly temperature?: number;
   /** 要求模型返回 JSON 对象。Anthropic 无此参数，靠提示词与 extractJson 兜底。 */
@@ -564,6 +566,9 @@ export interface ChatBodyRequest {
   readonly tools?: readonly ChatToolDefinition[];
   /** 工具选择策略。Anthropic 协议收到它（或 tools）会抛 ProviderCapabilityError。 */
   readonly toolChoice?: ChatToolChoice;
+}
+export function chatHistoryOf(request: ChatBodyRequest) {
+  return (request.history ?? []).slice(-8).filter(message => message.content.trim()).map(message => ({ role:message.role,content:message.content.slice(0,1500) }));
 }
 
 /** data URI 的严格形式；http(s) 地址在这里天然不匹配。 */
@@ -676,7 +681,7 @@ export function buildChatBody(
           temperature,
           // Anthropic 的 system 只能是字符串；parts 只拼文本，图片不进 system。
           ...(systemText !== "" ? { system: systemText } : {}),
-          messages: [{ role: "user", content: anthropicContentOf(req.user) }],
+          messages: [...chatHistoryOf(req),{ role: "user", content: anthropicContentOf(req.user) }],
         }
       : {
           model: provider.model,
@@ -688,6 +693,7 @@ export function buildChatBody(
           ...(req.toolChoice !== undefined ? { tool_choice: req.toolChoice } : {}),
           messages: [
             ...(systemText !== "" ? [{ role: "system", content: systemText }] : []),
+            ...chatHistoryOf(req),
             { role: "user", content: req.user },
           ],
         };

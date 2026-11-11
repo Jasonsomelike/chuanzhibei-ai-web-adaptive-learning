@@ -51,6 +51,9 @@ import { tutorSystemPrompt } from "@/lib/tutorPersona";
 import { tutoringPolicy } from "@/lib/tutorPreferences";
 import { prepareTeachingTask, runTeachingWorkflow } from "@/lib/learningWorkflow";
 import { readLearningSession, saveLearningSession } from "@/lib/learningSession";
+import { claimConversationAgent, ConversationError } from "@/lib/conversationStore";
+import { conversationRecorder } from "@/lib/conversationAgent";
+import { buildTutorQuestion } from "@/lib/tutorQuestion";
 import {
   buildUpstreamChatBody,
   endpointFor,
@@ -527,7 +530,20 @@ export async function POST(request: Request): Promise<Response> {
   const materialTexts = new Set<string>();
   const materialSources = new Set<string>();
   const db = await getDb();
-  const previous = await readLearningSession(db, auth.user.id, learningContext.course.id).catch(() => {
+  let archive: Awaited<ReturnType<typeof claimConversationAgent>> | null = null;
+  if (body.conversationId && body.assistantMessageId) {
+    try {
+      archive = await claimConversationAgent(db, auth.user.id, body.conversationId, body.assistantMessageId, learningContext.course.id);
+      body.question = buildTutorQuestion(archive.question.content.text,archive.question.content.attachments.length);
+      body.images = archive.question.content.attachments.map(image => image.dataUrl);
+      learningContext = await loadLearningContext(db, auth.user.id, learningContext.course.id, body.question, body.materialSourceIds);
+    } catch (error) {
+      return jsonError(error instanceof ConversationError ? error.status : 500, apiErrorCodes.badRequest,
+        error instanceof ConversationError ? error.message : "读取完整会话失败，本轮未开始。");
+    }
+  }
+  const previous = archive ? { revision: null, session: archive.previous ? { version: 1 as const, snapshot: archive.previous, turns: archive.turns } : null }
+    : await readLearningSession(db, auth.user.id, learningContext.course.id).catch(() => {
     notices.push({ type: "notice", level: "warn", message: "读取教学会话失败，本轮不携带历史；存档冲突时不会覆盖旧会话。" });
     return { revision: null, session: null };
   });
@@ -537,6 +553,10 @@ export async function POST(request: Request): Promise<Response> {
       `${previous.session.snapshot.focusName} ${body.question}`, body.materialSourceIds);
   }
   const task = prepareTeachingTask(learningContext, body, previous.session);
+  if (archive && !body.resetSession) {
+    task.history = archive.turns;
+    task.snapshot.resumedTurns = archive.turns.length;
+  }
   for (const result of task.initialToolResults) {
     if (result.name !== "search_knowledge") continue;
     const data = JSON.parse(result.text) as { material?: string; materialSources?: string[] };
@@ -571,7 +591,12 @@ export async function POST(request: Request): Promise<Response> {
   const headers = buildHeaders(config);
   const endpoint = endpointFor(config.api, config.options.baseUrl);
 
-  return sseResponse(async (emit, signal) => {
+  return sseResponse(async (send, signal) => {
+    const recorder = archive && body.conversationId && body.assistantMessageId
+      ? conversationRecorder(db, auth.user.id, body.conversationId, body.assistantMessageId, archive.token, learningContext.course.graph.concepts) : null;
+    const emit = (event: AgentEvent) => { recorder?.record(event); send(event); };
+    let completed = false;
+    try {
     for (const notice of notices) emit(notice);
 
     let target: AllowedTarget;
@@ -689,7 +714,7 @@ export async function POST(request: Request): Promise<Response> {
     await runTeachingWorkflow({
       task,
       context: learningContext,
-      checkpoint: (snapshot, text) => saveLearningSession(db, auth.user.id, learningContext.course.id, previous.revision, {
+      checkpoint: (snapshot, text) => recorder ? recorder.save("complete", { workflow: snapshot, text }) : saveLearningSession(db, auth.user.id, learningContext.course.id, previous.revision, {
         version: 1, snapshot,
         turns: [...task.history, { question: body.question.slice(0, 1000), answer: text.slice(0, 1500) }].slice(-4),
       }),
@@ -706,5 +731,12 @@ export async function POST(request: Request): Promise<Response> {
       emit: (event) => emit(event.type === "done" ? { ...event, uploads: learningContext.uploadHits,
         materialContext: [...materialTexts].join("\n\n"), materialSources: [...materialSources] } : event),
     });
+    completed = task.snapshot.status === "complete" || task.snapshot.status === "awaiting_answer";
+    } finally {
+      if (recorder) {
+        const saved = await recorder.save(completed ? "complete" : "interrupted").catch(() => false);
+        if (!saved && !signal.aborted) send({ type: "notice", level: "warn", message: "完整会话保存失败或生成已被停止，请重新载入确认记录。" });
+      }
+    }
   }, request.signal);
 }

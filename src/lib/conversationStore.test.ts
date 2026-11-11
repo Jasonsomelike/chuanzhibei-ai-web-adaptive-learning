@@ -4,7 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { __resetMemoryDbForTests, __setDbBackendForTests, getDb, SCHEMA, type Db } from "./db";
 import { CONVERSATION_SCHEMA, CONVERSATION_SQL } from "./conversationSql";
 import { archiveContent, type ConversationSummary } from "./conversationContracts";
-import { appendConversationTurn, branchConversation, claimConversationAgent, createConversation, getArchivedMessage, getConversation, listConversations, readConversationPage, saveConversationAgent, saveConversationAssessment, updateArchivedMessage, updateConversation } from "./conversationStore";
+import { appendConversationTurn, branchConversation, claimConversationAgent, createConversation, getArchivedMessage, getConversation, interruptConversationMessage, listConversations, readConversationPage, saveConversationAgent, saveConversationAssessment, updateArchivedMessage, updateConversation } from "./conversationStore";
 import type { WorkflowSnapshot } from "./learningWorkflowContracts";
 import { base64BytesOfDataUrl } from "./image";
 
@@ -136,6 +136,17 @@ describe.each(["memory", "postgres"] as const)("完整会话存档 · %s", backe
     expect((await getArchivedMessage(db,"alice",fork.id,saved.assistant.id)).proof?.assessment).toEqual(assessment);
     expect(await saveConversationAssessment(db,"alice",fork.id,saved.assistant.id,{workflow,assessment:null})).toBe(false);
     expect((await getArchivedMessage(db,"alice",conversation.id,saved.assistant.id)).proof?.assessment?.explanation).toBe("核对后的解析");
+  });
+  it("停止使旧运行令牌失效；迟到回答不能覆盖已停止的轮次", async () => {
+    const conversation = await createConversation(db,"alice","data-structures");
+    const saved = await appendConversationTurn(db,"alice",{conversationId:conversation.id,revision:0,user:{id:randomUUID(),content:{text:"解释栈"}},assistantId:randomUUID()});
+    const claim = await claimConversationAgent(db,"alice",conversation.id,saved.assistant.id,"data-structures");
+    const stopped = await interruptConversationMessage(db,"alice",conversation.id,saved.assistant.id);
+    expect(stopped.state).toBe("interrupted");
+    expect(stopped.content.streaming).toBe(false);
+    expect(await saveConversationAgent(db,"alice",conversation.id,saved.assistant.id,claim.token,archiveContent.parse({text:"迟到的回答"}),null,"complete")).toBe(false);
+    const fork = await branchConversation(db,"alice",conversation.id,saved.assistant.id);
+    expect((await getArchivedMessage(db,"alice",fork.id,saved.assistant.id)).state).toBe("interrupted");
   });
   it("分页对大内容按响应字节收窄，但不截断任何消息", async () => {
     let conversation = await createConversation(db,"alice","data-structures");

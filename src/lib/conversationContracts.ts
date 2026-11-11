@@ -97,3 +97,4 @@ export const messageUpdate = z.strictObject({
   conversationId: archiveId, id: archiveId, revision: z.number().int().nonnegative(),
   content: archiveContent, state: z.enum(["pending", "complete", "interrupted"]),
 });
+export const messageInterrupt = z.strictObject({ conversationId: archiveId, id: archiveId });

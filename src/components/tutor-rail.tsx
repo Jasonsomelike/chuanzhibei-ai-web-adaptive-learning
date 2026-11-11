@@ -4,14 +4,14 @@ import { Children, useEffect, useId, useRef, useState, type ReactNode } from "re
 import { AppDialog } from "@/components/primitives/dialog";
 import { Icon } from "@/components/icons";
 
-/** The same material/settings panels serve the desktop reading rail and mobile drawer. */
+/** Materials are on demand on every screen, leaving the conversation as the main stage. */
 export function TutorRail({ children, course, sourceRequest = 0, sourcePanel }: { children: ReactNode; course: string; sourceRequest?: number; sourcePanel?: ReactNode }) {
   const [tab, setTab] = useState(0);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!sourceRequest) return;
     setTab(0);
-    if (window.matchMedia("(max-width: 1023px)").matches) setOpen(true);
+    setOpen(true);
     const timer = window.setTimeout(() => document.querySelector<HTMLElement>("[data-citation-source]")?.focus(), 50);
     return () => window.clearTimeout(timer);
   }, [sourceRequest]);
@@ -43,7 +43,6 @@ export function TutorRail({ children, course, sourceRequest = 0, sourcePanel }: 
     </div>)}
   </div>;
   return <>
-    <aside className="tutor-rail" aria-label="课程学习材料">{!open ? contents : null}</aside>
-    <div className="tutor-mobile-materials"><AppDialog open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { if (focusComposer.current) { event.preventDefault(); focusComposer.current = false; document.getElementById("q")?.focus(); } }} drawer title="课程学习材料" description="阅读教材、查看上传资料，或调整当前课程的学习设置。" trigger={<button type="button" className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--accent)]"><Icon name="book" size={18} />教材与学习设置</button>}>{open ? contents : null}</AppDialog></div>
+    <div className="tutor-material-trigger"><AppDialog open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { if (focusComposer.current) { event.preventDefault(); focusComposer.current = false; document.getElementById("q")?.focus(); } }} drawer title="课程学习材料" description="阅读教材、查看上传资料，或调整当前课程的学习设置。" trigger={<button type="button" className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--accent)]"><Icon name="book" size={18} /><span>教材与引用</span></button>}>{open ? contents : null}</AppDialog></div>
   </>;
 }

@@ -59,7 +59,10 @@ export const agentRequest = z.strictObject({
   intent: teachingIntent.optional(),
   /** Start a new teaching task without carrying previous conversation text. */
   resetSession: z.boolean().optional(),
-}).refine((body) => !(body.subject && body.directionId), "subject 与 directionId 不能同时指定");
+  conversationId: z.string().uuid().optional(),
+  assistantMessageId: z.string().uuid().optional(),
+}).refine((body) => !(body.subject && body.directionId), "subject 与 directionId 不能同时指定")
+  .refine(body => Boolean(body.conversationId) === Boolean(body.assistantMessageId), "会话与回答标识必须同时提供");
 
 export type AgentRequest = z.infer<typeof agentRequest>;
 

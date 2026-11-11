@@ -1,5 +1,5 @@
 /** Mirrors the named archive SQL statements for isolated local development and tests. */
-import { CONVERSATION_SQL, type ConversationMessageRow, type ConversationRow } from "./conversationSql";
+import { CONVERSATION_SQL, type ConversationContextRow, type ConversationMessageRow, type ConversationRow } from "./conversationSql";
 
 const normalize = (sql: string) => sql.replace(/\s+/gu, " ").trim().toLowerCase();
 const statements = new Map(Object.entries(CONVERSATION_SQL).map(([name, sql]) => [normalize(sql), name]));
@@ -56,6 +56,12 @@ export function createConversationMemory(hasUser: (id: string) => boolean) {
         messages.set(key(uid, cid, p[2]), { ...message, run_token: String(p[3]), revision: message.revision + 1 });
         return 1;
       }
+      if (action === "interrupt") {
+        if (!active(meta) || !message || message.role !== "assistant" || message.state !== "pending" || message.inherited_from) return 0;
+        messages.set(key(uid, cid, p[2]), { ...message, run_token: null, state: "interrupted", revision: message.revision + 1,
+          data: JSON.stringify({ ...JSON.parse(message.data), streaming: false, checking: false }) });
+        return 1;
+      }
       if (action === "saveAgent") {
         const candidate = p[5] === null ? null : JSON.parse(String(p[5])) as { workflow: { targetId: string } };
         if (!meta || !message || message.run_token !== p[3] || message.inherited_from || message.state !== "pending" && p[6] === "pending" || candidate && candidate.workflow.targetId !== meta.target_id) return 0;
@@ -72,13 +78,15 @@ export function createConversationMemory(hasUser: (id: string) => boolean) {
       }
       return undefined;
     },
-    all(sql: string, p: unknown[]): (ConversationRow | ConversationMessageRow)[] | undefined {
+    all(sql: string, p: unknown[]): (ConversationRow | ConversationMessageRow | ConversationContextRow)[] | undefined {
       const action = statements.get(normalize(sql));
       if (!action) return undefined;
       const uid = String(p[0]), cid = String(p[1]);
       if (action === "byId") { const row = conversations.get(key(uid, cid)); return row ? [{ ...row }] : []; }
       if (action === "message") { const row = messages.get(key(uid, cid, p[2])); return row ? [{ ...row }] : []; }
       if (action === "pair") return [...messages.values()].filter(row => row.user_id === uid && row.conversation_id === cid && (row.id === p[2] || row.id === p[3])).map(row => ({ ...row }));
+      if (action === "context") return [...messages.values()].filter(row => row.user_id === uid && row.conversation_id === cid && row.seq < Number(p[2]))
+        .sort((a,b) => b.seq - a.seq).slice(0,9).map(row => ({ seq: row.seq, role: row.role, text: Array.from(JSON.parse(row.data).text as string).slice(0,1500).join(""), proof: row.proof }));
       if (action === "messages") {
         let bytes = 0;
         return [...messages.values()].filter(row => row.user_id === uid && row.conversation_id === cid && row.seq < Number(p[2])).sort((a,b) => b.seq - a.seq).slice(0, Number(p[3])).filter((row,index) => {

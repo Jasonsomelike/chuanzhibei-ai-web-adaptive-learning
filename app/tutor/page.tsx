@@ -3,11 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { Copy, GitBranch, History, Check, RefreshCw, GraduationCap } from "lucide-react";
+import { AppDialog } from "@/components/primitives/dialog";
+import { ConversationSidebar } from "@/components/conversation-sidebar";
+import { archiveContent, type ArchivedMessage } from "@/lib/conversationContracts";
+import { useConversations } from "@/lib/useConversations";
+import { buildTutorQuestion as imageQuestion } from "@/lib/tutorQuestion";
 
 import { Nav, Card, Pill } from "@/components/ui";
 import { TutorRail } from "@/components/tutor-rail";
 import { Icon } from "@/components/icons";
-import { useStaggerIn } from "@/components/motion";
 import { useSubject } from "@/lib/subject";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { progressOf } from "@/lib/learner";
@@ -216,6 +221,8 @@ interface Message {
   agentNotices: AgentNotice[];
   agentDone: AgentDoneSummary | null;
   workflow: WorkflowSnapshot | null;
+  assessment: AssessmentResult | null;
+  attachments: AttachedImage[];
 }
 
 /**
@@ -261,8 +268,27 @@ function emptyMessage(id: string, role: Message["role"]): Message {
     agentNotices: [],
     agentDone: null,
     workflow: null,
+    assessment: null,
+    attachments: [],
   };
 }
+
+const conversationCodec = {
+  content(message: Message) {
+    const data = { ...message };
+    for (const key of ["id","role","workflow","assessment"]) Reflect.deleteProperty(data,key);
+    if (data.agentDone) {
+      data.agentDone = { ...data.agentDone };
+      Reflect.deleteProperty(data.agentDone,"workflow");
+    }
+    return archiveContent.parse(data);
+  },
+  hydrate(record: ArchivedMessage): Message {
+    return { ...emptyMessage(record.id,record.role),...record.content, streaming:false, checking:false,
+      workflow:record.proof?.workflow ?? null, assessment:record.proof?.assessment ?? null,
+      ...(record.state === "pending" ? { note:"这轮回答尚未完成。可刷新记录，或停止这轮后继续。" } : record.state === "interrupted" && !record.content.note ? { note:"本轮生成已中断，已保留收到的内容。" } : {}) };
+  },
+};
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -299,18 +325,6 @@ function imageFailureFromError(err: unknown, hadImages: boolean): string | null 
     return `该模型不接受图片输入（${err.message}）`;
   }
   return null;
-}
-
-/** 带图时的提问：先转写【图中文字】，再在【解答】里回答，引用只来自解答段。 */
-function imageQuestion(question: string, count: number): string {
-  if (count <= 0) return question;
-  const ask = question.trim() === "" ? "请按图片回答。" : question;
-  return [
-    `【图片】本次附带 ${count} 张图片。`,
-    "先看图片：用「【图中文字】」逐字转写与题目有关的文字；图片里没有可读文字就写「图片里没有可读文字」。",
-    "再用「【解答】」回答。引用只来自解答段，转写段里的 [知识点ID] 不算引用；看不清就直说，不要猜。",
-    `学生的问题：${ask}`,
-  ].join("\n");
 }
 
 interface VisionReply {
@@ -659,18 +673,21 @@ function similarHitsOf(payload: unknown): SimilarHit[] {
 
 export default function TutorPage() {
   const { target, targetId, setTargetId, ready, loadingTarget } = useSubject();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const { learner, ready: learnerReady, refreshProgress } = useLearner(targetId, target?.graph);
   const [provider, setProvider] = useState<ProviderConfig | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const history = useConversations({ owner:user?.id ?? null,ready:ready && !authLoading,targetId,targetName:target?.name ?? targetId,codec:conversationCodec });
+  const { messages,setMessages } = history;
   const [input, setInput] = useState("");
   const [helpLevel, setHelpLevel] = useState<HelpLevel>("hint");
   useEffect(() => {
     const question = new URLSearchParams(window.location.search).get("q");
     if (question) setInput(question.slice(0, 500));
   }, []);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusyState] = useState(false);
+  const [error, setErrorState] = useState<string | null>(null);
+  const setBusy = (value: boolean) => { if (history.isCurrent()) setBusyState(value); };
+  const setError = (value: string | null) => { if (history.isCurrent()) setErrorState(value); };
   const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
   const [webOn, setWebOn] = useState(false);
   const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
@@ -679,22 +696,25 @@ export default function TutorPage() {
   const [teachingMode, setTeachingMode] = useState<TeachingIntent | "auto">("auto");
   const [teachingBudget, setTeachingBudget] = useState<number | null>(null);
   const [resetTeachingSession, setResetTeachingSession] = useState(false);
-  const [restoredTask, setRestoredTask] = useState<{ owner: string; targetId: string; workflow: WorkflowSnapshot; assessment: AssessmentResult | null } | null>(null);
+  const [restoredTask, setRestoredTask] = useState<{ owner: string; targetId: string; workflow: WorkflowSnapshot; assessment: AssessmentResult | null; turns: { question:string; answer:string }[] } | null>(null);
   const ownerId = user?.id ?? null;
+  const [legacyOpen,setLegacyOpen] = useState(false);
+  const [copied,setCopied] = useState<string | null>(null);
+  const [previewImage,setPreviewImage] = useState<(AttachedImage & { owner:string | null }) | null>(null);
   useEffect(() => {
-    if (!ownerId || !agentOn) return;
+    if (!ownerId || !legacyOpen) return;
     const controller = new AbortController();
-    void fetch(`/api/agent/session?targetId=${encodeURIComponent(targetId)}`, { cache: "no-store", signal: controller.signal })
+    void fetch(`/api/agent/session?targetId=${encodeURIComponent(targetId)}&legacy=1`, { cache: "no-store", signal: controller.signal })
       .then(async response => {
         if (!response.ok) return;
-        const raw = await response.json() as { workflow?: unknown; assessment?: unknown };
+        const raw = await response.json() as { workflow?: unknown; assessment?: unknown; turns?: {question:string;answer:string}[] };
         const parsed = workflowSnapshot.safeParse(raw.workflow);
         if (!parsed.success || controller.signal.aborted) return;
         const grade = assessmentResult.safeParse(raw.assessment);
-        setRestoredTask({ owner: ownerId, targetId, workflow: parsed.data, assessment: grade.success ? grade.data : null });
+        setRestoredTask({ owner: ownerId, targetId, workflow: parsed.data, assessment: grade.success ? grade.data : null,turns:raw.turns ?? [] });
       }).catch(() => undefined);
     return () => controller.abort();
-  }, [ownerId, targetId, agentOn]);
+  }, [ownerId, targetId, legacyOpen]);
   const prepareFollowup = (intent: TeachingIntent, question: string) => {
     setTeachingMode(intent); setInput(question);
     document.getElementById("q")?.focus();
@@ -713,9 +733,10 @@ export default function TutorPage() {
     setSourceFocus(previous => ({ request: (previous?.request ?? 0) + 1, kcId, title: message.citations.find(citation => citation.kcId === kcId)?.title ?? kcId, context: message.citations.some(citation => citation.kcId === kcId) && message.sources.length ? message.materialContext : undefined, originals: (message.originals ?? []).filter(item => item.kcId === kcId && message.sources.includes(item.label)) }));
   };
   const endRef = useRef<HTMLDivElement | null>(null);
+  const messageViewport = useRef<HTMLDivElement | null>(null);
+  const nearBottom = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const speechRef = useRef<SpeechSession | null>(null);
-  const sequence = useRef(0);
 
   /*
    * 动效只包展示层：页面标题与两张控制卡一次性入场；每条消息在**追加**时
@@ -723,7 +744,6 @@ export default function TutorPage() {
    * 流式 patch 只改同一个节点的文本，因此不会重播；reduced-motion 下不建 tween。
    */
   const mainRef = useRef<HTMLElement>(null);
-  useStaggerIn(mainRef);
 
   // 按学科建检索索引（学科切换时重建）
   const [index, setIndex] = useState<Bm25Index | null>(null);
@@ -794,10 +814,7 @@ export default function TutorPage() {
     loggedIn: user !== null,
   };
 
-  const nextId = (): string => {
-    sequence.current += 1;
-    return `msg-${sequence.current}`;
-  };
+  const nextId = (): string => crypto.randomUUID();
 
   useEffect(() => {
     setProvider(loadProvider());
@@ -838,6 +855,7 @@ export default function TutorPage() {
    */
   useEffect(() => {
     const controller = new AbortController();
+    setProvider(loadProvider());
     void (async () => {
       const hydrated = await hydrateProviderFromServer(controller.signal);
       if (controller.signal.aborted || hydrated === null) return;
@@ -869,7 +887,6 @@ export default function TutorPage() {
     speechRef.current?.abort();
     setBusy(false);
     setIndex(buildIndex(docs));
-    setMessages([]);
     setSourceFocus(null);
     setError(null);
     setImages([]);
@@ -881,15 +898,19 @@ export default function TutorPage() {
   }, [target, user?.id]);
 
   useEffect(() => {
+    abortRef.current?.abort(); speechRef.current?.abort(); setBusyState(false); setErrorState(null); setSourceFocus(null); setPreviewImage(null); setImages([]); setInput(new URLSearchParams(window.location.search).get("q")?.slice(0,4000) ?? ""); nearBottom.current = true;
+  },[history.epoch]);
+  useEffect(() => {
+    if (history.active && history.active.targetId !== targetId) setTargetId(history.active.targetId);
+  },[history.active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     /*
      * reduced-motion 下不能用 smooth：规范里 behavior:"smooth" 会绕过
      * CSS 的 scroll-behavior:auto，系统开了「减少动态效果」时仍会平滑滚动。
      */
-    const reduce =
-      typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    endRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "end" });
+    if (!nearBottom.current || !messageViewport.current) return;
+    messageViewport.current.scrollTop = messageViewport.current.scrollHeight;
   }, [messages]);
 
   useEffect(() => {
@@ -915,21 +936,16 @@ export default function TutorPage() {
     partial: { readonly text: string; readonly reasoning: string },
     finalText?: string,
   ): void => {
-    if (partial.text.trim() === "" && partial.reasoning.trim() === "") {
-      // 用户一按停止就立刻停下：没有内容可保留，也不生成替代回答
-      setMessages((prev) => prev.filter((message) => message.id !== id));
-    } else {
       patchMessage(id, () => ({
         // 通用知识模式即使中途停止，也要保留「不是来自教材」的声明
         ...(finalText !== undefined && partial.text.trim() !== "" ? { text: finalText } : {}),
         streaming: false,
         // 没有思考内容就不留空面板；有半截思考则保留，方便用户知道模型想到哪
         thinkingRequested: partial.reasoning.trim() !== "",
-        note: "已停止生成，仅保留已输出的部分内容。",
+        note: partial.text.trim() || partial.reasoning.trim() ? "已停止生成，仅保留已输出的部分内容。" : "本轮已停止，可以继续提问或从这里新建分支。",
         verificationSkipped: "生成已停止，未发起引用核对。",
         checking: false,
       }));
-    }
     setBusy(false);
   };
 
@@ -1078,6 +1094,7 @@ export default function TutorPage() {
     readonly question: string;
     readonly images: readonly string[];
     readonly signal: AbortSignal;
+    readonly conversationId?: string;
   }): Promise<AgentStreamOutcome> => {
     const { assistantId, question, images: imageUrls, signal } = input;
     let response: Response;
@@ -1087,6 +1104,7 @@ export default function TutorPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           question,
+          ...(input.conversationId ? { conversationId:input.conversationId,assistantMessageId:assistantId } : {}),
           ...(imageUrls.length > 0 ? { images: imageUrls } : {}),
           ...(target !== null && target.kind === "subject" ? { subject: targetId } : {}),
           ...(target?.kind === "direction" ? { directionId: targetId } : {}),
@@ -1138,6 +1156,7 @@ export default function TutorPage() {
     let doneSummary: AgentDoneSummary | null = null;
 
     const handle = (event: AgentStreamEvent): void => {
+      if (signal.aborted || !history.isCurrent()) return;
       switch (event.type) {
         case "workflow": {
           patchMessage(assistantId, () => ({ workflow: event.workflow }));
@@ -1343,7 +1362,7 @@ export default function TutorPage() {
      * 只贴图不写字也必须能发送；两者都空才早退。
      * 给模型的 question 用带图指令，保证 /api/agent 的 question 非空（契约 min 1）。
      */
-    if ((typed.length === 0 && sendingImages.length === 0) || busy || !index || !target) return;
+    if ((typed.length === 0 && sendingImages.length === 0) || busy || !index || !target || history.loading || !history.writable) return;
 
     const imageUrls = sendingImages.map((image) => image.dataUrl);
     const hadImages = imageUrls.length > 0;
@@ -1389,12 +1408,29 @@ export default function TutorPage() {
     setError(null);
     setImageRetry(null);
     setBusy(true);
+    const userId = nextId();
+    const assistantId = nextId();
+    let conversationId: string;
+    try {
+      conversationId = await history.begin(archiveContent.parse({ text:typed,attachments:sendingImages,images:sendingImages.length }),userId,assistantId);
+    } catch (failure) {
+      setError(`问题尚未发送：${messageOf(failure)}`); setBusy(false); return;
+    }
+    if (controller.signal.aborted || !history.isCurrent()) { await history.stop(assistantId); setBusy(false); return; }
+    nearBottom.current = true;
+    patchMessage(assistantId, () => ({ streaming:true,
+      thinkingRequested:!wantsAgent && activeProvider !== null && thinkingEnabledFor(activeProvider),
+      originals:wantsAgent ? [] : [...material.excerpts].map(([kcId,excerpt]) => ({ kcId,label:citationLabel(excerpt),text:excerpt.text })),
+      images:imageUrls.length,
+    }));
     setInput("");
     setImages([]);
     setListening(false);
     setSpeechError(null);
     setSpeechInterim("");
     speechRef.current?.abort();
+
+    try {
 
     /*
      * 先算本次查询向量，再触发本地向量同步：两者共用一个 Worker，
@@ -1434,21 +1470,7 @@ export default function TutorPage() {
       return;
     }
 
-    const userId = nextId();
-    const assistantId = nextId();
-
-    const assistant = emptyMessage(assistantId, "assistant");
-    assistant.streaming = true;
-    assistant.thinkingRequested =
-      !wantsAgent && activeProvider !== null && thinkingEnabledFor(activeProvider);
-    assistant.originals = wantsAgent ? [] : [...material.excerpts].map(([kcId, excerpt]) => ({ kcId, label: citationLabel(excerpt), text: excerpt.text }));
-    assistant.uploadHits = [...uploads];
-    assistant.images = imageUrls.length;
-    setMessages((prev) => [
-      ...prev,
-      { ...emptyMessage(userId, "user"), text: typed, images: imageUrls.length },
-      assistant,
-    ]);
+    patchMessage(assistantId,() => ({ uploadHits:[...uploads] }));
 
     /*
      * 智能体优先：工具循环在服务端，/api/agent 的请求契约里没有注入网络结果的字段，
@@ -1456,12 +1478,17 @@ export default function TutorPage() {
      */
     const agentPlan = buildAnswerPlan({ materialHits, webHits: 0, generalAllowed: true });
     if (wantsAgent && activeProvider !== null) {
+      history.serverStarted(assistantId);
       const outcome = await streamAgentTurn({
         assistantId,
         question,
         images: imageUrls,
         signal: controller.signal,
+        conversationId:user ? conversationId : undefined,
       });
+      if (!outcome.ok) await history.stop(assistantId).catch(() => undefined);
+      else await history.serverFinished(assistantId).catch(failure => setError(messageOf(failure)));
+      if (!history.isCurrent()) return;
 
       if (outcome.aborted) {
         finalizeAborted(
@@ -1703,6 +1730,7 @@ export default function TutorPage() {
         {
           system: tutorSystemPrompt({ tone: loadTutorTone() }) + "\n" + tutoringPolicy(helpLevel),
           user: userContent,
+          history: resetTeachingSession ? [] : messages.filter(message => message.text.trim() && !message.streaming).slice(-8).map(message => ({ role:message.role,content:message.text })),
           maxTokens: TUTOR_MAX_TOKENS,
           temperature: 0.3,
           timeoutMs: TUTOR_TIMEOUT_MS,
@@ -1956,6 +1984,9 @@ export default function TutorPage() {
       }
       setBusy(false);
     }
+    } finally {
+      if (history.isCurrent()) await history.flush().catch(() => undefined);
+    }
   };
 
   if (!ready || !learnerReady || !target) {
@@ -1974,7 +2005,7 @@ export default function TutorPage() {
   const searchProvider = resolveSearchProvider(searchConfig, searchRuntime);
   /** 智能体开关为什么不能开；与 send 里的判断同源，避免两处漂移。 */
   const agentBlocked = agentDisabledReason(user !== null, activeProvider);
-  const resumableTask = agentOn && restoredTask?.owner === ownerId && restoredTask.targetId === targetId && !messages.some(m => m.workflow) ? restoredTask : null;
+  const resumableTask = restoredTask?.owner === ownerId && restoredTask.targetId === targetId ? restoredTask : null;
 
   /** 语音按钮：开 / 停都只操作识别器，不自动发送。 */
   const toggleSpeech = async (): Promise<void> => {
@@ -2042,14 +2073,16 @@ export default function TutorPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="tutor-page mx-auto max-w-[1440px] px-5 py-7 sm:px-8">
-        <div className="workspace-heading mb-6 flex flex-wrap items-center justify-between gap-4" data-motion="hero">
-          <div><h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程导师</h1><p className="mt-2 text-sm text-[var(--ink-soft)]">对照课程资料，围绕当前知识点提问。</p></div>
-          <span className="rounded-lg border border-[var(--line)] px-3 py-1 text-sm text-[var(--ink-soft)]">{target.name}</span>
-        </div>
-
+      <main id="main" ref={mainRef} className="tutor-page tutor-editorial">
+        <h1 className="sr-only">课程导师</h1>
         <div className="tutor-workspace">
-        <TutorRail course={target.name} sourceRequest={sourceFocus?.request} sourcePanel={sourceFocus ? <section data-citation-source tabIndex={-1} aria-label="回答引用原文" className="mb-6 border-b border-[var(--accent)] pb-5">
+        <ConversationSidebar items={history.conversations} activeId={history.active?.id} mode={history.mode} query={history.query} loading={history.listLoading || history.loading && !history.active} more={!!history.cursor} storage={history.storage} disabled={busy}
+          onMode={history.setMode} onQuery={history.setQuery} onOpen={item => void history.open(item).catch(failure => setError(messageOf(failure)))} onNew={() => void history.newDraft().catch(failure => setError(messageOf(failure)))} onUpdate={history.update} onMore={() => void history.refresh(true)} onLegacy={user ? () => setLegacyOpen(true) : undefined} />
+        <div className="tutor-stage">
+        <header className="tutor-conversation-heading"><div><h2>{history.active?.title ?? "一起把问题想明白"}</h2><p>课程：{history.active?.targetName ?? target.name}</p></div></header>
+        {history.active?.parentId ? <div className="conversation-origin"><GitBranch size={17} /><span>从一轮问答新建的分支</span><button type="button" disabled={busy} onClick={() => void history.open({ id:history.active!.parentId! }).catch(failure => setError(messageOf(failure)))}>查看来源</button></div> : null}
+        {!history.writable && history.active ? <div className="conversation-readonly" role="status">{history.active.deletedAt ? "此会话已移入回收站。" : history.active.archived ? "此会话已归档。" : "此会话对应的课程暂不可用，历史内容仍保留。"} <button type="button" disabled={busy} onClick={() => void history.update(history.active!,{ trash:false,archived:false }).catch(() => undefined)}>恢复会话</button></div> : null}
+        <TutorRail key={ownerId ?? "anonymous"} course={target.name} sourceRequest={sourceFocus?.request} sourcePanel={sourceFocus ? <section data-citation-source tabIndex={-1} aria-label="回答引用原文" className="mb-6 border-b border-[var(--accent)] pb-5">
           <h2 className="font-semibold">回答引用原文 · {sourceFocus.title}</h2>
           {sourceFocus.originals.length ? sourceFocus.originals.map((original, index) => <div key={index} className="mt-3"><p className="text-xs text-[var(--ink-faint)]">{original.label}</p><p className="mt-2 whitespace-pre-wrap wrap-anywhere text-sm leading-relaxed">{original.text}</p></div>) : sourceFocus.context ? <div className="mt-3"><p className="text-xs text-[var(--ink-faint)]">本次回答收到的课程摘录，包含本次命中的其他知识点；检索命中不等于逐条引用。</p><p className="mt-3 whitespace-pre-wrap wrap-anywhere text-sm leading-relaxed">{sourceFocus.context}</p></div> : <p className="mt-3 text-sm text-[var(--ink-soft)]">本条引用没有可展示的教材原文快照，请结合回答下方的资料与核对结果确认；知识点引用不等于原文引证。</p>}
           <Link href={`/path${targetQuery(target)}&kc=${encodeURIComponent(sourceFocus.kcId)}`} className="mt-4 inline-block text-xs text-[var(--accent)] underline">在学习路径中查看知识点</Link>
@@ -2070,7 +2103,7 @@ export default function TutorPage() {
         {/* 目标切换 */}
         <Card className="mb-4" motion="target">
           <p className="mb-2 text-sm font-medium">当前学习目标</p>
-          <TargetPicker current={targetId} onChange={setTargetId} />
+          <TargetPicker current={targetId} onChange={id => { void history.newDraft().then(() => setTargetId(id)).catch(failure => setError(messageOf(failure))); }} />
           {target ? (
             <p className="mt-2 text-xs text-[var(--ink-faint)]">{targetCaption(target)}</p>
           ) : null}
@@ -2185,32 +2218,36 @@ export default function TutorPage() {
         </div>
         </TutorRail>
         <section className="tutor-chat" aria-label="学习辅导对话">
-        <div className="tutor-chat-title"><h2 className="text-base font-semibold sm:text-lg">向课程导师提问</h2><p className="mt-1 text-xs text-[var(--ink-faint)]">{activeProvider ? "回答优先依据课程资料，引用可以展开核对。" : "当前为资料检索模式；配置模型后可获得生成式辅导。"}</p></div>
-        {agentOn && agentBlocked === null ? <div className="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3 text-xs">
+        <h2 className="sr-only">向课程导师提问</h2>
+        {agentOn && agentBlocked === null ? <details className="tutor-task-controls"><summary>教学任务与学习时间</summary><div className="flex flex-wrap items-center gap-3 py-3 text-xs">
           <label>教学任务 <select aria-label="教学任务类型" value={teachingMode} onChange={event => setTeachingMode(event.target.value as TeachingIntent | "auto")} disabled={busy} className="ml-1 rounded border border-[var(--line)] bg-[var(--surface)] px-2 py-1.5"><option value="auto">自动识别</option>{Object.entries(INTENT_LABELS).map(([intent, label]) => <option key={intent} value={intent}>{label}</option>)}</select></label>
           <label>学习时间 <select aria-label="教学学习时间" value={teachingBudget ?? ""} onChange={event => setTeachingBudget(event.target.value === "" ? null : Number(event.target.value))} disabled={busy} className="ml-1 rounded border border-[var(--line)] bg-[var(--surface)] px-2 py-1.5"><option value="">按问题或上次预算</option>{[15, 30, 60, 90, 120].map(n => <option key={n} value={n}>{n} 分钟</option>)}</select></label>
           <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={resetTeachingSession} onChange={event => setResetTeachingSession(event.target.checked)} disabled={busy} />新任务，不衔接前文</label>
-        </div> : null}
+        </div></details> : null}
         {/* 对话区 */}
-        <div className={`tutor-messages space-y-4 ${messages.length === 0 && !resumableTask ? "is-empty" : ""}`} role="log" aria-label="辅导消息" aria-live="polite" aria-relevant="additions">
-          {resumableTask ? <div><p className="text-xs text-[var(--ink-faint)]">上次教学任务 · 已从当前账号恢复</p><TeachingTaskCard key={`restored-${ownerId}-${resumableTask.workflow.runId}`} workflow={resumableTask.workflow} query={target ? targetQuery(target) : ""} initialAssessment={resumableTask.assessment} disabled={busy} onFollowup={prepareFollowup} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /></div> : null}
-          {messages.length === 0 && !resumableTask ? (
+        <div ref={messageViewport} onScroll={event => { const el = event.currentTarget; nearBottom.current = el.scrollHeight-el.scrollTop-el.clientHeight < 160; }} className={`tutor-messages space-y-4 ${messages.length === 0 ? "is-empty" : ""}`} role="log" aria-label="辅导消息" aria-live="polite" aria-relevant="additions" aria-busy={history.loading}>
+          {history.before ? <button type="button" className="conversation-earlier" disabled={history.loading} onClick={() => {
+            const viewport = messageViewport.current, oldHeight = viewport?.scrollHeight ?? 0, oldTop = viewport?.scrollTop ?? 0; nearBottom.current = false;
+            void history.loadEarlier().then(() => requestAnimationFrame(() => { if (viewport) viewport.scrollTop = oldTop + viewport.scrollHeight-oldHeight; }));
+          }}><History size={16} />{history.loading ? "正在读取…" : "加载更早的问答"}</button> : null}
+          {history.loading && !messages.length ? <div className="tutor-history-skeleton" aria-label="正在读取完整会话"><i /><i /><i /></div> : null}
+          {messages.length === 0 && !history.loading ? (
             <div data-motion="suggestions" className="tutor-empty">
-              <Icon name="chat" size={46} className="mx-auto text-[var(--accent)]" />
-              <h3 className="mt-5 text-lg font-medium">选择一个问题开始</h3>
-              <p className="mt-2 text-xs text-[var(--ink-faint)]">可以这样问，或在下方写下具体的卡点。</p>
-              <div className="mt-6 grid gap-2 sm:grid-cols-2">
+              <GraduationCap size={38} className="text-[var(--accent)]" />
+              <h3 className="mt-5 text-lg font-medium">从你卡住的地方开始</h3>
+              <p className="mt-2 text-sm text-[var(--ink-faint)]">一个概念、一段原文，或一道还没想明白的题。</p>
+              <div className="tutor-suggestions">
                 {[
                   "为什么给我排这一步？",
                   `${target?.graph.concepts[0]?.name ?? ""}是什么`,
                   `${target?.graph.concepts[1]?.name ?? ""}的重点是什么`,
-                  "我现在的薄弱点在哪",
+                  "结合我的作答记录，建议接下来学什么？",
                 ].map((suggestion) => (
                   <button
                     key={suggestion}
                     type="button"
                     onClick={() => { setInput(suggestion); document.getElementById("q")?.focus(); }}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] px-3 py-3 text-left text-xs text-[var(--ink-soft)] hover:border-[var(--accent)]"
+                    className="tutor-suggestion"
                   >
                     {suggestion}<Icon name="chevron" size={15} className="shrink-0" />
                   </button>
@@ -2224,29 +2261,29 @@ export default function TutorPage() {
               <Card
                 key={message.id}
                 motion="message"
-                className="ml-8 border-[var(--accent)] bg-[var(--accent-soft)]"
+                className="tutor-user-message"
               >
-                <p className="text-sm leading-[1.75]">
+                <div className="text-sm leading-[1.75]">
                   {message.text !== "" ? <MiniMarkdown text={message.text} /> : "（图片提问）"}
-                </p>
+                </div>
                 {message.images > 0 ? (
-                  <p className="mt-1 text-xs text-[var(--ink-faint)]">
-                    附 {message.images} 张图片，只在当轮发送
-                  </p>
+                  <div className="tutor-saved-images">{message.attachments.map(attachment => <button type="button" key={attachment.id} onClick={() => setPreviewImage({ ...attachment,owner:ownerId })} aria-label={`查看问题图片：${attachment.name}`}><img src={attachment.dataUrl} alt={attachment.name} width={attachment.width} height={attachment.height} /></button>)}<p>{message.attachments.length ? `附 ${message.attachments.length} 张问题图片 · 已随会话保存` : `附 ${message.images} 张图片，旧记录未保存原图`}</p></div>
                 ) : null}
               </Card>
             ) : (
               <article
                 key={message.id}
                 data-motion="message"
-                className="max-w-[36em] border-t border-[var(--line)] pt-5"
+                className="tutor-assistant-message"
               >
+                <div className="tutor-speaker"><GraduationCap size={20} /><span>课程导师</span></div>
                 <ThinkingPanel
                   reasoning={message.reasoning}
                   textStarted={message.text.trim() !== ""}
                   streaming={message.streaming}
                   enabled={message.thinkingRequested}
                 />
+                {!message.streaming && history.record(message.id)?.state === "pending" ? <div className="conversation-pending"><p>此轮尚未完成，可能仍在另一窗口生成。</p><button type="button" disabled={busy} onClick={() => void history.serverFinished(message.id).catch(failure => setError(messageOf(failure)))}><RefreshCw size={15} />刷新记录</button><button type="button" disabled={busy} onClick={() => void history.stop(message.id).catch(failure => setError(messageOf(failure)))}>停止这轮</button></div> : null}
 
                 {message.conflicts.length > 0 ? (
                 <div className="mb-3 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2">
@@ -2277,7 +2314,9 @@ export default function TutorPage() {
                 </div>
               ) : null}
 
-              {message.workflow && target ? <TeachingTaskCard key={`${ownerId}-${message.workflow.runId}`} workflow={message.workflow} query={targetQuery(target)} disabled={busy || message.workflow.targetId !== targetId} onFollowup={prepareFollowup} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /> : null}
+              {message.workflow && target ? <TeachingTaskCard key={`${history.active?.id}-${message.workflow.runId}`} workflow={message.workflow} query={targetQuery(target)} initialAssessment={message.assessment} conversationId={user ? history.active?.id : undefined} messageId={message.id} inherited={!!history.record(message.id)?.inheritedFrom} disabled={busy || !history.writable || message.workflow.targetId !== targetId} onFollowup={prepareFollowup} onAssessed={result => {
+                patchMessage(message.id,() => ({ assessment:result,workflow:result.workflow })); void history.serverFinished(message.id).catch(failure => setError(messageOf(failure))); void refreshProgress().catch(() => undefined);
+              }} /> : null}
               {/* 智能体轨迹：可折叠；只显示服务端给的 preview，完整结果不回传 */}
               {message.agentNotices
                 .filter((notice) => notice.level === "warn")
@@ -2354,7 +2393,7 @@ export default function TutorPage() {
                     </ul>
                   ) : null}
                   <p className="mt-2 text-[0.7rem] leading-relaxed text-[var(--ink-faint)]">
-                    轨迹只保留服务端返回的预览，完整工具结果不回传浏览器；刷新即失。
+                    工具预览已随本轮会话保存。
                   </p>
                 </details>
               ) : null}
@@ -2385,21 +2424,22 @@ export default function TutorPage() {
                   ) : null}
 
                   {message.sources.length > 0 ? (
-                    <div className="space-y-1">
+                    <details className="tutor-evidence-details">
+                      <summary>教材与讲义出处</summary>
                       <p className="text-xs leading-relaxed text-[var(--ink-soft)]">
                         出处：{message.sources.join("；")}
                       </p>
                       <p className="text-xs leading-relaxed text-[var(--ink-faint)]">
                         {MATERIAL_BASIS_NOTE}
                       </p>
-                    </div>
+                    </details>
                   ) : null}
 
                   {message.uploadHits.length > 0 ? (
-                    <div className="rounded-lg border border-[var(--line)] bg-[var(--line)]/30 px-3 py-2">
+                    <details className="tutor-evidence-details"><summary>上传资料 · 引用 {message.uploadUsed.length} 处</summary><div className="pt-3">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="text-xs font-medium text-[var(--ink-soft)]">
-                          上传资料（本浏览器，未核对）
+                          本轮上传资料快照
                         </p>
                         <Pill tone={message.uploadUsed.length > 0 ? "accent" : "neutral"}>
                           {message.uploadUsed.length > 0
@@ -2433,7 +2473,7 @@ export default function TutorPage() {
                           );
                         })}
                       </ul>
-                    </div>
+                    </div></details>
                   ) : null}
 
                   <WebEvidence
@@ -2444,13 +2484,13 @@ export default function TutorPage() {
                     fromCache={message.webFromCache}
                   />
 
-                  <AnswerVerification
+                  {message.claims.length > 0 ? <details className="tutor-evidence-details"><summary>{message.checking ? "引用核对中…" : message.verdicts ? "查看引用核对结果" : "引用核对详情"}</summary><div className="pt-3"><AnswerVerification
                     claims={message.claims}
                     verdicts={message.verdicts}
                     checking={message.checking}
                     error={message.verificationError}
                     skippedReason={message.verificationSkipped}
-                  />
+                  /></div></details> : null}
 
                   {message.note !== undefined && message.note !== "" ? (
                     <details className="text-xs text-[var(--ink-faint)]"><summary className="cursor-pointer">回答方式与运行详情</summary><p className="mt-2 leading-relaxed">{message.note}</p></details>
@@ -2461,6 +2501,11 @@ export default function TutorPage() {
                   ) : null}
                 </div>
               ) : null}
+              {!message.streaming ? <div className="tutor-message-actions">
+                {message.text ? <button type="button" onClick={() => { void navigator.clipboard.writeText(message.text).then(() => setCopied(message.id)).catch(() => setError("复制失败，请手动选择文本复制。")); }}>{copied === message.id ? <Check size={16} /> : <Copy size={16} />}{copied === message.id ? "已复制" : "复制"}</button> : null}
+                <button type="button" disabled={busy || history.record(message.id)?.state === "pending" || !history.active || !!history.active.deletedAt} onClick={() => void history.branch(message.id).catch(failure => setError(messageOf(failure)))}><GitBranch size={16} />从这里分支</button>
+                {history.record(message.id)?.inheritedFrom ? <span>继承自原会话</span> : null}
+              </div> : null}
               </article>
             ),
           )}
@@ -2600,7 +2645,7 @@ export default function TutorPage() {
             rows={2}
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            maxLength={500}
+            maxLength={4000}
             placeholder="写下你卡住的地方…"
             onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); if (!busy) void send(input); } }}
             className="min-w-0 flex-1 resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
@@ -2608,7 +2653,7 @@ export default function TutorPage() {
           {busy ? (
             <button
               type="button"
-              onClick={() => abortRef.current?.abort()}
+              onClick={() => { abortRef.current?.abort(); void history.stop().catch(failure => setError(messageOf(failure))); }}
               className="rounded-lg border border-[var(--bad)] px-4 py-2 text-sm font-medium text-[var(--bad)] hover:bg-[var(--bad-soft)]"
             >
               停止
@@ -2616,17 +2661,26 @@ export default function TutorPage() {
           ) : (
             <button
               type="submit"
-              disabled={input.trim().length === 0 && images.length === 0}
+              disabled={history.loading || !history.writable || input.trim().length === 0 && images.length === 0}
               className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
             >
               发送
             </button>
           )}
         </form>
+        <div className="tutor-save-status" role="status">{history.saveState === "error" ? <><span>有内容尚未保存</span><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></> : history.saveState === "saving" ? "正在保存会话…" : <><Check size={15} />{history.active ? "会话已保存" : "新会话"}</>}</div>
+        {history.error ? <div className="conversation-save-error" role="alert"><p>{history.error}</p><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></div> : null}
         </div>
         </section>
         </div>
+        </div>
       </main>
+      <AppDialog open={!!previewImage && previewImage.owner === ownerId} onOpenChange={open => { if (!open) setPreviewImage(null); }} title={previewImage?.name ?? "问题图片"} description="本轮提问保存的原始图片。">
+        {previewImage && previewImage.owner === ownerId ? <img src={previewImage.dataUrl} alt={previewImage.name} width={previewImage.width} height={previewImage.height} className="mx-auto max-h-[65dvh] w-auto max-w-full object-contain" /> : null}
+      </AppDialog>
+      <AppDialog open={legacyOpen} onOpenChange={setLegacyOpen} title="旧版教学记录" description="旧版只保存最近四轮短文本和最后一个任务；更早的问答、引用原文及图片未被保存。新会话会完整存档。">
+        {resumableTask ? <div><div className="space-y-5">{resumableTask.turns.map((turn,index) => <div key={index}><p className="text-sm font-medium whitespace-pre-wrap">{turn.question}</p><p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap text-[var(--ink-soft)]">{turn.answer}</p></div>)}</div><TeachingTaskCard key={`legacy-${ownerId}-${resumableTask.workflow.runId}`} workflow={resumableTask.workflow} query={targetQuery(target)} initialAssessment={resumableTask.assessment} disabled={busy} onFollowup={(intent,question) => { prepareFollowup(intent,question); setLegacyOpen(false); }} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /></div> : <p className="text-sm text-[var(--ink-soft)]">当前课程没有可恢复的旧版教学任务。</p>}
+      </AppDialog>
     </>
   );
 }

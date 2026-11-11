@@ -36,7 +36,8 @@ export type WorkflowSnapshot = z.infer<typeof workflowSnapshot>;
 export const answerRequest = z.strictObject({
   targetId: z.string().min(1).max(100), runId: z.string().uuid(),
   questionId: z.string().min(1).max(100), selectedIndex: z.number().int().min(0).max(19),
-});
+  conversationId: z.string().uuid().optional(), messageId: z.string().uuid().optional(),
+}).refine(body => Boolean(body.conversationId) === Boolean(body.messageId), "会话与回答标识必须同时提供");
 
 export const assessmentResult = z.object({
   runId: z.string().uuid(), questionId: z.string(), selectedIndex: z.number().int(),

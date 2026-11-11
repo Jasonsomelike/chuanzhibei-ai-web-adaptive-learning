@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { requireApiUser } from "@/lib/routeAuth";
-import { ARCHIVE_BODY_BYTES, archiveId } from "@/lib/conversationContracts";
+import { ARCHIVE_BODY_BYTES, archiveId, messageInterrupt } from "@/lib/conversationContracts";
 import { archiveFailure, archiveJson, archiveResponse } from "@/lib/conversationRoute";
-import { appendConversationTurn, getArchivedMessage, readConversationPage, updateArchivedMessage } from "@/lib/conversationStore";
+import { appendConversationTurn, getArchivedMessage, interruptConversationMessage, readConversationPage, updateArchivedMessage } from "@/lib/conversationStore";
 
 export const runtime = "nodejs";
 const query = z.object({ conversationId: archiveId, messageId: archiveId.optional(), before: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() });
@@ -32,4 +32,14 @@ export async function PUT(request: Request) {
   if (!body.ok) return body.response;
   try { return archiveResponse({ message: await updateArchivedMessage(await getDb(), auth.user.id, body.data) }); }
   catch (error) { return archiveFailure(error); }
+}
+export async function PATCH(request: Request) {
+  const auth = await requireApiUser();
+  if (!auth.ok) return auth.response;
+  const body = await archiveJson(request, 1024);
+  if (!body.ok) return body.response;
+  try {
+    const parsed = messageInterrupt.parse(body.data);
+    return archiveResponse({ message: await interruptConversationMessage(await getDb(), auth.user.id, parsed.conversationId, parsed.id) });
+  } catch (error) { return archiveFailure(error); }
 }

@@ -19,6 +19,7 @@
 import type { ChatPurpose } from "@/lib/apiContracts";
 import {
   buildChatBody,
+  chatHistoryOf,
   buildProviderHeaders,
   contentTextOf,
   effectiveProviderMode,
@@ -238,6 +239,7 @@ function buildServerChatBody(
     kind: provider.kind,
     messages: [
       ...(systemText.trim() !== "" ? [{ role: "system", content: systemText }] : []),
+      ...chatHistoryOf(req),
       { role: "user", content: req.user },
     ],
     ...(hasTools ? { tools: req.tools } : {}),

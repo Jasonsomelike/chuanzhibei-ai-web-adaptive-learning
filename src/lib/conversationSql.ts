@@ -42,6 +42,8 @@ export const CONVERSATION_SQL = {
   ) SELECT * FROM sized WHERE running_bytes <= $5 OR row_number = 1 ORDER BY seq DESC`,
   message: `SELECT * FROM tutor_messages WHERE user_id = $1 AND conversation_id = $2 AND id = $3`,
   pair: `SELECT * FROM tutor_messages WHERE user_id = $1 AND conversation_id = $2 AND id IN ($3, $4)`,
+  context: `SELECT seq, role, LEFT(data::jsonb->>'text', 1500) AS text, proof FROM tutor_messages
+    WHERE user_id = $1 AND conversation_id = $2 AND seq < $3 ORDER BY seq DESC LIMIT 9`,
   append: `WITH permitted AS (
     UPDATE tutor_conversations SET last_seq = last_seq + 2, revision = revision + 1, updated_at = $4,
       title = CASE WHEN last_seq = 0 AND title = '新会话' THEN $6 ELSE title END
@@ -74,6 +76,11 @@ export const CONVERSATION_SQL = {
       AND state = 'pending' AND run_token IS NULL AND inherited_from IS NULL
       AND (data::jsonb->>'text') = ''
       AND EXISTS (SELECT 1 FROM tutor_conversations WHERE user_id = $1 AND id = $2 AND deleted_at IS NULL AND archived = FALSE)`,
+  interrupt: `UPDATE tutor_messages SET run_token = NULL, state = 'interrupted', revision = revision + 1,
+      data = (data::jsonb || '{"streaming":false,"checking":false}'::jsonb)::text
+    WHERE user_id = $1 AND conversation_id = $2 AND id = $3 AND role = 'assistant' AND state = 'pending'
+      AND inherited_from IS NULL
+      AND EXISTS (SELECT 1 FROM tutor_conversations WHERE user_id = $1 AND id = $2 AND deleted_at IS NULL AND archived = FALSE)`,
   saveAgent: `WITH changed AS (
     UPDATE tutor_messages SET data = $5,
       proof = CASE WHEN (proof::jsonb->>'assessment') IS NOT NULL THEN proof ELSE $6 END,
@@ -98,3 +105,4 @@ export interface ConversationMessageRow {
   data: string; proof: string | null; state: "pending" | "complete" | "interrupted";
   revision: number; run_token: string | null; inherited_from: string | null; created_at: string;
 }
+export interface ConversationContextRow { seq: number; role: "user" | "assistant"; text: string; proof: string | null }

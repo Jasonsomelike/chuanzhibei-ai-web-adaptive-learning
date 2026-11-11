@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Db } from "./db";
 import { loadLearningCourse } from "./learningContext";
-import { CONVERSATION_SQL as SQL, type ConversationMessageRow, type ConversationRow } from "./conversationSql";
+import { CONVERSATION_SQL as SQL, type ConversationContextRow, type ConversationMessageRow, type ConversationRow } from "./conversationSql";
 import {
   ARCHIVE_MESSAGE_BYTES, ARCHIVE_PAGE_BYTES, archiveContent, archiveLabel, archivedProof, conversationSummary,
   messageUpdate, turnRequest, type ArchiveContent, type ArchivedMessage, type ArchivedProof, type ConversationSummary,
@@ -137,13 +137,30 @@ export async function claimConversationAgent(db: Db, userId: string, id: string,
   writable(conversation);
   if (conversation.targetId !== targetId) throw new ConversationError(400, "会话课程与本次教学目标不一致。");
   const assistant = await getArchivedMessage(db, userId, id, messageId);
-  const prefix = await db.all<ConversationMessageRow>(SQL.messages, [userId, id, assistant.seq, 9, ARCHIVE_PAGE_BYTES - 16 * 1024]);
-  const question = prefix.find(row => row.seq === assistant.seq - 1 && row.role === "user");
-  if (!question) throw new ConversationError(409, "本轮提问记录不完整，请重新载入。");
+  // Read this question in full, but only text/proof from the bounded model window. Old image blobs stay in the archive.
+  const prefix = await db.all<ConversationContextRow>(SQL.context, [userId, id, assistant.seq]);
+  const questionRow = prefix.find(row => row.seq === assistant.seq - 1 && row.role === "user");
+  if (!questionRow) throw new ConversationError(409, "本轮提问记录不完整，请重新载入。");
+  const questionRows = await db.all<ConversationMessageRow>(SQL.messages, [userId, id, assistant.seq, 1, ARCHIVE_PAGE_BYTES]);
+  const question = questionRows[0] && messageFromRow(questionRows[0]);
+  if (!question || question.role !== "user" || question.seq !== assistant.seq - 1) throw new ConversationError(409, "本轮提问记录不完整。");
   const token = randomUUID();
   const changed = await db.run(SQL.claimAgent, [userId, id, messageId, token]);
   if (changed !== 1) throw new ConversationError(409, "这条教学回答已开始或已完成，请重新载入查看。");
-  return { token, question: messageFromRow(question), history: prefix.filter(row => row.seq < question.seq).reverse().map(messageFromRow) };
+  const history = prefix.filter(row => row.seq < question.seq).reverse();
+  const turns: { question: string; answer: string }[] = [];
+  for (let index = 0; index < history.length - 1; index++) {
+    if (history[index].role === "user" && history[index + 1].role === "assistant") turns.push({ question: history[index].text.slice(0,1000), answer: history[index + 1].text.slice(0,1500) });
+  }
+  const priorProof = [...history].reverse().find(row => row.proof)?.proof;
+  return { token, question, turns: turns.slice(-4), previous: priorProof ? archivedProof.parse(JSON.parse(priorProof)).workflow : null };
+}
+export async function interruptConversationMessage(db: Db, userId: string, id: string, messageId: string) {
+  writable(await getConversation(db, userId, id));
+  const current = await getArchivedMessage(db, userId, id, messageId);
+  if (current.role !== "assistant" || current.inheritedFrom) throw new ConversationError(409, "继承记录或提问不能中止。");
+  await db.run(SQL.interrupt, [userId, id, messageId]);
+  return getArchivedMessage(db, userId, id, messageId);
 }
 export async function saveConversationAgent(db: Db, userId: string, id: string, messageId: string, token: string, content: ArchiveContent, proof: ArchivedProof | null, state: ArchivedMessage["state"]) {
   const { json } = contentJson(content);

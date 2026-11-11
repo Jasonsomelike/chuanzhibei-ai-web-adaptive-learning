@@ -2,8 +2,9 @@
 import type { Db } from "@/lib/db";
 import { evidenceStatus, loadLearningContext, recomputeProgress, type LearningContext } from "@/lib/learningContext";
 import { readLearningSession } from "@/lib/learningSession";
-import { answerRequest, type AssessmentResult, type WorkflowSnapshot } from "@/lib/learningWorkflowContracts";
+import { answerRequest, assessmentResult, type AssessmentResult, type WorkflowSnapshot } from "@/lib/learningWorkflowContracts";
 import { computeInputHash, planPath } from "@/lib/plan";
+import { getArchivedMessage, getConversation, saveConversationAssessment } from "@/lib/conversationStore";
 
 export class AssessmentError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -32,8 +33,26 @@ function resultFor(context: LearningContext, snapshot: WorkflowSnapshot, questio
 export async function assessLearningExercise(db: Db, userId: string, raw: unknown): Promise<AssessmentResult> {
   const body = answerRequest.parse(raw);
   // Ownership comes from the authenticated user, never from the request body.
-  const stored = await readLearningSession(db, userId, body.targetId);
-  const snapshot = stored.session?.snapshot;
+  const archived = body.conversationId && body.messageId ? await getArchivedMessage(db, userId, body.conversationId, body.messageId) : null;
+  if (archived && body.conversationId) {
+    const conversation = await getConversation(db, userId, body.conversationId);
+    if (conversation.targetId !== body.targetId || archived.inheritedFrom || conversation.archived || conversation.deletedAt) throw new AssessmentError(409, "请在原会话中提交练习；已归档或删除的会话需要先恢复。");
+    if (archived.proof?.assessment) {
+      const result = archived.proof.assessment;
+      if (result.runId !== body.runId || result.questionId !== body.questionId || result.selectedIndex !== body.selectedIndex) throw new AssessmentError(409, "本次练习已提交，不能修改选项。");
+      return { ...result, duplicate: true };
+    }
+  }
+  const snapshot = archived ? archived.proof?.workflow : (await readLearningSession(db, userId, body.targetId)).session?.snapshot;
+  const persist = async (result: AssessmentResult) => {
+    if (!archived || !body.conversationId || !body.messageId) return result;
+    const normalized = assessmentResult.parse(result);
+    const saved = await saveConversationAssessment(db, userId, body.conversationId, body.messageId, { workflow: normalized.workflow, assessment: normalized });
+    if (saved) return normalized;
+    const existing = (await getArchivedMessage(db, userId, body.conversationId, body.messageId)).proof?.assessment;
+    if (existing && existing.selectedIndex === body.selectedIndex) return { ...existing, duplicate: true };
+    throw new AssessmentError(409, "练习结果已在另一设备更新，请重新载入。");
+  };
   const exercise = snapshot?.exercise;
   if (!snapshot || snapshot.runId !== body.runId || !snapshot.persisted || !exercise || exercise.questionId !== body.questionId || snapshot.status !== "awaiting_answer") {
     throw new AssessmentError(409, "练习检查点已过期，请重新发起练习任务");
@@ -51,7 +70,7 @@ export async function assessLearningExercise(db: Db, userId: string, raw: unknow
     if (existing) {
       if (existing.retired) throw new AssessmentError(409, "本次练习证据已归档，请重新发起练习");
       if (existing.selectedIndex !== body.selectedIndex) throw new AssessmentError(409, "本次练习已提交，不能修改选项");
-      return resultFor(context, snapshot, q.id, body.selectedIndex, true);
+      return persist(resultFor(context, snapshot, q.id, body.selectedIndex, true));
     }
     const now = new Date(Math.max(Date.now(), (Date.parse(context.revision ?? "") || 0) + 1)).toISOString();
     const progress = recomputeProgress({ ...context.progress, attempts: [...context.progress.attempts, {
@@ -64,7 +83,7 @@ export async function assessLearningExercise(db: Db, userId: string, raw: unknow
        WHERE progress.updated_at = $5 AND $5 IS NOT NULL`,
       [userId, body.targetId, JSON.stringify(progress), now, context.revision],
     );
-    if (changed === 1) return resultFor({ ...context, progress, revision: now }, snapshot, q.id, body.selectedIndex, false);
+    if (changed === 1) return persist(resultFor({ ...context, progress, revision: now }, snapshot, q.id, body.selectedIndex, false));
   }
   throw new AssessmentError(409, "学习进度正在其他设备更新，请稍后重新提交");
 }

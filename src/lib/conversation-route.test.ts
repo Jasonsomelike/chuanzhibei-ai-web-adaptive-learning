@@ -37,6 +37,7 @@ describe("完整会话 API", () => {
       [messages.GET,request(`/api/conversations/messages?conversationId=${randomUUID()}`)],
       [messages.POST,request("/api/conversations/messages","POST",{})],
       [messages.PUT,request("/api/conversations/messages","PUT",{})],
+      [messages.PATCH,request("/api/conversations/messages","PATCH",{})],
     ] as const) expect((await handler(req)).status).toBe(401);
   });
   it("拒绝跨站写入、非 JSON 和格式错误，记录不受影响", async () => {

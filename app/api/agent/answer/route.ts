@@ -2,6 +2,7 @@ import { getDb } from "@/lib/db";
 import { answerRequest } from "@/lib/learningWorkflowContracts";
 import { assessLearningExercise, AssessmentError } from "@/lib/learningAssessment";
 import { LearningContextError } from "@/lib/learningContext";
+import { ConversationError } from "@/lib/conversationStore";
 import { assertMutationOrigin, readLimitedText, requireApiUser } from "@/lib/routeAuth";
 
 export const runtime = "nodejs";
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
   try {
     return Response.json(await assessLearningExercise(await getDb(), auth.user.id, parsed.data), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    return Response.json({ error: error instanceof AssessmentError || error instanceof LearningContextError ? error.message : "练习提交失败，请重试" },
-      { status: error instanceof AssessmentError || error instanceof LearningContextError ? error.status : 500 });
+    return Response.json({ error: error instanceof AssessmentError || error instanceof LearningContextError || error instanceof ConversationError ? error.message : "练习提交失败，请重试" },
+      { status: error instanceof AssessmentError || error instanceof LearningContextError || error instanceof ConversationError ? error.status : 500 });
   }
 }

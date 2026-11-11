@@ -15,6 +15,17 @@ import {
   previewOf,
   type AgentDoneEvent,
 } from "@/lib/agentContracts";
+import { buildTutorQuestion } from "./tutorQuestion";
+
+it("带图长问题保持转写要求并适配请求长度，原始输入保持完整", () => {
+  const question = "完整问题".repeat(1000);
+  const prompt = buildTutorQuestion(question,3);
+  expect(prompt).toContain("逐字转写");
+  expect(prompt).toContain("【解答】");
+  expect(agentRequest.safeParse({ question:prompt }).success).toBe(true);
+  expect(question).toHaveLength(4000);
+  expect(buildTutorQuestion("",1)).toContain("请按图片回答");
+});
 
 describe("parseAgentLimits", () => {
   it("无环境变量时用默认值（8 / 5 / 20s / 4000 / 180s）", () => {

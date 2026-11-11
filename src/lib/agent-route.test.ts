@@ -8,6 +8,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { appendConversationTurn, branchConversation, createConversation, getArchivedMessage, readConversationPage } from "./conversationStore";
 
 const authState = vi.hoisted(() => ({
   user: null as null | { id: string; email: string; displayName: string; createdAt: string },
@@ -351,6 +353,52 @@ describe("/api/agent：降级路径", () => {
 });
 
 describe("teaching workflow HTTP contracts", () => {
+  async function archivedTurn(id?: string, revision = 0, question = "讲解栈") {
+    const db = await getDb();
+    if (!id) await db.run("INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES ($1, $2, $3, $4, $5)", [USER.id, USER.email, "hash", USER.displayName, USER.createdAt]);
+    const conversation = id ? { id, revision } : await createConversation(db, USER.id, "data-structures");
+    return appendConversationTurn(db, USER.id, { conversationId: conversation.id, revision: conversation.revision, user: { id: randomUUID(), content: { text: question } }, assistantId: randomUUID() });
+  }
+
+  it("archives the full answer and original sources; a new conversation never inherits another chat", async () => {
+    await saveLlm();
+    const first = await archivedTurn();
+    const longAnswer = "栈的原始讲解 [c09]。".repeat(200);
+    upstream.replies = [{ payload: openAiText(longAnswer) }, { payload: openAiText("承接回答") }, { payload: openAiText("新会话回答") }];
+    await (await postAgent({ question: "客户端不同的文本", subject: "data-structures", conversationId: first.conversation.id, assistantMessageId: first.assistant.id })).text();
+    const db = await getDb();
+    const archived = await getArchivedMessage(db, USER.id, first.conversation.id, first.assistant.id);
+    expect(archived.content.text).toBe(longAnswer);
+    expect(archived.content.materialContext).toBeTruthy();
+    expect(archived.content.citations).toContainEqual({ kcId: "c09", title: "栈" });
+    const second = await archivedTurn(first.conversation.id, first.conversation.revision, "继续给我提示");
+    await (await postAgent({ question: "继续给我提示", conversationId: first.conversation.id, assistantMessageId: second.assistant.id })).text();
+    expect(JSON.stringify(upstream.requests[1].body.messages)).toContain(longAnswer.slice(0,100));
+    const fresh = await createConversation(db, USER.id, "data-structures");
+    const next = await archivedTurn(fresh.id, 0, "讲解队列");
+    await (await postAgent({ question: "讲解队列", conversationId: fresh.id, assistantMessageId: next.assistant.id })).text();
+    expect(JSON.stringify(upstream.requests[2].body.messages)).not.toContain(longAnswer.slice(0,100));
+    expect((await readConversationPage(db, USER.id, first.conversation.id)).messages).toHaveLength(4);
+  });
+
+  it("grades the exercise in its original turn after another chat, and preserves the result in a branch", async () => {
+    await saveLlm();
+    const first = await archivedTurn(undefined, 0, "出一道题");
+    const events = parseEvents(await (await postAgent({ question: "出一道题", intent: "practice", conversationId: first.conversation.id, assistantMessageId: first.assistant.id })).text());
+    const workflow = doneOf(events).workflow as { runId: string; targetId: string; exercise: { questionId: string } };
+    await (await postAgent({ question: "另外一个课程任务" })).text();
+    const request = () => new Request("http://localhost/api/agent/answer", { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" }, body: JSON.stringify({ targetId: workflow.targetId, runId: workflow.runId, questionId: workflow.exercise.questionId, selectedIndex: 0, conversationId: first.conversation.id, messageId: first.assistant.id }) });
+    const response = await answer(request());
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toMatchObject({ evidenceN: 1, duplicate: false });
+    expect(await (await answer(request())).json()).toEqual({ ...result, duplicate: true });
+    const db = await getDb();
+    const fork = await branchConversation(db, USER.id, first.conversation.id, first.assistant.id);
+    expect((await getArchivedMessage(db, USER.id, fork.id, first.assistant.id)).proof?.assessment).toEqual(result);
+    expect((await getArchivedMessage(db, USER.id, first.conversation.id, first.assistant.id)).proof?.assessment).toEqual(result);
+  });
+
   it("persists history server-side and resets explicitly without losing account learning evidence", async () => {
     await saveLlm();
     upstream.replies = [{ payload: openAiText("第一轮的引导") }, { payload: openAiText("第二轮") }, { payload: openAiText("新任务") }];
