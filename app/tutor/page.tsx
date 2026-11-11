@@ -690,6 +690,8 @@ export default function TutorPage() {
   const setError = (value: string | null) => { if (history.isCurrent()) setErrorState(value); };
   const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
   const [webOn, setWebOn] = useState(false);
+  /** 图片上传区的展开状态；有图片时强制展开（预览必须可见）。 */
+  const [showImageInput, setShowImageInput] = useState(false);
   const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
   /** 智能体开关：只在服务端模式可用；local / 未登录时禁用并给出原因。 */
   const [agentOn, setAgentOn] = useState(true);
@@ -2557,45 +2559,31 @@ export default function TutorPage() {
         <fieldset className="mb-3"><legend className="sr-only">希望学伴怎样帮你？</legend><div className="segmented max-w-sm">
           {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}>{label}</button>)}
         </div></fieldset>
-        <details className="mb-2">
-        <summary className="cursor-pointer text-xs text-[var(--ink-soft)]">添加图片、语音或联网补充</summary>
-        <div className="mt-3">
-        {/* 图片输入：粘贴 / 选择 / 拍照；最多 3 张 */}
-        <ImageInput images={images} onChange={setImages} disabled={busy} />
-
-        {/* 输入 */}
+        {/* 输入工具条：图片 / 语音 / 联网，按钮化（与主流 AI 对话框一致） */}
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={webOn}
-              onChange={(event) => setWebOn(event.target.checked)}
-              disabled={busy}
-              className="h-4 w-4"
-            />
-            联网补充（外部网页，未核对）
-          </label>
-          <span className="text-[var(--ink-faint)]">
-            当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答
-          </span>
-          {webOn && searchProvider.notice !== null ? (
-            <span className="text-[var(--warn)]">{searchProvider.notice}</span>
-          ) : null}
-          <Link href="/settings" className="text-[var(--ink-faint)] underline">
-            搜索设置
-          </Link>
-        </div>
-
-        {/* 语音输入：运行时检测；只填空，不自动发送；错误不重试 */}
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => setShowImageInput(value => !value)}
+            disabled={busy}
+            aria-pressed={showImageInput || images.length > 0}
+            title="添加图片（也可直接粘贴截图），最多 3 张"
+            className={
+              showImageInput || images.length > 0
+                ? "rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
+                : "rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
+            }
+          >
+            图片
+          </button>
           {speechSupport === null ? (
-            <span className="text-[var(--ink-faint)]">语音输入：检测中…</span>
-          ) : speechSupport.ok ? (
+            <span className="text-[var(--ink-faint)]">语音：检测中…</span>
+          ) : (
             <button
               type="button"
               onClick={() => void toggleSpeech()}
-              disabled={busy}
+              disabled={busy || !speechSupport.ok}
               aria-pressed={listening}
+              title={speechSupport.ok ? "语音只填空，不自动发送" : speechSupport.message}
               className={
                 listening
                   ? "rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
@@ -2604,34 +2592,41 @@ export default function TutorPage() {
             >
               {listening ? "停止听写" : "语音输入"}
             </button>
-          ) : (
-            <button
-              type="button"
-              disabled
-              title={speechSupport.message}
-              className="rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] opacity-40"
-            >
-              语音输入
-            </button>
           )}
-          {speechSupport !== null && !speechSupport.ok ? (
-            <span className="text-[var(--ink-faint)]">{speechSupport.message}</span>
-          ) : null}
-          {listening ? (
-            <span className="text-[var(--accent)]">
-              正在听…{speechInterim !== "" ? `「${speechInterim}」` : ""}
-            </span>
-          ) : null}
-          {speechError !== null ? (
-            <span className="text-[var(--warn)]">{speechError}</span>
-          ) : null}
-          {speechSupport?.ok === true && !listening ? (
-            <span className="text-[var(--ink-faint)]">zh-CN · 只填空，不自动发送</span>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setWebOn(value => !value)}
+            disabled={busy}
+            aria-pressed={webOn}
+            title="联网补充（外部网页，未核对）"
+            className={
+              webOn
+                ? "rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
+                : "rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
+            }
+          >
+            联网补充
+          </button>
+          <span className="text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
+          <Link href="/settings" className="text-[var(--ink-faint)] underline">搜索设置</Link>
+          <span className="ml-auto text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
         </div>
 
+        {/* 图片输入保持挂载：window 粘贴监听常驻，隐藏时也能直接贴图 */}
+        <div className={showImageInput || images.length > 0 ? "mb-2" : "hidden"}>
+          <ImageInput images={images} onChange={setImages} disabled={busy} />
         </div>
-        </details>
+        {webOn && searchProvider.notice !== null ? (
+          <p className="mb-2 text-xs text-[var(--warn)]">{searchProvider.notice}</p>
+        ) : null}
+        {speechError !== null ? (
+          <p className="mb-2 text-xs text-[var(--warn)]">{speechError}</p>
+        ) : null}
+        {listening ? (
+          <p className="mb-2 text-xs text-[var(--accent)]">
+            正在听…{speechInterim !== "" ? `「${speechInterim}」` : ""}
+          </p>
+        ) : null}
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -2649,7 +2644,23 @@ export default function TutorPage() {
             onChange={(event) => setInput(event.target.value)}
             maxLength={4000}
             placeholder="写下你卡住的地方…"
-            onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); if (!busy) void send(input); } }}
+            onKeyDown={event => {
+              // 中文输入法组合期间的 Enter 是「确认候选词」，必须放行不发送
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (busy || history.loading || !history.writable) return;
+                if (input.trim().length === 0 && images.length === 0) return;
+                void send(input);
+                return;
+              }
+              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                event.preventDefault();
+                if (busy || history.loading || !history.writable) return;
+                if (input.trim().length === 0 && images.length === 0) return;
+                void send(input);
+              }
+            }}
             className="min-w-0 flex-1 resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
           />
           {busy ? (
