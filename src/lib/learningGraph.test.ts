@@ -50,6 +50,13 @@ describe("先修图谱使用真实规划与证据", () => {
     expect(Math.max(...first.map(node => node.position.y))).toBeLessThan(first.length * 120);
     expect(new Set(first.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(first.length);
   });
+  it("窄屏将后续层合为三列，保留节点身份与独立位置", () => {
+    const nodes = learningGraphNodes(subject.graph, mastery, plan, plan.steps);
+    const compact = layoutLearningNodes(nodes, "compact");
+    expect([...new Set(compact.map(node => node.position.x))]).toEqual([0,132,264]);
+    expect(new Set(compact.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(compact.length);
+    expect(compact.map(({position: _position,...node}) => node)).toEqual(nodes.map(({position: _position,...node}) => node));
+  });
   it("选中知识点呈现完整先修与相邻分支，切换方向不改变节点或证据", () => {
     const focusedPlan = planPath({ graph: subject.graph, mastery, targets: ["c09"], budgetMinutes: 60 });
     const related = relatedLearningNodes(subject.graph, focusedPlan.steps, "c09");

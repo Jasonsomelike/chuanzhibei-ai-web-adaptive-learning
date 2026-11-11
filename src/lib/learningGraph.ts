@@ -77,15 +77,23 @@ export function relatedLearningNodes(graph: KnowledgeGraph, steps: readonly Path
 }
 
 /** Compact only visible rows; hidden siblings must never create large empty bands. */
-export function layoutLearningNodes(nodes: readonly LearningGraphNode[], direction: "horizontal" | "vertical" = "horizontal"): LearningGraphNode[] {
+export function layoutLearningNodes(nodes: readonly LearningGraphNode[], direction: "horizontal" | "vertical" | "compact" = "horizontal"): LearningGraphNode[] {
   const columns = new Map<number, LearningGraphNode[]>();
   for (const node of nodes) { const list = columns.get(node.position.x) ?? []; list.push(node); columns.set(node.position.x, list); }
   const layers = [...columns.entries()].sort(([a], [b]) => a - b);
   const bands = new Map<number, LearningGraphNode[]>();
   for (const [depth, [, list]] of layers.entries()) {
-    const band = direction === "horizontal" && layers.length > 4 ? Math.floor((depth * 2 + 1) / 3) : depth;
+    let band = depth;
+    if (direction === "compact") band = Math.min(depth, 2);
+    else if (direction === "horizontal" && layers.length > 4) band = Math.floor((depth * 2 + 1) / 3);
     bands.set(band, [...(bands.get(band) ?? []), ...list]);
   }
   const maxRows = Math.max(1, ...[...bands.values()].map(list => list.length));
-  return [...bands.entries()].flatMap(([depth, list]) => list.map((node, row) => ({ ...node, position: direction === "vertical" ? { x: row * 240 + (maxRows - list.length) * 120, y: depth * 112 } : { x: depth * 230, y: row * 160 + (maxRows - list.length) * 80 } })));
+  return [...bands.entries()].flatMap(([depth, list]) => list.map((node, row) => {
+    const offset = maxRows - list.length;
+    let position = { x: depth * 230, y: row * 160 + offset * 80 };
+    if (direction === "vertical") position = { x: row * 240 + offset * 120, y: depth * 112 };
+    else if (direction === "compact") position = { x: depth * 132, y: row * 112 + offset * 56 };
+    return { ...node, position };
+  }));
 }

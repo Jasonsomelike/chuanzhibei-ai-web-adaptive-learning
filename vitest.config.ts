@@ -5,6 +5,8 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     environment: "node",
+    // Bound simultaneous isolated databases and worker processes on development machines.
+    maxWorkers: 4,
   },
   resolve: {
     alias: {

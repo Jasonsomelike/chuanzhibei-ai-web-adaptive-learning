@@ -46,7 +46,7 @@ import { readPathView, writePathView } from "@/lib/pathView";
  */
 
 const BUDGET_OPTIONS = [30, 60, 90, 120, 180, 240];
-const LearningGraph = dynamic(() => import("@/components/learning-graph"), { ssr: false, loading: () => <div role="status" className="my-5 min-h-80 rounded-xl border border-[var(--line)] p-6 text-sm text-[var(--ink-faint)]">正在展开先修图谱…学习清单可继续使用。</div> });
+const LearningGraph = dynamic(() => import("@/components/learning-graph"), { ssr: false, loading: () => <div role="status" aria-label="正在展开先修图谱" className="path-graph-loading"><div /><div /><div /></div> });
 
 /** 切目标后的第一帧不拿上一科的选择去算；用共享空数组保持引用稳定。 */
 const EMPTY_CHAPTERS: readonly string[] = [];
@@ -425,10 +425,12 @@ export default function PathPage() {
     return (
       <>
         <Nav />
-        <main id="main" className="mx-auto max-w-4xl px-5 py-10">
-          <p className="text-[var(--ink-soft)]">
-            {loadingTarget ? "正在加载自定义方向…" : "正在读取学习记录…"}
-          </p>
+        <main id="main" className="path-page" aria-busy="true">
+          <h1 className="sr-only">学习地图</h1>
+          <div className="path-loading" role="status" aria-label={loadingTarget ? "正在读取自定义方向" : "正在读取课程与学习记录"}>
+            <div className="path-loading-heading" aria-hidden="true"><i /><i /><i /></div>
+            <div className="path-graph-loading" aria-hidden="true"><div /><div /><div /></div>
+          </div>
         </main>
       </>
     );

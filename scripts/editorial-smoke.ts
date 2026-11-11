@@ -165,7 +165,7 @@ try {
   await page.route("**/api/directions?scope=market**", route => {
     const directions = marketState === "list" ? [
       {id:"qa-structures",title:"线性结构复习",description:"线性表、栈与队列",subjectId:"data-structures",conceptCount:3,edgeCount:2,updatedAt:"2026-11-11"},
-      {id:"qa-networks",title:"计算机网络复习",description:"协议与网络分层",subjectId:"computer-networks",conceptCount:4,edgeCount:3,updatedAt:"2026-11-11"},
+      {id:"qa-networks",title:"计算机网络复习",description:"协议与网络分层",subjectId:"network",conceptCount:4,edgeCount:3,updatedAt:"2026-11-11"},
     ] : [];
     return route.fulfill({status:marketState === "error" ? 503 : 200,contentType:"application/json",body:JSON.stringify({directions})});
   });
@@ -196,7 +196,66 @@ try {
     }
   }
   await page.unroute("**/api/directions?scope=market**");
+  const screens = [
+    ["home","/"], ["path","/path?subject=data-structures&targets=c09&budget=60&kc=c09"],
+    ["diagnose","/diagnose?subject=data-structures&kc=c09"], ["tutor","/tutor?subject=data-structures"],
+    ["courses","/directions"], ["market","/market"], ["settings","/settings?panel=appearance"],
+    ["guide","/guide"], ["about","/about"], ["login","/login"],
+  ];
+  for (const [layout, label] of [["paper","导览"],["atlas","地图"],["chapters","章节"]]) {
+    await page.setViewportSize({width:1487,height:1058});
+    await go("/settings?panel=appearance"); await chooseLayout(label,layout);
+    for (const width of [1487,853,768,390,360]) {
+      await page.setViewportSize({width,height:width < 769 ? 844 : 1058});
+      for (const [name,route] of screens) {
+        await go(route);
+        if (name === "home") await page.locator(".overview-primary").waitFor();
+        if (name === "path") await graphReady();
+        if (name === "diagnose") await page.locator('.diagnostic-page[aria-busy="false"]').waitFor();
+        if (name === "tutor") await page.locator("#q").waitFor();
+        if (name === "guide") await page.locator('.guide-journey[aria-busy="false"]').waitFor();
+        if (name === "market") await page.locator('section[aria-label="公开学习方向"][aria-busy="false"]').waitFor();
+        if (name === "path" && width === 390) {
+          await page.waitForFunction(() => {
+            const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
+            return [...document.querySelectorAll(".knowledge-node .concept-label")].every(label => {
+              const rect = label.getBoundingClientRect();
+              return rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom;
+            });
+          });
+          check(true, `${layout}手机图谱显示完整邻接节点名称`);
+        }
+        const clipped = await page.locator('main input:not([type="radio"]):not([type="checkbox"]):not([type="file"]), main select, main textarea, .shell-nav-link, .shell-mobile-settings').evaluateAll(controls => controls.filter(control => {
+          const rect = control.getBoundingClientRect();
+          if (rect.width < 5 || rect.height < 5 || getComputedStyle(control).visibility === "hidden") return false;
+          // Horizontal scrollers intentionally expose their contents by scrolling.
+          let parent = control.parentElement;
+          while (parent && parent !== document.body) {
+            if (["auto","scroll"].includes(getComputedStyle(parent).overflowX)) return false;
+            parent = parent.parentElement;
+          }
+          return rect.left < -1 || rect.right > innerWidth + 1;
+        }).map(control => control.getAttribute("aria-label") ?? control.textContent?.slice(0,25) ?? control.tagName));
+        check(clipped.length === 0, `${layout} ${name} ${width}px主要输入与导航完整可达 ${clipped.join(",")}`);
+        if (width < 769) check(await page.locator(".shell-wordmark").isVisible() && await page.locator(".mobile-learning-nav a").count() === 5, `${layout} ${name} ${width}px保留品牌与五个手机入口`);
+        if ((layout === "atlas" && [1487,390].includes(width)) || (name === "path" && [1487,390].includes(width))) await page.screenshot({path:join(output,`final-${name}-${layout}-${width}.png`)});
+        if (name === "path" && width === 390) {
+          await page.getByRole("group", {name:"图谱与学习清单",exact:true}).getByRole("button", {name:"学习清单",exact:true}).click();
+          check(!await page.locator(".knowledge-canvas").isVisible(), `${layout}手机可切换到学习清单`);
+          await page.getByRole("region", {name:"本次学习顺序",exact:true}).getByRole("button").first().click();
+          await page.waitForFunction(() => document.querySelector('.react-flow__node.selected')?.getAttribute("data-id") === "c01" && document.querySelector(".knowledge-canvas")!.getBoundingClientRect().height > 0);
+          check(true, `${layout}手机清单选择返回图谱并定位同一知识点`);
+        }
+      }
+    }
+  }
   await page.setViewportSize({width:1487,height:1058});
+  await go("/settings?panel=appearance"); await chooseLayout("地图","atlas");
+  await go("/path?subject=data-structures&kc=c09"); await graphReady();
+  await page.locator(".knowledge-actions").getByRole("link", {name:"阅读教材",exact:true}).click();
+  await page.getByRole("dialog", {name:"课程学习材料",exact:true}).waitFor();
+  check(true, "图谱知识点的阅读教材入口直接打开材料抽屉");
+  await page.keyboard.press("Escape");
   await go("/login?next=%2Fdirections%3Fcreate%3D1");
   await page.screenshot({path:join(output,"login-desktop.png")});
   await page.getByRole("button", {name:"注册",exact:true}).click();

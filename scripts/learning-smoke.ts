@@ -131,7 +131,10 @@ try {
   check(await page.getByRole("dialog").count() === 0 && await page.locator("#q").evaluate(el => el === document.activeElement), "移动端引用原文后关闭抽屉，焦点回到问题");
   await page.locator("#q").scrollIntoViewIfNeeded();
   check(await page.locator("#q").evaluate(el => el.getBoundingClientRect().bottom <= document.querySelector(".mobile-learning-nav")!.getBoundingClientRect().top), "手机输入框不被底部导航遮挡");
-  await page.getByRole("button", { name: "教材与引用", exact: true }).click(); await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "教材与引用", exact: true }).click();
+  await page.getByRole("dialog", { name: "课程学习材料", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.textContent?.trim() === "教材与引用");
   check(await page.getByRole("button", { name: "教材与引用", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
   await visit("/path?subject=data-structures");
   await page.getByRole("button", { name: "教材章节 · 整科", exact: true }).click();
