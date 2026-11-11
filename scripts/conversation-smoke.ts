@@ -11,7 +11,7 @@ const contexts: APIRequestContext[] = [];
 async function client(name: string) {
   const context = await request.newContext({ baseURL: base, extraHTTPHeaders: { Origin: base } });
   contexts.push(context);
-  const response = await context.post("/api/auth", { data: { action: "register", email: `${name}-${randomUUID()}@test.local`, password: randomBytes(24).toString("base64url"), displayName: "会话回归" } });
+  const response = await context.post("/api/auth", { data: { action: "register", email: `${name}-${randomUUID()}@test.local`, password: `T3-${randomBytes(24).toString("base64url")}`, displayName: "会话回归" } });
   check(response.ok(), "隔离环境注册会话测试账号");
   return context;
 }

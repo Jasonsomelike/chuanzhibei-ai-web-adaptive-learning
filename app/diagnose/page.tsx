@@ -1005,10 +1005,9 @@ export default function DiagnosePage() {
     return (
       <>
         <Nav />
-        <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-          <p className="text-[var(--ink-soft)]">
-            {loadingTarget ? "正在加载自定义方向…" : "正在读取你的学习记录…"}
-          </p>
+        <main id="main" className="diagnostic-page mx-auto max-w-7xl px-5 py-8 sm:px-8" aria-busy="true">
+          <h1>课程诊断</h1>
+          <div role="status" className="diagnostic-loading" aria-label={loadingTarget ? "正在加载自定义方向" : "正在读取你的学习记录"}><div aria-hidden="true"><i /><i /><i /><i /><i /></div><aside aria-hidden="true"><i /><i /></aside></div>
         </main>
       </>
     );
@@ -1039,30 +1038,26 @@ export default function DiagnosePage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} data-focus={focusMode} className="diagnostic-page mx-auto max-w-7xl px-5 py-8 sm:px-8">
+      <main id="main" ref={mainRef} aria-busy="false" data-focus={focusMode} className="diagnostic-page mx-auto max-w-7xl px-5 py-8 sm:px-8">
         <div className="workspace-heading mb-6 flex flex-wrap items-start justify-between gap-4" data-motion="hero">
-          <div>
+          <div className="diagnostic-heading-course">
             <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">课程诊断</h1>
-            <p className="mt-1 text-sm text-[var(--ink-soft)]">
-              诊断测评 · {target.name} · 每答一题，更新一份学习依据。
-            </p>
+            <TargetPicker presentation="select" current={targetId} onChange={setTargetId} />
           </div>
-          <Hint label="隐藏辅助材料与历史概览，专注当前题目。随时可以退出。"><button type="button" aria-pressed={focusMode} onClick={() => setFocusMode(value => !value)} className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm text-[var(--accent)]"><Icon name="expand" size={17} />{focusMode ? "退出专注" : "专注模式"}</button></Hint>
+          <div className="diagnostic-heading-actions"><Link href={`/path${targetQuery(target)}${current ? `&kc=${encodeURIComponent(current.question.kcId)}` : ""}`}><Icon name="arrow" size={17} />返回学习图谱</Link><Hint label="隐藏辅助材料与历史概览，专注当前题目。随时可以退出。"><button type="button" aria-pressed={focusMode} onClick={() => setFocusMode(value => !value)} className="diagnostic-focus-toggle">{focusMode ? "退出专注" : "专注模式"}<span aria-hidden="true" /></button></Hint></div>
         </div>
-
+        {targetError ? <p role="alert" className="mb-5 border-l-2 border-[var(--warn)] pl-4 text-sm text-[var(--warn)]">{targetError}</p> : null}
         <div className="diagnostic-layout">
         <section className="diagnostic-main" aria-label="当前诊断题目">
         {/* 进度 */}
         <Card className="mb-5 diagnostic-progress" motion="progress">
           <div className="flex items-center justify-between text-sm">
             <span className="text-[var(--ink-soft)]">
-              本次已答{" "}
-              <span className="tabular font-medium text-[var(--ink)]">{answered.length}</span> /{" "}
-              {HARD_CAP} 题
+              {done ? `本轮已答 ${answered.length} 题` : current ? `第 ${answered.length + (revealed ? 0 : 1)} 题 · ${graph.concepts.find(concept => concept.id === current.question.kcId)?.chapter ?? current.kcName}` : `本次已答 ${answered.length} 题`}
             </span>
-            <span className="text-[var(--ink-soft)]">
+            {answered.length > 0 ? <span className="text-[var(--ink-soft)]">
               正确 <span className="tabular font-medium text-[var(--ink)]">{correctCount}</span> 题
-            </span>
+            </span> : null}
           </div>
           <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--line)]" role="progressbar" aria-label="本轮诊断进度" aria-valuemin={0} aria-valuemax={HARD_CAP} aria-valuenow={answered.length} aria-valuetext={`已答 ${answered.length} 题，本轮最多 ${HARD_CAP} 题，达到证据门槛可能提前结束`}>
             <div
@@ -1071,9 +1066,6 @@ export default function DiagnosePage() {
               style={{ transform: `scaleX(${Math.min(1, answered.length / HARD_CAP)})` }}
             />
           </div>
-          <p className="mt-2 text-xs text-[var(--ink-faint)]">
-            本轮最多 {HARD_CAP} 题，达到证据门槛会提前结束。{synced ? "已同步到账号。" : "记录保存在本浏览器。"}
-          </p>
         </Card>
 
 
@@ -1653,12 +1645,15 @@ export default function DiagnosePage() {
         </section>
         <aside className="diagnostic-sidebar" aria-label="本次测评会话">
           <Card>
-            <h2 className="flex items-center gap-2 text-base font-semibold"><Icon name="clipboard" size={20} />本次测评会话</h2>
+            <h2 className="diagnostic-scope-title">测评范围</h2>
+            <p className="diagnostic-scope-course">{target.name}</p>
+            <p className="diagnostic-scope-chapter">{current ? graph.concepts.find(concept => concept.id === current.question.kcId)?.chapter : done ? "本轮诊断已完成" : "按先修关系安排"}</p>
+            <p className="mt-3 text-xs leading-relaxed text-[var(--ink-faint)]">本轮最多 {HARD_CAP} 题，达到证据门槛会提前结束。{synced ? "已同步到账号。" : "记录保存在本浏览器。"}</p>
             <dl className="mt-4 space-y-3 border-t border-[var(--line)] pt-4 text-sm">
               <div className="flex justify-between"><dt className="text-[var(--ink-soft)]">本次已答</dt><dd className="tabular font-semibold">{answered.length} 题</dd></div>
               <div className="flex justify-between gap-3"><dt className="shrink-0 text-[var(--ink-soft)]">本次知识点</dt><dd className="text-right text-[var(--accent)]">{current?.kcName ?? (gen.kind !== "idle" ? gen.kcName : done ? "诊断已完成" : "准备下一题")}</dd></div>
             </dl>
-            <h3 className="mt-5 border-t border-[var(--line)] pt-4 text-sm font-medium">知识点证据</h3>
+            <h3 className="mt-5 border-t border-[var(--line)] pt-4 text-sm font-medium">本次知识点与证据</h3>
             <ul className="mt-3 space-y-3">{[...new Set([current?.question.kcId, ...graph.concepts.map(concept => concept.id)].filter((id): id is string => !!id))].slice(0, 5).map(id => {
               const state = progress.mastery.find(item => item.kcId === id);
               return <li key={id} className="flex items-baseline justify-between gap-2 text-xs"><span className="min-w-0 truncate">{kcName.get(id)}</span><span className="shrink-0 text-[var(--ink-faint)]">{state && state.evidenceN > 0 ? `${state.evidenceN} 条证据 · ±${Math.round(masterySd(state) * 100)}` : "尚未测评"}</span></li>;

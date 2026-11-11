@@ -69,7 +69,7 @@ try {
     data: {
       action: "register",
       email: `conversation-${randomUUID()}@test.local`,
-      password: randomBytes(24).toString("base64url"),
+      password: `T3-${randomBytes(24).toString("base64url")}`,
       displayName: "会话界面回归",
     },
   });

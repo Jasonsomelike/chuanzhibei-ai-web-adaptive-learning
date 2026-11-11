@@ -17,6 +17,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Plus, ArrowUpRight } from "lucide-react";
+import { CourseCatalog } from "@/components/course-catalog";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import { useStaggerIn } from "@/components/motion";
 import { KnowledgeBasePanel, type KbCounts } from "@/components/knowledge-base-panel";
@@ -57,6 +59,11 @@ type Coverage = Record<
 >;
 
 export default function DirectionsPage() {
+  const { user } = useAuth();
+  return <DirectionsWorkspace key={user?.id ?? "anonymous"} />;
+}
+
+function DirectionsWorkspace() {
   const { user, loading } = useAuth();
   const draftState = useDirectionDraft();
 
@@ -64,6 +71,7 @@ export default function DirectionsPage() {
   const [fetching, setFetching] = useState(false);
   const [publishNow, setPublishNow] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const [coverage, setCoverage] = useState<Record<string, Coverage>>({});
   /** 生成失败原因，按方向 id 记。进度由每个方向的按钮自己持有。 */
@@ -181,14 +189,25 @@ export default function DirectionsPage() {
     await loadMine();
   };
 
+  const openCreate = () => {
+    setCreateOpen(true);
+    requestAnimationFrame(() => {
+      document.getElementById("course-create")?.scrollIntoView({ block:"start" });
+      document.querySelector<HTMLTextAreaElement>("#course-create textarea")?.focus({ preventScroll:true });
+    });
+  };
+  const catalog = <>
+    <header className="courses-page-heading"><h1>我的课程</h1><div><Link href="/market">探索公开课程<ArrowUpRight size={18} /></Link>{user ? <button type="button" onClick={openCreate}><Plus size={18} />创建学习方向</button> : <Link className="course-create-link" href="/login"><Plus size={18} />创建学习方向</Link>}</div></header>
+    <nav className="course-section-nav" aria-label="课程分类"><a href="#course-catalog">课程目录</a><a href="#custom-courses">自定义方向</a></nav>
+    <CourseCatalog />
+  </>;
   if (loading) {
     return (
       <>
         <Nav />
-        <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
-          <p className="text-[var(--ink-soft)]" data-motion="loading">
-            正在加载…
-          </p>
+        <main id="main" ref={mainRef} className="courses-page">
+          {catalog}
+          <div className="courses-loading" aria-label="正在读取自定义方向"><i /><i /></div>
         </main>
       </>
     );
@@ -198,26 +217,18 @@ export default function DirectionsPage() {
     return (
       <>
         <Nav />
-        <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
-          <h1 className="mb-5 text-2xl font-semibold tracking-tight">我的学习方向</h1>
-          <Card motion="login-required">
-            <SectionTitle hint="自定义方向需要账号才能保存，这样换设备也不会丢。">
-              需要先登录
-            </SectionTitle>
+        <main id="main" ref={mainRef} className="courses-page">
+          {catalog}
+          <section id="custom-courses" className="custom-courses"><h2>自定义学习方向</h2>
+            <div className="courses-anonymous"><h3>围绕你的教材和目标学习</h3><p>登录后可以创建学习方向，保存图谱并上传自己的资料。</p>
             <Link
               href="/login"
               className="inline-flex rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
             >
-              去登录
+              登录并创建方向
             </Link>
-            <p className="mt-3 text-sm text-[var(--ink-soft)]">
-              也可以直接看{" "}
-              <Link href="/market" className="underline">
-                方向市场
-              </Link>
-              ，那里的公开方向无需登录即可浏览。
-            </p>
-          </Card>
+            </div>
+          </section>
         </main>
       </>
     );
@@ -226,16 +237,14 @@ export default function DirectionsPage() {
   return (
     <>
       <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight">我的学习方向</h1>
-          <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            描述你想学什么，系统把它拆成带先修关系的知识点图谱，可直接用于路径规划与诊断。
-          </p>
-        </div>
+      <main id="main" ref={mainRef} className="courses-page">
+        {catalog}
+        <section id="custom-courses" className="custom-courses"><h2>自定义学习方向</h2>
 
         {/* ── 创建 ── */}
-        <section className="mb-8">
+        <details id="course-create" className="course-create" open={createOpen} onToggle={event => setCreateOpen(event.currentTarget.open)}>
+          <summary><Plus size={18} />创建学习方向</summary>
+          <div className="course-create-body">
           <SectionTitle
             hint={
               draftState.provider
@@ -414,7 +423,8 @@ export default function DirectionsPage() {
               </div>
             ) : null}
           </Card>
-        </section>
+          </div>
+        </details>
 
         {/* ── 我的方向 ── */}
         <section>
@@ -425,8 +435,9 @@ export default function DirectionsPage() {
           {mine.length === 0 && !fetching ? (
             <Card motion="empty">
               <p className="text-sm text-[var(--ink-soft)]">
-                还没有创建方向。上面输入一句描述就能生成第一个。
+                还没有自定义方向。可以围绕你的教材或学习目标创建一个。
               </p>
+              <button type="button" onClick={openCreate} className="mt-3 text-sm text-[var(--accent)] underline">创建方向</button>
             </Card>
           ) : (
             <div className="space-y-2">
@@ -557,6 +568,7 @@ export default function DirectionsPage() {
               })}
             </div>
           )}
+        </section>
         </section>
       </main>
     </>

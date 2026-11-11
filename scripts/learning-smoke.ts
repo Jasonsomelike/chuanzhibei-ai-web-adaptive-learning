@@ -24,6 +24,7 @@ async function visit(path: string) {
   check(response?.ok(), `页面 ${path} 返回成功`);
   await page.locator("main h1").waitFor();
   if (path.startsWith("/tutor")) await page.waitForFunction(() => document.querySelector('[aria-label="辅导消息"]')?.getAttribute("aria-busy") === "false");
+  if (path.startsWith("/diagnose")) await page.locator('.diagnostic-page[aria-busy="false"]').waitFor();
 }
 
 try {
@@ -71,12 +72,13 @@ try {
 
   await visit("/diagnose?subject=data-structures");
   check(await page.locator("[data-answer-feedback]").count() === 0 && !await page.getByText("内置题库（无页级出处）", { exact: false }).isVisible(), "提交前不展示答案与材料出处");
-  const answerRows = await page.locator(".question-option").evaluateAll(rows => rows.map(row => ({ y: row.getBoundingClientRect().y, height: row.getBoundingClientRect().height })));
+  // Submission may scroll the button into view on shorter screens. Compare document positions.
+  const answerRows = await page.locator(".question-option").evaluateAll(rows => rows.map(row => ({ y: row.getBoundingClientRect().y + window.scrollY, height: row.getBoundingClientRect().height })));
   await page.locator('input[type="radio"][name="answer"]').first().check();
   await page.getByRole("button", { name: "提交答案", exact: true }).click();
   await page.getByRole("button", { name: "下一题", exact: true }).waitFor();
   check(await page.getByText("内置题库（无页级出处）", { exact: false }).isVisible(), "提交后显示真实题目出处");
-  const feedbackRows = await page.locator(".question-option").evaluateAll(rows => rows.map(row => ({ y: row.getBoundingClientRect().y, height: row.getBoundingClientRect().height })));
+  const feedbackRows = await page.locator(".question-option").evaluateAll(rows => rows.map(row => ({ y: row.getBoundingClientRect().y + window.scrollY, height: row.getBoundingClientRect().height })));
   check(answerRows.every((row, index) => Math.abs(row.y - feedbackRows[index].y) < 1 && Math.abs(row.height - feedbackRows[index].height) < 1), "答题反馈不改变选项行位置与高度");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("alp.learner.v2") ?? "{}"));
   const progress = saved.subjects["data-structures"];

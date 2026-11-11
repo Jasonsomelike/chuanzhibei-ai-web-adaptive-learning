@@ -9,6 +9,9 @@ export function TutorRail({ children, course, sourceRequest = 0, sourcePanel }: 
   const [tab, setTab] = useState(0);
   const [open, setOpen] = useState(false);
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("materials") === "1") setOpen(true);
+  }, []);
+  useEffect(() => {
     if (!sourceRequest) return;
     setTab(0);
     setOpen(true);

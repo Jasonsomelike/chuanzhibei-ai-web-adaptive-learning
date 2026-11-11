@@ -1,5 +1,6 @@
 /** Isolated browser QA for the editorial workspace; never visits a deployed service. */
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,6 +105,54 @@ try {
     }
   }
   check(unchangedEvidence === await page.evaluate(() => localStorage.getItem("alp.learner.v2")), "布局、配色与图谱导航不改写作答证据");
+  await page.setViewportSize({ width:1487,height:1058 });
+  await go("/directions");
+  await page.locator(".course-row").first().waitFor();
+  check(await page.locator(".course-row").count() === 4, "匿名可浏览真实课程目录");
+  await page.getByRole("button", {name:`查看全部 ${SUBJECTS.length} 门课程`,exact:true}).click();
+  check(await page.locator(".course-row").count() === SUBJECTS.length, "全部内置课程可展开");
+  await page.getByRole("searchbox", {name:"搜索课程",exact:true}).fill("机器学习");
+  check(await page.locator(".course-row").count() === 1 && (await page.locator(".course-row-actions a").first().getAttribute("href"))?.includes("machine-learning"), "课程搜索进入对应真实图谱");
+  await page.getByRole("searchbox", {name:"搜索课程",exact:true}).fill("");
+  await page.getByRole("button", {name:"收起课程",exact:true}).click();
+  await page.evaluate(() => window.scrollTo(0,0));
+  await page.screenshot({path:join(output,"courses-desktop.png")});
+  await page.getByRole("link", {name:"阅读教材",exact:true}).click();
+  await page.getByRole("dialog", {name:"课程学习材料",exact:true}).waitFor();
+  check(await page.getByRole("tab", {name:"教材阅读",exact:true}).getAttribute("aria-selected") === "true", "课程目录可直达按需教材阅读");
+  await page.keyboard.press("Escape");
+  await go("/diagnose?subject=data-structures&kc=c09");
+  await page.locator(".question-option").first().waitFor();
+  check(await page.getByLabel("当前学习目标", {exact:true}).inputValue() === "data-structures", "诊断首屏可直接切换课程");
+  await page.locator('input[name="answer"]').first().check();
+  await page.locator('[data-answer-state="selected"]').waitFor();
+  const selectionStyle = await page.locator('[data-answer-state="selected"]').evaluate(el => {
+    const color = getComputedStyle(document.documentElement).getPropertyValue("--warn-soft").trim().slice(1);
+    const expected = `rgb(${[0,2,4].map(index => parseInt(color.slice(index,index+2),16)).join(", ")})`;
+    return { background:getComputedStyle(el).backgroundColor,expected,checked:el.querySelector("input")?.checked };
+  });
+  check(selectionStyle.background === selectionStyle.expected && selectionStyle.checked, `选中答案使用独立的琥珀色，提交前不暗示对错 ${JSON.stringify(selectionStyle)}`);
+  await page.screenshot({path:join(output,"diagnose-desktop.png")});
+  await page.getByRole("button", {name:"提交答案",exact:true}).click();
+  await page.locator("[data-answer-feedback]").waitFor();
+  check(await page.locator('[data-answer-state="correct"]').evaluate(el => getComputedStyle(el).backgroundColor !== "rgba(0, 0, 0, 0)"), "诊断核对后的正确选项保留状态底色");
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:join(output,"diagnose-phone.png")});
+  await go("/directions"); await page.locator(".course-row").first().waitFor();
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "手机课程目录完整适配");
+  await page.screenshot({path:join(output,"courses-phone.png")});
+  const registered = await context.request.post(`${base}/api/auth`, {headers:{Origin:base},data:{action:"register",email:`course-${Date.now()}@test.local`,password:`T3-${randomBytes(24).toString("base64url")}`,displayName:"课程回归"}});
+  assert(registered.ok());
+  await page.setViewportSize({width:1487,height:1058}); await go("/directions");
+  await page.getByRole("button", {name:"创建学习方向",exact:true}).click();
+  await page.locator("#course-create textarea").fill("我想学习数据结构中的栈和队列，从线性表基础到常用操作");
+  await page.getByRole("button", {name:"生成方向",exact:true}).click();
+  await page.getByLabel("方向名", {exact:true}).waitFor();
+  await page.getByRole("button", {name:"保存这个方向",exact:true}).click();
+  await page.locator('[data-motion="direction"]').first().waitFor();
+  check(await page.locator('[data-motion="direction"]').getByRole("link", {name:"查看路径",exact:true}).isVisible(), "自定义方向通过实际创建入口生成、保存并进入图谱");
+  await page.locator("#course-create > summary").click();
+  await page.screenshot({path:join(output,"courses-account-desktop.png")});
   check(errors.length === 0, `无浏览器运行错误：${errors.join("; ")}`);
   await writeFile(join(output, "results.json"), JSON.stringify({ checks, errors, output }, null, 2));
   console.log(`${checks} 项通过。截图：${output}`);
