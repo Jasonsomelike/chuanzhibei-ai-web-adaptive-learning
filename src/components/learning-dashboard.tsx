@@ -87,7 +87,6 @@ export function LearningDashboard() {
             {last ? <Link href={`/mistakes${query}`} className="editorial-text-link"><PencilLine size={17} />复习错题</Link> : null}
             {history.length ? <details className="overview-history"><summary>课程学习记录 · {history.length} 门</summary><ul>{history.map(subject => <li key={subject.id}><Link href={`/path?subject=${subject.id}`}>{subject.name}</Link><span>{learner?.subjects[subject.id]?.attempts.length} 次作答</span></li>)}</ul></details> : null}
             <p className="overview-storage">{synced ? "已读取账号进度" : "记录保存在本浏览器，登录后可同步。"}</p>
-            <p className="overview-storage"><Link href="/guide" className="editorial-text-link">查看使用指南<ArrowRight size={16} /></Link></p>
           </div>
         </section>
       </div>
