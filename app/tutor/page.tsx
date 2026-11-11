@@ -2749,10 +2749,9 @@ export default function TutorPage() {
             <Globe size={17} />
           </button>
           {webOn ? (
-            <span className="text-[11px] text-[var(--ink-faint)]">
-              当前：{webProviderLabel(searchProvider.provider)} · <Link href="/settings" className="underline">搜索设置</Link>
-            </span>
+            <span className="text-[11px] text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
           ) : null}
+          <Link href="/settings?panel=search" className="text-[11px] text-[var(--ink-faint)] underline" title="联网搜索设置：供应商、默认开与关、测试">搜索设置</Link>
           <span className="ml-auto text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
             {busy ? (
               <button
