@@ -102,26 +102,24 @@ export function MemoryReview({
       aria-label="记忆复习"
       className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">
-          <button
-            type="button"
-            aria-expanded={!collapsed}
-            aria-controls={bodyId}
-            onClick={() => setCollapsed(value => !value)}
-            className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+      <h2 className="text-lg font-semibold tracking-tight">
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+          onClick={() => setCollapsed(value => !value)}
+          className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+        >
+          记忆复习
+          <span
+            aria-hidden="true"
+            className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
           >
-            记忆复习
-            <span
-              aria-hidden="true"
-              className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
-            >
-              ▾
-            </span>
-          </button>
-        </h2>
-        <span className="text-xs text-[var(--ink-soft)]">{summary}</span>
-      </div>
+            ▾
+          </span>
+        </button>
+      </h2>
+      <p className="mt-1.5 text-xs text-[var(--ink-soft)]">{summary}</p>
 
       {!collapsed ? (
         <>

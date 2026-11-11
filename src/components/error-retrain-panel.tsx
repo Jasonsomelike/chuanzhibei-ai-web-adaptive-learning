@@ -147,37 +147,33 @@ export function ErrorRetrainPanel({
       aria-label="错题重训"
       className={`rounded-xl border bg-[var(--surface)] p-5 ${emphasis ? "error-retrain-emphasis" : "border-[var(--line)]"} ${className}`}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">
-          <button
-            type="button"
-            aria-expanded={!collapsed}
-            aria-controls={bodyId}
-            onClick={() => setCollapsed(value => !value)}
-            className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+      <h2 className="text-lg font-semibold tracking-tight">
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+          onClick={() => setCollapsed(value => !value)}
+          className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+        >
+          错题重训与总结
+          <span
+            aria-hidden="true"
+            className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
           >
-            错题重训与总结
-            <span className="text-xs font-normal text-[var(--ink-soft)]">
-              {retrainQuestions.length} 道题待重训
-            </span>
-            <span
-              aria-hidden="true"
-              className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
-            >
-              ▾
-            </span>
-          </button>
-        </h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={downloadSummary}
-            title="把错题知识点总结导出为 Markdown 文件下载"
-            className="shrink-0 rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)]"
-          >
-            下载总结（.md）
-          </button>
-        </div>
+            ▾
+          </span>
+        </button>
+      </h2>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-[var(--ink-soft)]">{retrainQuestions.length} 道题待重训</span>
+        <button
+          type="button"
+          onClick={downloadSummary}
+          title="把错题知识点总结导出为 Markdown 文件下载"
+          className="shrink-0 rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)]"
+        >
+          下载总结（.md）
+        </button>
       </div>
       {downloadError !== null ? (
         <p role="alert" className="mt-2 text-xs text-[var(--bad)]">
