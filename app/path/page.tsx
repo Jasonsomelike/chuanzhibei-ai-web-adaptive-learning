@@ -582,8 +582,8 @@ export default function PathPage() {
                               requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" }));
                             }}>{c?.name ?? step.kcId}</button>
                             <Pill>{step.kind === "learn" ? "新学" : "复习"}</Pill>
-                            <Pill>剩余 {budget - displayed.slice(0, i + 1).reduce((sum, s) => sum + s.estMinutes, 0)} 分钟</Pill>
-                            <Pill>{step.estMinutes} 分钟 · 深度 {depths.get(step.kcId) ?? 0}</Pill>
+                            <Pill>{step.estMinutes} 分钟</Pill>
+                            <Pill>深度 {depths.get(step.kcId) ?? 0}</Pill>
                             {moved.has(step.kcId) ? <Pill tone="warn">已手动调整</Pill> : null}
                             {/* 只影响视觉：?kc= 跳转过来的定位标记，不参与路径计算 */}
                             {highlightKc === step.kcId ? <Pill tone="accent">已定位</Pill> : null}
