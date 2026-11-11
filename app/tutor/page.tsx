@@ -3,7 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { Copy, GitBranch, History, Check, RefreshCw, GraduationCap } from "lucide-react";
+import { Copy, GitBranch, History, Check, RefreshCw, GraduationCap, Paperclip, Globe, Mic } from "lucide-react";
+import { appendAttachedImages } from "@/components/image-input";
+import { browserImageCodec, prepareImage, remainingImageSlots, IMAGE_MAX_COUNT } from "@/lib/image";
+import { detectUploadKind } from "@/components/knowledge-upload";
+import { MAX_FILE_BYTES } from "@/lib/knowledge";
+import { extractPdfText } from "@/lib/pdf";
+import { readFileBytes, readTextFile } from "@/lib/textFile";
 import { AppDialog } from "@/components/primitives/dialog";
 import { ConversationSidebar } from "@/components/conversation-sidebar";
 import { archiveContent, type ArchivedMessage } from "@/lib/conversationContracts";
@@ -690,8 +696,87 @@ export default function TutorPage() {
   const setError = (value: string | null) => { if (history.isCurrent()) setErrorState(value); };
   const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
   const [webOn, setWebOn] = useState(false);
-  /** 图片上传区的展开状态；有图片时强制展开（预览必须可见）。 */
-  const [showImageInput, setShowImageInput] = useState(false);
+  /** 附件（📎）的结果提示：图片压缩问题 / 文档文字并入情况。 */
+  const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+  const attachIdRef = useRef(0);
+
+  /**
+   * 📎 附件：图片走压缩管线随消息发送（最多 3 张，含粘贴）；
+   * txt / md / pdf 抽出文字直接并入输入框（上限 2 万字，超出截断并说明）——
+   * 对话消息本身不支持文档附件，把文字摆进输入框是当下最诚实的做法；
+   * 更大的讲义 / 教材应传到课程资料库（我的课程 → 知识库），回答会检索引用。
+   */
+  const onAttachFiles = (files: FileList | null): void => {
+    if (!files || files.length === 0) return;
+    setAttachNotice(null);
+    void (async () => {
+      const notes: string[] = [];
+      let current = images;
+      for (const file of Array.from(files)) {
+        if (file.type.startsWith("image/")) {
+          if (remainingImageSlots(current.length) <= 0) {
+            notes.push(`图片最多 ${IMAGE_MAX_COUNT} 张，已忽略「${file.name || "粘贴的图片"}」。`);
+            continue;
+          }
+          try {
+            const result = await prepareImage(file, browserImageCodec());
+            if (result.ok) {
+              attachIdRef.current += 1;
+              const merged = appendAttachedImages(
+                current,
+                [{ ...result.image, id: `img-${attachIdRef.current}`, name: file.name.trim() === "" ? "粘贴的图片" : file.name }],
+              );
+              if (merged.images.length > current.length) {
+                current = merged.images;
+                setImages(merged.images);
+              }
+            } else {
+              notes.push(`${file.name || "图片"}：${result.message}`);
+            }
+          } catch (err) {
+            notes.push(`${file.name || "图片"}：压缩失败（${err instanceof Error ? err.message : String(err)}）`);
+          }
+          continue;
+        }
+        const kind = detectUploadKind(file.name);
+        if (kind === null) {
+          notes.push(`不支持的文件类型：${file.name}（支持图片与 txt / md / pdf）`);
+          continue;
+        }
+        if (file.size > MAX_FILE_BYTES) {
+          notes.push(`${file.name}：超过 64MB 上限`);
+          continue;
+        }
+        try {
+          let text = "";
+          if (kind === "pdf") {
+            const parsed = await extractPdfText(await readFileBytes(file));
+            if (!parsed.ok) {
+              notes.push(`${file.name}：${parsed.reason}`);
+              continue;
+            }
+            text = parsed.blocks.map((block) => block.text).join("\n\n");
+          } else {
+            text = (await readTextFile(file)).text;
+          }
+          if (text.trim() === "") {
+            notes.push(`${file.name}：没有可读取的文字`);
+            continue;
+          }
+          const capped =
+            text.length > 20000
+              ? `${text.slice(0, 20000)}\n…（文件过长已截断，全文 ${text.length} 字）`
+              : text;
+          setInput((prev) => `${prev}${prev.trim() !== "" && !prev.endsWith("\n") ? "\n" : ""}【附件：${file.name}】\n${capped}\n【附件结束】\n`);
+          notes.push(`已把「${file.name}」的文字并入输入`);
+        } catch (err) {
+          notes.push(`${file.name}：读取失败（${err instanceof Error ? err.message : String(err)}）`);
+        }
+      }
+      setAttachNotice(notes.length > 0 ? notes.join("；") : null);
+    })();
+  };
   const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
   /** 智能体开关：只在服务端模式可用；local / 未登录时禁用并给出原因。 */
   const [agentOn, setAgentOn] = useState(true);
@@ -2559,80 +2644,33 @@ export default function TutorPage() {
         <fieldset className="mb-3"><legend className="sr-only">希望学伴怎样帮你？</legend><div className="segmented max-w-sm">
           {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}>{label}</button>)}
         </div></fieldset>
-        {/* 输入工具条：图片 / 语音 / 联网，按钮化（与主流 AI 对话框一致） */}
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-          <button
-            type="button"
-            onClick={() => setShowImageInput(value => !value)}
-            disabled={busy}
-            aria-pressed={showImageInput || images.length > 0}
-            title="添加图片（也可直接粘贴截图），最多 3 张"
-            className={
-              showImageInput || images.length > 0
-                ? "rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
-                : "rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
-            }
-          >
-            图片
-          </button>
-          {speechSupport === null ? (
-            <span className="text-[var(--ink-faint)]">语音：检测中…</span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void toggleSpeech()}
-              disabled={busy || !speechSupport.ok}
-              aria-pressed={listening}
-              title={speechSupport.ok ? "语音只填空，不自动发送" : speechSupport.message}
-              className={
-                listening
-                  ? "rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
-                  : "rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
-              }
-            >
-              {listening ? "停止听写" : "语音输入"}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setWebOn(value => !value)}
-            disabled={busy}
-            aria-pressed={webOn}
-            title="联网补充（外部网页，未核对）"
-            className={
-              webOn
-                ? "rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
-                : "rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
-            }
-          >
-            联网补充
-          </button>
-          <span className="text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
-          <Link href="/settings" className="text-[var(--ink-faint)] underline">搜索设置</Link>
-          <span className="ml-auto text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
-        </div>
-
-        {/* 图片输入保持挂载：window 粘贴监听常驻，隐藏时也能直接贴图 */}
-        <div className={showImageInput || images.length > 0 ? "mb-2" : "hidden"}>
-          <ImageInput images={images} onChange={setImages} disabled={busy} />
-        </div>
+        {/* 状态行：附件 / 听写 / 联网 / 语音错误，只在有内容时出现 */}
+        {attachNotice !== null ? (
+          <p className="mb-1.5 text-xs text-[var(--ink-soft)]">{attachNotice}</p>
+        ) : null}
         {webOn && searchProvider.notice !== null ? (
-          <p className="mb-2 text-xs text-[var(--warn)]">{searchProvider.notice}</p>
+          <p className="mb-1.5 text-xs text-[var(--warn)]">{searchProvider.notice}</p>
         ) : null}
         {speechError !== null ? (
-          <p className="mb-2 text-xs text-[var(--warn)]">{speechError}</p>
+          <p className="mb-1.5 text-xs text-[var(--warn)]">{speechError}</p>
         ) : null}
         {listening ? (
-          <p className="mb-2 text-xs text-[var(--accent)]">
+          <p className="mb-1.5 text-xs text-[var(--accent)]">
             正在听…{speechInterim !== "" ? `「${speechInterim}」` : ""}
           </p>
         ) : null}
+
+        {/* 图片附件托盘：保持挂载，window 粘贴监听常驻，隐藏时也能直接贴图 */}
+        <div className={images.length > 0 ? "mb-2" : "hidden"}>
+          <ImageInput images={images} onChange={setImages} disabled={busy} />
+        </div>
+
         <form
           onSubmit={(event) => {
             event.preventDefault();
             void send(input);
           }}
-          className="flex items-end gap-2"
+          className="flex flex-col gap-2"
         >
           <label htmlFor="q" className="sr-only">
             输入你的问题
@@ -2661,25 +2699,79 @@ export default function TutorPage() {
                 void send(input);
               }
             }}
-            className="min-w-0 flex-1 resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
+            className="min-w-0 resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
           />
-          {busy ? (
-            <button
-              type="button"
-              onClick={() => { abortRef.current?.abort(); void history.stop().catch(failure => setError(messageOf(failure))); }}
-              className="rounded-lg border border-[var(--bad)] px-4 py-2 text-sm font-medium text-[var(--bad)] hover:bg-[var(--bad-soft)]"
-            >
-              停止
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={history.loading || !history.writable || input.trim().length === 0 && images.length === 0}
-              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
-            >
-              发送
-            </button>
-          )}
+          {/* 左下角：📎 附件 / 🎤 语音 / 🌐 联网；右下角：快捷键提示 + 发送 */}
+          <div className="flex items-center gap-2">
+          <input
+            ref={attachInputRef}
+            type="file"
+            multiple
+            accept="image/*,.txt,.md,.markdown,.pdf"
+            className="hidden"
+            onChange={(event) => { onAttachFiles(event.target.files); event.target.value = ""; }}
+          />
+          <button
+            type="button"
+            onClick={() => attachInputRef.current?.click()}
+            disabled={busy}
+            title="上传图片或文档：图片随消息发送；txt / md / pdf 会把文字并入输入框"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
+          >
+            <Paperclip size={17} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void toggleSpeech()}
+            disabled={busy || !speechSupport?.ok}
+            aria-pressed={listening}
+            title={speechSupport !== null && speechSupport.ok ? "语音只填空，不自动发送" : speechSupport?.message ?? "语音输入"}
+            className={
+              listening
+                ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--accent)] text-[var(--accent)]"
+                : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
+            }
+          >
+            <Mic size={17} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setWebOn(value => !value)}
+            disabled={busy}
+            aria-pressed={webOn}
+            title="联网补充（外部网页，未核对）"
+            className={
+              webOn
+                ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--accent)] text-[var(--accent)]"
+                : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
+            }
+          >
+            <Globe size={17} />
+          </button>
+          {webOn ? (
+            <span className="text-[11px] text-[var(--ink-faint)]">
+              当前：{webProviderLabel(searchProvider.provider)} · <Link href="/settings" className="underline">搜索设置</Link>
+            </span>
+          ) : null}
+          <span className="ml-auto text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
+            {busy ? (
+              <button
+                type="button"
+                onClick={() => { abortRef.current?.abort(); void history.stop().catch(failure => setError(messageOf(failure))); }}
+                className="rounded-lg border border-[var(--bad)] px-4 py-2 text-sm font-medium text-[var(--bad)] hover:bg-[var(--bad-soft)]"
+              >
+                停止
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={history.loading || !history.writable || input.trim().length === 0 && images.length === 0}
+                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
+              >
+                发送
+              </button>
+            )}
+          </div>
         </form>
         <div className="tutor-save-status" role="status">{history.saveState === "error" ? <><span>有内容尚未保存</span><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></> : history.saveState === "saving" ? "正在保存会话…" : <><Check size={15} />{history.active ? "会话已保存" : "新会话"}</>}</div>
         {history.error ? <div className="conversation-save-error" role="alert"><p>{history.error}</p><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></div> : null}
