@@ -8,7 +8,7 @@
  * 口径见 docs/superpowers/specs/2026-10-28-next-features-design.md §6。
  */
 
-import { useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   CALIBRATION_LEVEL_MIN,
   calibrationDetail,
@@ -85,19 +85,40 @@ export function CalibrationCard({
 }) {
   const report = useMemo(() => calibrationReport(attempts), [attempts]);
   const legacyNote = calibrationLegacyNote(report);
+  /** 卡片折叠状态：默认收起，标题与档位徽章始终可见，展开看口径与结论。 */
+  const [collapsed, setCollapsed] = useState(true);
+  const bodyId = useId();
 
   return (
     <section
-      aria-label="预测校准"
+      aria-label="预测校准与历史"
       className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">预测校准</h2>
+        <h2 className="text-lg font-semibold tracking-tight">
+          <button
+            type="button"
+            aria-expanded={!collapsed}
+            aria-controls={bodyId}
+            onClick={() => setCollapsed(value => !value)}
+            className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+          >
+            预测校准与历史
+            <span
+              aria-hidden="true"
+              className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
+            >
+              ▾
+            </span>
+          </button>
+        </h2>
         <span className="rounded-full bg-[var(--line)] px-2.5 py-0.5 text-xs font-medium text-[var(--ink-soft)]">
           {calibrationLevelLabel(report.level)}
         </span>
       </div>
 
+      {!collapsed ? (
+        <>
       <p className="mt-2 text-sm leading-relaxed">{calibrationHeadline(report)}</p>
       <p className="mt-1 text-xs text-[var(--ink-faint)]">{calibrationLevelNote(report)}</p>
       {legacyNote ? (
@@ -114,6 +135,8 @@ export function CalibrationCard({
       </details>
 
       <p className="mt-2 text-xs text-[var(--ink-faint)]">{CALIBRATION_SCOPE_NOTE}</p>
+        </>
+      ) : null}
     </section>
   );
 }

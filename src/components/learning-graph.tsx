@@ -2,14 +2,14 @@
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Controls, Handle, MarkerType, Position, ReactFlow, useUpdateNodeInternals, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
+import { Controls, Handle, MarkerType, Position, ReactFlow, getNodesBounds, getViewportForBounds, useUpdateNodeInternals, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
 import { ArrowRight, BookOpen, Check, Circle, CircleDot, Diamond, ListOrdered, Network, Search } from "lucide-react";
 import "@xyflow/react/dist/style.css";
 import { Hint } from "@/components/primitives/hint";
 import { prefersReducedMotion } from "@/components/motion";
 import { useAppearance } from "@/lib/appearance";
 import { chaptersOf } from "@/lib/chapters";
-import { LEARNING_STATUS_LABELS, layoutLearningNodes, learningGraphNodes, relatedLearningNodes, type LearningGraphNode } from "@/lib/learningGraph";
+import { LEARNING_STATUS_LABELS, layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes, type LearningGraphNode } from "@/lib/learningGraph";
 import type { KnowledgeGraph } from "@/lib/graph";
 import type { MasteryState } from "@/lib/mastery";
 import type { PathStep, PlanResult } from "@/lib/plan";
@@ -24,15 +24,19 @@ const Concept = memo(function Concept({ id, data, selected }: NodeProps<ConceptN
     <Handle id="left" type="target" position={Position.Left} isConnectable={false} style={{ left: 1, top: 28 }} />
     <Handle id="top" type="target" position={Position.Top} isConnectable={false} style={{ left: 16, top: 12 }} />
     <Symbol className="concept-anchor" size={30} strokeWidth={selected ? 2.8 : 2} />
-    <div className="concept-label"><span>{item.name}</span><small>{item.mean === null ? "尚未测评" : `${Math.round(item.mean * 100)}% · ${item.evidenceN} 条证据`}{data.added ? " · 新增" : ""}</small></div>
+    <div className="concept-label"><span>{item.name}</span><small>{item.mean === null ? "尚未测评" : <>{Math.round(item.mean * 100)}%<span className="node-mastery-sd">±{Math.round((item.sd ?? 0) * 100)}</span> · {item.evidenceN} 条证据</>}{data.added ? " · 新增" : ""}</small></div>
     <Handle id="right" type="source" position={Position.Right} isConnectable={false} style={{ left: 32, right: "auto", top: 28 }} />
     <Handle id="bottom" type="source" position={Position.Bottom} isConnectable={false} style={{ left: 16, bottom: "auto", top: 43 }} />
   </div>;
 });
 const nodeTypes = { concept: Concept };
 
-export default function LearningGraph({ graph, mastery, plan, steps, query, selectedId, addedKcIds, onSelect, onLocate }: {
-  graph: KnowledgeGraph; mastery: readonly MasteryState[]; plan: PlanResult; steps: readonly PathStep[]; query: string; addedKcIds: readonly string[]; selectedId: string | null; onSelect: (id: string) => void; onLocate: (id: string) => void;
+/** 导出画布的固定尺寸：竖向章节列在 1600×1000 内足够放下一屏全科关系。 */
+const EXPORT_WIDTH = 1600;
+const EXPORT_HEIGHT = 1000;
+
+export default function LearningGraph({ graph, mastery, plan, steps, query, selectedId, addedKcIds, targetName, onSelect, onLocate }: {
+  graph: KnowledgeGraph; mastery: readonly MasteryState[]; plan: PlanResult; steps: readonly PathStep[]; query: string; addedKcIds: readonly string[]; targetName: string; selectedId: string | null; onSelect: (id: string) => void; onLocate: (id: string) => void;
 }) {
   const { layout } = useAppearance();
   const vertical = layout === "chapters";
@@ -43,6 +47,8 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
   const [searchOpen, setSearchOpen] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
   const [flow, setFlow] = useState<ReactFlowInstance<ConceptNode> | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>({});
   const onNodesChange = useCallback((changes: NodeChange<ConceptNode>[]) => {
@@ -91,13 +97,51 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
   const edges = useMemo(() => {
     const visible = new Set(visibleModels.map(item => item.id));
     const positions = new Map(visibleModels.map(item => [item.id, item.position]));
+    const blockedTargets = new Set(visibleModels.filter(item => item.status === "blocked").map(item => item.id));
+    const strokeVar = { accent: "var(--accent)", warn: "var(--warn)", plain: "var(--ink-faint)" } as const;
     return graph.edges.filter(edge => visible.has(edge.before) && visible.has(edge.after)).map(edge => {
-      const scheduled = byId.get(edge.before)?.order !== null && byId.get(edge.after)?.order !== null;
-      const color = scheduled ? "var(--warn)" : "var(--line-strong)";
+      const visual = learningEdgeVisual(edge.before, edge.after, { selectedId: selectedNodeId, showAll, isBlockedTarget: id => blockedTargets.has(id) });
+      const color = strokeVar[visual.tone];
       const downward = vertical || positions.get(edge.before)?.x === positions.get(edge.after)?.x;
-      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "default", markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }, style: { stroke: color, strokeWidth: 1.65 }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识` };
+      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "default", markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
     });
-  }, [graph, visibleModels, byId, vertical]);
+  }, [graph, visibleModels, byId, vertical, selectedNodeId, showAll]);
+
+  /**
+   * 导出当前画布为 PNG。
+   *
+   * html-to-image 动态导入：不进首屏包。用固定尺寸 + getViewportForBounds
+   * 重新取景，导出的是完整图谱，与屏幕上的缩放无关。
+   */
+  const exportPng = useCallback(async () => {
+    if (!flow || !canvas.current || visibleModels.length === 0 || exporting) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      const [{ toPng }] = await Promise.all([import("html-to-image")]);
+      const viewportElement = canvas.current.querySelector<HTMLElement>(".react-flow__viewport");
+      if (!viewportElement) throw new Error("画布尚未渲染完成");
+      const viewport = getViewportForBounds(getNodesBounds(flow.getNodes()), EXPORT_WIDTH, EXPORT_HEIGHT, 0.2, 1.5, 0.14);
+      const style = getComputedStyle(document.documentElement);
+      const surface = style.getPropertyValue("--surface").trim() || "#ffffff";
+      const dataUrl = await toPng(viewportElement, {
+        backgroundColor: surface,
+        width: EXPORT_WIDTH,
+        height: EXPORT_HEIGHT,
+        style: { width: `${EXPORT_WIDTH}px`, height: `${EXPORT_HEIGHT}px`, transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` },
+      });
+      const anchor = document.createElement("a");
+      anchor.href = dataUrl;
+      anchor.download = learningGraphFileName(targetName, new Date().toISOString());
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch (err) {
+      setExportError(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [flow, visibleModels.length, exporting, targetName]);
   const focus = (value: string) => {
     onSelect(value);
     setSearchOpen(false);
@@ -140,6 +184,8 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       </div>
       <div className="segmented" role="group" aria-label="图谱范围"><button type="button" aria-pressed={!showAll} onClick={() => setShowAll(false)}>当前路径</button><button type="button" aria-pressed={showAll} onClick={() => setShowAll(true)}>全科关系</button></div>
       <span className="knowledge-visible-count">{visibleModels.length} / {models.length} 个知识点</span>
+      <button type="button" onClick={() => void exportPng()} disabled={exporting || !flow || visibleModels.length === 0} title="把当前图谱导出为 PNG 图片" className="cursor-interaction rounded-lg border border-[var(--line)] px-2.5 py-1.5 text-xs text-[var(--ink-soft)] hover:border-[var(--accent)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40">{exporting ? "导出中…" : "导出 PNG"}</button>
+      {exportError !== null ? <span role="alert" className="text-xs text-[var(--bad)]">{exportError}</span> : null}
     </div>
     <aside className="knowledge-chapter-index" aria-label="课程目录"><h2>课程目录</h2>{chapterIndex.map(chapter => <button key={chapter.name} type="button" aria-current={selected?.chapter === chapter.name ? "true" : undefined} onClick={() => focus(chapter.kcIds[0])}>{chapter.name}</button>)}</aside>
     <div className="knowledge-canvas" ref={canvas} role="region" aria-label="可缩放的课程先修关系图">
@@ -163,6 +209,6 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       </div>
       <div className="knowledge-actions"><Link href={studyHref} className="graph-start-learning">开始学习<ArrowRight size={17} /></Link><Link href={`/diagnose${queryPrefix}kc=${encodeURIComponent(selected.id)}`}>用一道题检查理解</Link><Link href={`${studyHref}&materials=1`}><BookOpen size={18} />阅读教材</Link></div>
     </div> : <p>当前方向还没有知识点。</p>}</aside>
-    <footer className="knowledge-legend"><div><span><CircleDot size={16} className="text-[var(--warn)]" />本次学习</span><span><Circle size={16} />尚未测评</span><span><Check size={16} />有掌握证据</span><span><Circle size={16} strokeDasharray="3 2" />预算暂缓</span><span><Diamond size={15} />先修阻塞</span></div><Hint label="沿箭头方向学习；拖动画布移动视野，使用按钮缩放。Tab 聚焦节点，Enter 选中。"><button type="button">操作说明</button></Hint></footer>
+    <footer className="knowledge-legend"><div><span><CircleDot size={16} className="text-[var(--warn)]" />本次学习</span><span><Circle size={16} />尚未测评</span><span><Check size={16} />有掌握证据</span><span><Circle size={16} strokeDasharray="3 2" />预算暂缓</span><span><Diamond size={15} />先修阻塞</span><span><svg width="18" height="6" viewBox="0 0 18 6" aria-hidden="true"><line x1="0" y1="3" x2="18" y2="3" stroke="var(--warn)" strokeWidth="1.6" strokeDasharray="4 3" /></svg>阻塞来源</span></div><Hint label="沿箭头方向学习；选中知识点会高亮它的先修边，橙色虚线边指向被阻塞的知识点；拖动画布移动视野，使用按钮缩放。Tab 聚焦节点，Enter 选中。"><button type="button">操作说明</button></Hint></footer>
   </section>;
 }
