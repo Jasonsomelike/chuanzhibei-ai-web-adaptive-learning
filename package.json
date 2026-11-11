@@ -23,7 +23,7 @@
     "probe:external": "tsx scripts/probe-external.ts",
     "eval:rag": "tsx scripts/eval-rag.ts",
     "eval:rag:hard": "tsx scripts/eval-rag-hard.ts",
-    "verify": "npm run typecheck && npm run test && npm run kg:validate && npm run check:secrets && npm run eval:tutor",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run kg:validate && npm run check:secrets && npm run eval:tutor",
     "path:hash": "tsx scripts/path-hash.ts",
     "eval:tutor": "tsx scripts/eval-tutor.ts",
     "prebuild": "node scripts/fetch-model.mjs --optional"

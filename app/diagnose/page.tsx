@@ -164,6 +164,9 @@ export default function DiagnosePage() {
     }
   }, []);
 
+  /** 当前题的学习者笔记（错题本里写的）：重做时直接摆在题面旁，复习闭环。 */
+  const currentNote = current && progress ? progress.notes?.[current.question.id] ?? null : null;
+
   const [directionItems, setDirectionItems] = useState<DirectionItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [gen, setGen] = useState<GenState>({ kind: "idle" });
@@ -1472,6 +1475,14 @@ export default function DiagnosePage() {
               {current.practiceOnly ? <Pill tone="warn">仅练习，不计入掌握度</Pill> : null}
             </div>
             <h2 tabIndex={-1} className="text-lg font-semibold leading-[1.8] sm:text-xl">{current.question.stem}</h2>
+
+            {/* 错题本笔记：重做时把学习者自己的批注摆在眼前 */}
+            {currentNote !== null ? (
+              <div className="mt-3 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2">
+                <p className="text-xs font-medium text-[var(--warn)]">我的笔记{currentNote.at !== "" ? ` · 写于 ${currentNote.at.slice(0, 10)}` : ""}</p>
+                <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed">{currentNote.text}</p>
+              </div>
+            ) : null}
 
             {/* L5 难度理由不匹配这类「未拒绝但值得提示」的问题 */}
             {current.checkNotes.length > 0 ? (
