@@ -172,15 +172,15 @@ export default function MistakesPage() {
   );
 
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
-  // 目标或筛选变化时清空选择，避免导出带进看不见的题
+  // 目标或筛选变化时清空选择与自测进度，避免导出带进看不见的题、也保证重新自测
   useEffect(() => {
     setSelectedIds(new Set());
+    setRevealedIds(new Set());
   }, [targetId, kcFilter]);
 
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  /** 已显示答案的题：展开时先只给题目与选项自测，点了「显示答案」才看解析。 */
+  /** 已显示答案的题：默认只给题目与选项自测，点了「显示答案与解析」才看答案。 */
   const [revealedIds, setRevealedIds] = useState<ReadonlySet<string>>(new Set());
   /** 笔记草稿：题目 id → 未保存文本。保存成功后从草稿里清出。 */
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
@@ -414,7 +414,6 @@ export default function MistakesPage() {
 
               <ul className="mt-3 space-y-2">
                 {filteredQuestions.map((question) => {
-                  const expanded = expandedId === question.id;
                   const revealed = revealedIds.has(question.id);
                   const wrongAttempt = lastWrongAttemptOf(attempts, question.id);
                   const chosen = wrongAttempt?.selectedIndex;
@@ -441,24 +440,6 @@ export default function MistakesPage() {
                           </span>
                         </label>
                         <div className="flex shrink-0 flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setExpandedId(expanded ? null : question.id);
-                              // 收起即重置自测：下次展开重新只看题目与选项
-                              if (expanded) {
-                                setRevealedIds((prev) => {
-                                  const next = new Set(prev);
-                                  next.delete(question.id);
-                                  return next;
-                                });
-                              }
-                            }}
-                            aria-expanded={expanded}
-                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs text-[var(--ink-soft)]"
-                          >
-                            {expanded ? "收起" : "展开自测"}
-                          </button>
                           <Link
                             href={redoHref([question.id], "单题重做")}
                             className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]"
@@ -468,8 +449,7 @@ export default function MistakesPage() {
                         </div>
                       </div>
 
-                      {expanded ? (
-                        <div className="mt-2 rounded-md bg-[var(--canvas)] px-3 py-2">
+                      <div className="mt-2 rounded-md bg-[var(--canvas)] px-3 py-2">
                           <ul className="space-y-0.5 text-xs leading-relaxed text-[var(--ink-soft)]">
                             {question.options.map((option, index) => {
                               const isCorrect = revealed && index === question.answerIndex;
@@ -508,7 +488,6 @@ export default function MistakesPage() {
                             </button>
                           )}
                         </div>
-                      ) : null}
 
                       <div className="mt-2">
                         <label className="block text-xs text-[var(--ink-faint)]" htmlFor={`note-${question.id}`}>
