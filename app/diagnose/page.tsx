@@ -1721,7 +1721,7 @@ export default function DiagnosePage() {
             返回 null，所以未答题的新用户看到的侧栏依然是干净的。
           */}
           <ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} readingByKc={readingByKc} kcOverview={kcOverview} onRetrainQuestion={retrainQuestion} emphasis className="mb-5" />
-          <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />预测校准与历史</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /></div></details>
+          <CalibrationCard attempts={progress.attempts} className="mb-5" />
           <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
         </aside>
         </div>
