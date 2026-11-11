@@ -422,24 +422,9 @@ export default function PathPage() {
     setLearner(updated);
   };
 
-  if (!ready || !learnerReady || !learner || !progress || !target || !graph) {
-    return (
-      <>
-        <Nav />
-        <main id="main" className="path-page" aria-busy="true">
-          <h1 className="sr-only">学习地图</h1>
-          <div className="path-loading" role="status" aria-label={loadingTarget ? "正在读取自定义方向" : "正在读取课程与学习记录"}>
-            <div className="path-loading-heading" aria-hidden="true"><i /><i /><i /></div>
-            <div className="path-graph-loading" aria-hidden="true"><div /><div /><div /></div>
-          </div>
-        </main>
-      </>
-    );
-  }
-
-  const totalMinutes = displayed.reduce((s, x) => s + x.estMinutes, 0);
-
-  // 剩余预算的推荐动作：错题重做（错题本）与最薄弱知识点的课本原文巩固
+  // 剩余预算的推荐动作：错题重做（错题本）与最薄弱知识点的课本原文巩固。
+  // 注意：钩子必须放在下方加载骨架屏的提前 return 之前，否则两次渲染
+  // 钩子数不一致会触发 React #310（Rendered more hooks than previous render）。
   const wrongCount = useMemo(
     () => historicalWrongQuestionIds(progress?.attempts ?? []).length,
     [progress],
@@ -456,6 +441,23 @@ export default function PathPage() {
     }
     return best;
   }, [graph, progress]);
+
+  if (!ready || !learnerReady || !learner || !progress || !target || !graph) {
+    return (
+      <>
+        <Nav />
+        <main id="main" className="path-page" aria-busy="true">
+          <h1 className="sr-only">学习地图</h1>
+          <div className="path-loading" role="status" aria-label={loadingTarget ? "正在读取自定义方向" : "正在读取课程与学习记录"}>
+            <div className="path-loading-heading" aria-hidden="true"><i /><i /><i /></div>
+            <div className="path-graph-loading" aria-hidden="true"><div /><div /><div /></div>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  const totalMinutes = displayed.reduce((s, x) => s + x.estMinutes, 0);
 
   return (
     <>
