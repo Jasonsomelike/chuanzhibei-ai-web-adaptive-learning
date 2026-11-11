@@ -77,8 +77,8 @@ export function ErrorRetrainPanel({
   const [expandedKc, setExpandedKc] = useState<string | null>(null);
   /** 导出失败原因（下载被浏览器拦截等）；成功时不显示。 */
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  /** 面板折叠状态：标题与计数始终可见，正文可收起还给侧栏。 */
-  const [collapsed, setCollapsed] = useState(false);
+  /** 面板折叠状态：默认收起，标题与计数始终可见，展开看题目与总结。 */
+  const [collapsed, setCollapsed] = useState(true);
   const bodyId = useId();
 
   const questionById = useMemo(

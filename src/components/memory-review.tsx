@@ -85,8 +85,8 @@ export function MemoryReview({
   className = "",
 }: MemoryReviewProps) {
   const [openId, setOpenId] = useState<string | null>(null);
-  /** 卡片折叠状态：标题与统计始终可见，到期卡列表可收起还给侧栏。 */
-  const [collapsed, setCollapsed] = useState(false);
+  /** 卡片折叠状态：默认收起，标题与统计始终可见，展开看到期卡列表。 */
+  const [collapsed, setCollapsed] = useState(true);
   const bodyId = useId();
   const due = useMemo(() => dueMemories(memories, now), [memories, now]);
   const summary = memoryReviewSummary(memories, now);

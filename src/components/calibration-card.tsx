@@ -85,8 +85,8 @@ export function CalibrationCard({
 }) {
   const report = useMemo(() => calibrationReport(attempts), [attempts]);
   const legacyNote = calibrationLegacyNote(report);
-  /** 卡片折叠状态：标题与档位徽章始终可见，口径与结论可收起还给侧栏。 */
-  const [collapsed, setCollapsed] = useState(false);
+  /** 卡片折叠状态：默认收起，标题与档位徽章始终可见，展开看口径与结论。 */
+  const [collapsed, setCollapsed] = useState(true);
   const bodyId = useId();
 
   return (
