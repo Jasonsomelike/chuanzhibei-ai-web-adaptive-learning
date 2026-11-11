@@ -180,6 +180,8 @@ export default function MistakesPage() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  /** 已显示答案的题：展开时先只给题目与选项自测，点了「显示答案」才看解析。 */
+  const [revealedIds, setRevealedIds] = useState<ReadonlySet<string>>(new Set());
   /** 笔记草稿：题目 id → 未保存文本。保存成功后从草稿里清出。 */
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [savedNoteId, setSavedNoteId] = useState<string | null>(null);
@@ -393,6 +395,7 @@ export default function MistakesPage() {
               <ul className="mt-3 space-y-2">
                 {filteredQuestions.map((question) => {
                   const expanded = expandedId === question.id;
+                  const revealed = revealedIds.has(question.id);
                   const wrongAttempt = lastWrongAttemptOf(attempts, question.id);
                   const chosen = wrongAttempt?.selectedIndex;
                   const note = notes[question.id];
@@ -420,11 +423,21 @@ export default function MistakesPage() {
                         <div className="flex shrink-0 flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => setExpandedId(expanded ? null : question.id)}
+                            onClick={() => {
+                              setExpandedId(expanded ? null : question.id);
+                              // 收起即重置自测：下次展开重新只看题目与选项
+                              if (expanded) {
+                                setRevealedIds((prev) => {
+                                  const next = new Set(prev);
+                                  next.delete(question.id);
+                                  return next;
+                                });
+                              }
+                            }}
                             aria-expanded={expanded}
                             className="rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs text-[var(--ink-soft)]"
                           >
-                            {expanded ? "收起" : "展开详解"}
+                            {expanded ? "收起" : "展开自测"}
                           </button>
                           <Link
                             href={redoHref([question.id], "单题重做")}
@@ -439,7 +452,7 @@ export default function MistakesPage() {
                         <div className="mt-2 rounded-md bg-[var(--canvas)] px-3 py-2">
                           <ul className="space-y-0.5 text-xs leading-relaxed text-[var(--ink-soft)]">
                             {question.options.map((option, index) => {
-                              const isCorrect = index === question.answerIndex;
+                              const isCorrect = revealed && index === question.answerIndex;
                               const isChosen = chosen === index;
                               return (
                                 <li key={index} className={isChosen && !isCorrect ? "text-[var(--bad)]" : ""}>
@@ -450,18 +463,30 @@ export default function MistakesPage() {
                               );
                             })}
                           </ul>
-                          <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-soft)]">
-                            正确答案：{question.options[question.answerIndex]}。{question.explanation}
-                          </p>
-                          {kcOverview[question.kcId] !== undefined && kcOverview[question.kcId].summary.trim() !== "" ? (
-                            <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">{kcOverview[question.kcId].summary}</p>
-                          ) : null}
-                          {(readingByKc[question.kcId] ?? []).slice(0, 2).map((entry) => (
-                            <details key={entry.label} className="mt-2">
-                              <summary className="cursor-pointer text-xs text-[var(--accent)]">{entry.label}</summary>
-                              <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">{entry.text}</p>
-                            </details>
-                          ))}
+                          {revealed ? (
+                            <>
+                              <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-soft)]">
+                                正确答案：{question.options[question.answerIndex]}。{question.explanation}
+                              </p>
+                              {kcOverview[question.kcId] !== undefined && kcOverview[question.kcId].summary.trim() !== "" ? (
+                                <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">{kcOverview[question.kcId].summary}</p>
+                              ) : null}
+                              {(readingByKc[question.kcId] ?? []).slice(0, 2).map((entry) => (
+                                <details key={entry.label} className="mt-2">
+                                  <summary className="cursor-pointer text-xs text-[var(--accent)]">{entry.label}</summary>
+                                  <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink-soft)]">{entry.text}</p>
+                                </details>
+                              ))}
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setRevealedIds((prev) => new Set(prev).add(question.id))}
+                              className="mt-2 rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs text-[var(--ink-soft)]"
+                            >
+                              显示答案与解析
+                            </button>
+                          )}
                         </div>
                       ) : null}
 
