@@ -152,7 +152,19 @@ export default function DiagnosePage() {
   const [revealed, setRevealed] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [requestedKc, setRequestedKc] = useState<string | null>(null);
-  useEffect(() => { setRequestedKc(new URLSearchParams(window.location.search).get("kc")); }, []);
+  /** 错题本带来的重做队列种子：?redo=逗号分隔题目id&redoLabel=显示名。 */
+  const [redoSeed, setRedoSeed] = useState<{ ids: readonly string[]; label: string } | null>(null);
+  /** 激活后的重做队列。非空时按队列逐题走，作答仍走既有 submit 流程。 */
+  const [redoQueue, setRedoQueue] = useState<{ ids: readonly string[]; index: number; label: string } | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setRequestedKc(params.get("kc"));
+    const redo = params.get("redo");
+    if (redo !== null && redo.trim() !== "") {
+      const ids = redo.split(",").map(id => id.trim()).filter(id => id !== "");
+      if (ids.length > 0) setRedoSeed({ ids, label: params.get("redoLabel") ?? "" });
+    }
+  }, []);
 
   const [directionItems, setDirectionItems] = useState<DirectionItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -864,6 +876,50 @@ export default function DiagnosePage() {
     });
   };
 
+  // ── 错题重做队列（错题本 → 诊断页）────────────────────────────────
+  // 题目就绪（方向题要等落库题拉回）后进入第一题；作答走既有 submit，
+  // 掌握度 / 记忆卡 / 预测校准与正常答题完全同一条路径。
+  useEffect(() => {
+    if (!redoSeed || !graph || availableQuestions.length === 0) return;
+    const questions = redoSeed.ids
+      .map(id => availableQuestions.find(q => q.id === id))
+      .filter((q): q is Question => q !== undefined);
+    setRedoSeed(null);
+    const first = questions[0];
+    if (!first) return;
+    setRedoQueue({ ids: questions.map(q => q.id), index: 0, label: redoSeed.label });
+    retrainQuestion(first);
+  }, [redoSeed, graph, availableQuestions, retrainQuestion]);
+
+  /** 进入队列下一题；走完时清队列回到常规出题。 */
+  const advanceRedo = () => {
+    if (!redoQueue) return;
+    const nextIndex = redoQueue.index + 1;
+    if (nextIndex >= redoQueue.ids.length) {
+      exitRedo();
+      return;
+    }
+    const id = redoQueue.ids[nextIndex];
+    const question = availableQuestions.find(q => q.id === id);
+    if (question) retrainQuestion(question);
+    setRedoQueue({ ...redoQueue, index: nextIndex });
+  };
+
+  /** 退出重做：清队列与 URL 参数，恢复常规出题。 */
+  const exitRedo = () => {
+    setRedoQueue(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("redo");
+    url.searchParams.delete("redoLabel");
+    window.history.replaceState(window.history.state, "", url);
+    setSelected(null);
+    setRevealed(false);
+    submittedQuestion.current = null;
+    setConfusionWith("");
+    setConfusionSaved(false);
+    if (learner) setCurrent(pickNext(learner));
+  };
+
   /**
    * 重置本次会话，保留 learner（掌握度与历史作答都不动）。
    *
@@ -1406,6 +1462,24 @@ export default function DiagnosePage() {
         {/* 题卡上方的口径分歧提示 */}
         {current && !done ? conflictLine : null}
 
+        {/* 错题重做队列条 */}
+        {redoQueue ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--warn)] bg-[var(--surface)] px-4 py-3" role="status" aria-label="错题重做队列">
+            <p className="text-sm">
+              <strong>错题重做</strong>
+              {redoQueue.label !== "" ? ` · ${redoQueue.label}` : ""} · 第 {redoQueue.index + 1} / {redoQueue.ids.length} 题
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {redoQueue.index + 1 < redoQueue.ids.length ? (
+                <button type="button" onClick={advanceRedo} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]">下一题</button>
+              ) : (
+                <button type="button" onClick={exitRedo} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]">完成重做</button>
+              )}
+              <button type="button" onClick={exitRedo} className="rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs text-[var(--ink-soft)]">退出重做</button>
+            </div>
+          </div>
+        ) : null}
+
         {/* 当前题目 */}
         {current && !done ? (
           <div ref={questionCardRef} data-motion="question-card" data-motion-manual>
@@ -1715,7 +1789,7 @@ export default function DiagnosePage() {
             埋在「历史与错题复习」折叠里太隐蔽。没有历史错题时面板返回 null，
             未答题的新用户看到的侧栏依然是干净的；重训队列清空后总结仍保留供复习。
           */}
-          <ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} readingByKc={readingByKc} kcOverview={kcOverview} onRetrainQuestion={retrainQuestion} emphasis className="mb-5" />
+          <ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} readingByKc={readingByKc} kcOverview={kcOverview} onRetrainQuestion={retrainQuestion} emphasis reviewHref={`/mistakes?${target.kind === "direction" ? `direction=${targetId}` : `subject=${targetId}`}`} className="mb-5" />
           <CalibrationCard attempts={progress.attempts} className="mb-5" />
           <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
         </aside>

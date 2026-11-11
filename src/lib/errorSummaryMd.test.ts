@@ -76,7 +76,7 @@ describe("buildErrorSummaryMarkdown", () => {
     expect(md).toContain("第一题 \\| 带竖线");
   });
 
-  it("只汇总最近一次做错的题；答错后答对的不出现", () => {
+  it("答错后答对毕业的题也进入导出（复习不随毕业消失）", () => {
     const md = buildErrorSummaryMarkdown({
       ...BASE,
       attempts: [
@@ -84,7 +84,51 @@ describe("buildErrorSummaryMarkdown", () => {
         attempt({ questionId: "q1", kcId: "k1", correct: true, at: NOW }),
       ],
     });
+    expect(md).toContain("第一题");
+    expect(md).toContain("历史错题共 1 道（含已重做答对的）");
+  });
+
+  it("onlyQuestionIds 只导出所选的题，按知识点分组", () => {
+    const md = buildErrorSummaryMarkdown({
+      ...BASE,
+      attempts: [
+        attempt({ questionId: "q1", kcId: "k1", correct: false }),
+        attempt({ questionId: "q2", kcId: "k2", correct: false }),
+      ],
+      onlyQuestionIds: ["q2"],
+    });
+    expect(md).not.toContain("第一题");
+    expect(md).toContain("已选择 1 道题");
+    expect(md).toContain("### 知识点二");
+    expect(md).not.toContain("### 知识点一");
+  });
+
+  it("onlyQuestionIds 选中不存在或不在历史错题里的 id 时返回空串", () => {
+    const md = buildErrorSummaryMarkdown({
+      ...BASE,
+      attempts: [attempt({ questionId: "q1", kcId: "k1", correct: false })],
+      onlyQuestionIds: ["q2", "missing"],
+    });
     expect(md).toBe("");
+  });
+
+  it("notes 有笔记的题在解析后附「我的笔记」", () => {
+    const md = buildErrorSummaryMarkdown({
+      ...BASE,
+      attempts: [attempt({ questionId: "q1", kcId: "k1", correct: false })],
+      notes: { q1: { text: "混淆了线性表和栈的出入顺序\n下次先画图", at: NOW } },
+    });
+    expect(md).toContain("> 我的笔记：混淆了线性表和栈的出入顺序");
+    expect(md).toContain("> 下次先画图");
+  });
+
+  it("notes 缺省或空文本时不出现笔记区块", () => {
+    const md = buildErrorSummaryMarkdown({
+      ...BASE,
+      attempts: [attempt({ questionId: "q1", kcId: "k1", correct: false })],
+      notes: { q2: { text: "  ", at: NOW } },
+    });
+    expect(md).not.toContain("我的笔记");
   });
 
   it("仅练习题不进入导出", () => {

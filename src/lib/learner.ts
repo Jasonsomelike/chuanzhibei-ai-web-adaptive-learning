@@ -62,6 +62,16 @@ export interface PathEdit {
   readonly detail: string;
 }
 
+/** 单题笔记：题目 id → 内容与最近编辑时间。 */
+export interface SubjectNote {
+  readonly text: string;
+  /** 最近编辑的 ISO 时间；旧数据可能为空串。 */
+  readonly at: string;
+}
+
+/** 单题笔记文本上限：笔记是复习批注，不是文档。 */
+export const QUESTION_NOTE_MAX = 2000;
+
 /** 单个学科的学习状态。 */
 export interface SubjectProgress {
   readonly mastery: readonly MasteryState[];
@@ -73,6 +83,8 @@ export interface SubjectProgress {
    * 新建与清洗过的进度一律给数组，业务代码不必再判 undefined。
    */
   readonly memories?: readonly MemoryItem[];
+  /** 题目笔记（错题本用）。可选：旧存档与未写过笔记的进度没有这个字段。 */
+  readonly notes?: Readonly<Record<string, SubjectNote>>;
 }
 
 /** 学习者完整状态：按学科分组。 */
@@ -341,6 +353,7 @@ export function sanitizeProgress(raw: unknown): SubjectProgress | null {
   const pathEdits = Array.isArray(raw.pathEdits)
     ? raw.pathEdits.map(sanitizePathEdit).filter((e): e is PathEdit => e !== null)
     : [];
+  const notes = sanitizeNotes(raw.notes);
 
   return {
     mastery,
@@ -348,7 +361,46 @@ export function sanitizeProgress(raw: unknown): SubjectProgress | null {
     pathEdits,
     lastStepIndex: isCount(raw.lastStepIndex) ? raw.lastStepIndex : 0,
     memories: parseMemories(raw.memories),
+    ...(notes ? { notes } : {}),
   };
+}
+
+/** 清洗题目笔记表：只认 {text, at} 形状，文本截断到上限，空文本丢弃；空表返回 undefined。 */
+function sanitizeNotes(raw: unknown): Record<string, SubjectNote> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const notes: Record<string, SubjectNote> = {};
+  for (const [questionId, value] of Object.entries(raw)) {
+    if (questionId.length === 0 || questionId.length > 250 || !isRecord(value)) continue;
+    if (typeof value.text !== "string") continue;
+    const text = value.text.slice(0, QUESTION_NOTE_MAX);
+    if (text.trim() === "") continue;
+    const at = typeof value.at === "string" ? value.at : "";
+    notes[questionId] = { text, at };
+  }
+  return Object.keys(notes).length > 0 ? notes : undefined;
+}
+
+/**
+ * 写 / 清一条题目笔记，返回新的学科进度（不可变更新）。
+ * 文本去首尾空白后为空即视为删除该条；全部笔记清空时移除 notes 字段，
+ * 让存档与没写过笔记的旧进度形状一致。
+ */
+export function withQuestionNote(
+  progress: SubjectProgress,
+  questionId: string,
+  text: string,
+  at: string,
+): SubjectProgress {
+  const notes: Record<string, SubjectNote> = { ...progress.notes };
+  const trimmed = text.trim().slice(0, QUESTION_NOTE_MAX);
+  if (trimmed === "") delete notes[questionId];
+  else notes[questionId] = { text: trimmed, at };
+  if (Object.keys(notes).length === 0) {
+    const { notes: _omit, ...rest } = progress;
+    void _omit;
+    return rest;
+  }
+  return { ...progress, notes };
 }
 
 /**

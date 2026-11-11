@@ -14,6 +14,7 @@
  */
 
 import { useId, useMemo, useState } from "react";
+import Link from "next/link";
 import type { Question } from "@/data/questions";
 import type { AttemptRecord } from "@/lib/learner";
 import {
@@ -46,6 +47,8 @@ export interface ErrorRetrainProps {
   readonly onRetrainQuestion: (question: Question) => void;
   /** 队列里还有待重训错题时加警示描边，提示「这里有错题要处理」；队列清空只展示总结时不警示。 */
   readonly emphasis?: boolean;
+  /** 错题本页面链接；提供时在计数旁显示「错题本」入口。 */
+  readonly reviewHref?: string;
   readonly className?: string;
 }
 
@@ -73,6 +76,7 @@ export function ErrorRetrainPanel({
   kcOverview,
   onRetrainQuestion,
   emphasis = false,
+  reviewHref,
   className = "",
 }: ErrorRetrainProps) {
   /** 展开的总结知识点；null 表示全部收起。 */
@@ -178,6 +182,15 @@ export function ErrorRetrainPanel({
       </h2>
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
         <span className="text-xs text-[var(--ink-soft)]">{retrainQuestions.length > 0 ? `${retrainQuestions.length} 道题待重训` : "无待重训题目"}</span>
+        {reviewHref !== undefined && reviewHref !== "" ? (
+          <Link
+            href={reviewHref}
+            title="打开错题本：勾选导出总结、写笔记、按知识点或顺序重做"
+            className="rounded-lg border border-[var(--accent)] px-2.5 py-1 text-xs text-[var(--accent)]"
+          >
+            错题本
+          </Link>
+        ) : null}
         <button
           type="button"
           onClick={downloadSummary}

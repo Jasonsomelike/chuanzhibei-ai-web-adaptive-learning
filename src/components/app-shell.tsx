@@ -13,7 +13,7 @@ import { useTheme } from "@/lib/theme";
 import { useAppearance } from "@/lib/appearance";
 
 const titles: Record<string, string> = {
-  "/": "学习概览", "/path": "知识图谱", "/diagnose": "课程诊断", "/tutor": "课程导师",
+  "/": "学习概览", "/path": "知识图谱", "/diagnose": "课程诊断", "/mistakes": "错题本", "/tutor": "课程导师",
   "/directions": "我的课程", "/market": "课程探索", "/settings": "设置", "/guide": "使用指南", "/about": "关于项目", "/login": "登录 / 注册",
 };
 export function AppShell({ children }: { children: ReactNode }) {
