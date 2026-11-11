@@ -14,6 +14,7 @@ import { usePathFlip } from "@/components/path-motion";
 import { targetQuery } from "@/lib/target";
 import { useSubject } from "@/lib/subject";
 import { recordPathEdit } from "@/lib/learner";
+import { historicalWrongQuestionIds } from "@/lib/errorRetrain";
 import { useLearner } from "@/lib/useLearner";
 import {
   planPath,
@@ -438,6 +439,24 @@ export default function PathPage() {
 
   const totalMinutes = displayed.reduce((s, x) => s + x.estMinutes, 0);
 
+  // 剩余预算的推荐动作：错题重做（错题本）与最薄弱知识点的课本原文巩固
+  const wrongCount = useMemo(
+    () => historicalWrongQuestionIds(progress?.attempts ?? []).length,
+    [progress],
+  );
+  const weakestKc = useMemo(() => {
+    if (!graph) return null;
+    const states = new Map((progress?.mastery ?? []).map((state) => [state.kcId, state]));
+    let best: { id: string; mean: number } | null = null;
+    for (const concept of graph.concepts) {
+      const state = states.get(concept.id);
+      if (!state || state.evidenceN === 0) continue;
+      const mean = masteryMean(state);
+      if (best === null || mean < best.mean) best = { id: concept.id, mean };
+    }
+    return best;
+  }, [graph, progress]);
+
   return (
     <>
       <Nav />
@@ -449,6 +468,25 @@ export default function PathPage() {
         </div>
 
         <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟，剩余 ${budget - totalMinutes} 分钟；随学习推进，达标的知识点会移出计划，剩余时间自动更新。`}</p>
+        {budget - totalMinutes > 0 && (wrongCount > 0 || weakestKc !== null) ? (
+          <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
+            <p className="text-sm font-medium">剩余 {budget - totalMinutes} 分钟，还可以：</p>
+            <ul className="mt-1.5 space-y-1 text-sm text-[var(--ink-soft)]">
+              {wrongCount > 0 ? (
+                <li>
+                  <Link href={`/mistakes?${target.kind === "direction" ? `direction=${targetId}` : `subject=${targetId}`}`} className="text-[var(--accent)] underline">重做 {wrongCount} 道历史错题（约 {wrongCount * 3} 分钟）</Link>
+                  ——在错题本里按知识点或按错题顺序重做，可先看解析与自己的笔记
+                </li>
+              ) : null}
+              {weakestKc !== null ? (
+                <li>
+                  <Link href={`/tutor${targetQuery(target)}&kc=${encodeURIComponent(weakestKc.id)}&materials=1`} className="text-[var(--accent)] underline">阅读课本原文，巩固「{kcById.get(weakestKc.id)?.name ?? weakestKc.id}」</Link>
+                  （当前掌握度 {Math.round(weakestKc.mean * 100)}%，历史错题里最薄弱）
+                </li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
         {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} targetName={target.name} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         <div className="path-control-bar">
         {workflowTargets?.targetId === targetId ? <p className="path-goal-caption">学习目标：{workflowTargets.ids.map(id => kcById.get(id)?.name).join("、")}<button type="button" onClick={() => { setWorkflowTargets(null); const url = new URL(window.location.href); url.searchParams.delete("targets"); window.history.replaceState(window.history.state, "", url); }} className="ml-3 text-[var(--accent)] underline">返回课程范围</button></p> : null}
