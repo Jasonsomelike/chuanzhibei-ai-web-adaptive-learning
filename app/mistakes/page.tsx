@@ -210,9 +210,9 @@ export default function MistakesPage() {
     setSavedNoteId(questionId);
   };
 
-  /** 把勾选的错题导出成知识点总结文档（带摘录与笔记）。 */
-  const exportSelected = () => {
-    if (selectedIds.size === 0) return;
+  /** 把指定错题（勾选 / 全部 / 某个知识点）导出成知识点总结文档（带摘录与笔记）。 */
+  const exportQuestions = (ids: readonly string[], scope?: string) => {
+    if (ids.length === 0) return;
     setExporting(true);
     setExportError(null);
     try {
@@ -225,7 +225,7 @@ export default function MistakesPage() {
         exportedAt,
         readingByKc,
         kcOverview,
-        onlyQuestionIds: [...selectedIds],
+        onlyQuestionIds: [...ids],
         notes,
       });
       if (markdown === "") {
@@ -236,7 +236,7 @@ export default function MistakesPage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = errorSummaryFileName(target?.name ?? targetId, exportedAt);
+      anchor.download = errorSummaryFileName(target?.name ?? targetId, exportedAt, scope);
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -320,12 +320,22 @@ export default function MistakesPage() {
                         </p>
                       </div>
                       {kcQuestionIds.length > 0 ? (
-                        <Link
-                          href={redoHref(kcQuestionIds, kcName(row.kcId))}
-                          className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]"
-                        >
-                          按知识点重做（{kcQuestionIds.length} 题）
-                        </Link>
+                        <div className="flex shrink-0 flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => exportQuestions(kcQuestionIds, kcName(row.kcId))}
+                            title="只导出这个知识点的错题总结"
+                            className="rounded-lg border border-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent)]"
+                          >
+                            导出该知识点
+                          </button>
+                          <Link
+                            href={redoHref(kcQuestionIds, kcName(row.kcId))}
+                            className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]"
+                          >
+                            按知识点重做（{kcQuestionIds.length} 题）
+                          </Link>
+                        </div>
                       ) : null}
                     </li>
                   );
@@ -358,13 +368,23 @@ export default function MistakesPage() {
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={exportSelected}
+                  onClick={() => exportQuestions([...selectedIds])}
                   disabled={selectedIds.size === 0 || exporting}
                   title="把勾选的错题导出为知识点总结文档（含教材摘录与笔记）"
                   className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Download size={14} />
                   导出所选（{selectedIds.size} 题）
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportQuestions(wrongIds, "全部")}
+                  disabled={wrongIds.length === 0 || exporting}
+                  title="导出这个学习目标的全部历史错题"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Download size={14} />
+                  全部导出（{wrongIds.length} 题）
                 </button>
                 <button
                   type="button"

@@ -230,8 +230,9 @@ export function buildErrorSummaryMarkdown(input: SummaryExportInput): string {
   return lines.join("\n") + "\n";
 }
 
-/** 建议的下载文件名，例如「错题总结-数据结构-2026-10-29.md」。 */
-export function errorSummaryFileName(targetName: string, exportedAt: string): string {
-  const safeName = targetName.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "");
-  return `错题总结-${safeName || "学习目标"}-${fileDateStamp(exportedAt)}.md`;
+/** 建议的下载文件名，例如「错题总结-数据结构-2026-10-29.md」；scope 可为「全部」或知识点名。 */
+export function errorSummaryFileName(targetName: string, exportedAt: string, scope?: string): string {
+  const safe = (value: string) => value.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "");
+  const scopePart = scope !== undefined && scope !== "" ? `-${safe(scope)}` : "";
+  return `错题总结-${safe(targetName) || "学习目标"}${scopePart}-${fileDateStamp(exportedAt)}.md`;
 }
