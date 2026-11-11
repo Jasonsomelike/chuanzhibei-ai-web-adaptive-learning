@@ -141,8 +141,84 @@ try {
   await go("/directions"); await page.locator(".course-row").first().waitFor();
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "手机课程目录完整适配");
   await page.screenshot({path:join(output,"courses-phone.png")});
-  const registered = await context.request.post(`${base}/api/auth`, {headers:{Origin:base},data:{action:"register",email:`course-${Date.now()}@test.local`,password:`T3-${randomBytes(24).toString("base64url")}`,displayName:"课程回归"}});
-  assert(registered.ok());
+  await page.setViewportSize({width:1487,height:1058});
+  await go("/guide");
+  await page.locator('.guide-journey[aria-busy="false"]').waitFor();
+  const previewEvidence = await page.evaluate(() => localStorage.getItem("alp.learner.v2"));
+  await page.screenshot({path:join(output,"guide-desktop.png")});
+  await page.locator('.guide-preview input[type="radio"]').first().check();
+  await page.getByRole("button", {name:"试做这道题",exact:true}).click();
+  await page.locator(".guide-preview-feedback").waitFor();
+  check(previewEvidence === await page.evaluate(() => localStorage.getItem("alp.learner.v2")), "指南实际试做与解析不会写入学习记录");
+  await page.getByRole("tab", {name:/先了解自己/}).press("End");
+  check(await page.getByRole("tab", {name:/学懂，再验证/}).getAttribute("aria-selected") === "true", "指南阶段支持键盘切换");
+  await page.getByRole("navigation", {name:"使用指南目录",exact:true}).getByRole("link", {name:"管理会话与分支",exact:true}).click();
+  await page.waitForFunction(() => document.querySelector('.document-nav a[aria-current="location"]')?.getAttribute("href") === "#sessions");
+  check(new URL(page.url()).hash === "#sessions", "指南目录定位会话管理说明并标记当前章节");
+  await go("/about");
+  await page.screenshot({path:join(output,"about-desktop.png")});
+  await page.getByRole("navigation", {name:"关于项目目录",exact:true}).getByRole("link", {name:"Agent 编排",exact:true}).click();
+  check(await page.locator(".about-agent-branches article").count() === 3 && await page.locator(".about-supervisor").isVisible(), "关于页呈现现有 Supervisor 与三个教学子流程");
+
+  // Only this browser receives fixtures. Nothing is inserted into the real market.
+  let marketState: "empty" | "error" | "list" = "empty";
+  await page.route("**/api/directions?scope=market**", route => {
+    const directions = marketState === "list" ? [
+      {id:"qa-structures",title:"线性结构复习",description:"线性表、栈与队列",subjectId:"data-structures",conceptCount:3,edgeCount:2,updatedAt:"2026-11-11"},
+      {id:"qa-networks",title:"计算机网络复习",description:"协议与网络分层",subjectId:"computer-networks",conceptCount:4,edgeCount:3,updatedAt:"2026-11-11"},
+    ] : [];
+    return route.fulfill({status:marketState === "error" ? 503 : 200,contentType:"application/json",body:JSON.stringify({directions})});
+  });
+  await go("/market");
+  await page.getByRole("heading", {name:"还没有公开的学习方向",exact:true}).waitFor();
+  await page.screenshot({path:join(output,"market-desktop.png")});
+  check(await page.getByRole("link", {name:"创建学习方向",exact:true}).isVisible(), "课程探索空态提供创建与现有课程入口");
+  marketState = "error";
+  await page.getByRole("button", {name:"搜索",exact:true}).click();
+  await page.getByRole("heading", {name:"公开课程暂时无法读取",exact:true}).waitFor();
+  check(await page.getByRole("button", {name:"重试",exact:true}).isVisible(), "课程探索读取失败提供明确重试");
+  marketState = "list";
+  await page.getByRole("button", {name:"重试",exact:true}).click();
+  await page.locator(".market-results article").first().waitFor();
+  check(await page.locator(".market-results article").count() === 2, "课程探索重试恢复结果列表");
+  await page.getByRole("combobox", {name:"筛选课程",exact:true}).selectOption("data-structures");
+  check(await page.locator(".market-results article").count() === 1 && (await page.locator(".market-results").innerText()).includes("线性结构复习"), "课程筛选只显示匹配方向");
+  await page.getByRole("button", {name:"加入我的课程",exact:true}).click();
+  check(await page.locator(".market-notice").getByRole("link", {name:"登录",exact:true}).isVisible(), "匿名加入公开方向时保留明确登录入口");
+  for (const width of [853,390,360]) {
+    await page.setViewportSize({width,height:width < 768 ? 844 : 1058});
+    for (const route of ["/market","/login","/guide","/about"]) {
+      await go(route);
+      if (route === "/guide") await page.locator('.guide-journey[aria-busy="false"]').waitFor();
+      if (route === "/market") await page.locator('.market-results article').first().waitFor();
+      check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${route}在${width}px完整适配`);
+      if (width === 390) await page.screenshot({path:join(output,`${route.slice(1)}-phone.png`)});
+    }
+  }
+  await page.unroute("**/api/directions?scope=market**");
+  await page.setViewportSize({width:1487,height:1058});
+  await go("/login?next=%2Fdirections%3Fcreate%3D1");
+  await page.screenshot({path:join(output,"login-desktop.png")});
+  await page.getByRole("button", {name:"注册",exact:true}).click();
+  const email = `course-${Date.now()}@test.local`;
+  const password = `T3-${randomBytes(24).toString("base64url")}`;
+  await page.getByLabel("昵称", {exact:true}).fill("课程回归");
+  await page.getByLabel("邮箱", {exact:true}).fill(email);
+  await page.getByLabel("密码", {exact:true}).fill(password);
+  await page.getByLabel("确认密码", {exact:true}).fill(password + "x");
+  check(!await page.locator(".login-submit").isEnabled() && await page.getByText("两次输入的密码不一致。", {exact:true}).isVisible(), "注册确认密码不一致时阻止提交并说明原因");
+  await page.getByLabel("确认密码", {exact:true}).fill(password);
+  await page.locator(".login-submit").click();
+  await page.waitForURL("**/directions?create=1");
+  await page.locator("#course-create[open]").waitFor();
+  check(true, "实际注册成功后返回原创建入口并展开表单");
+  await context.request.post(`${base}/api/auth`, {headers:{Origin:base},data:{action:"logout"}});
+  await go("/login?next=%2F%2Fexample.invalid");
+  await page.getByLabel("邮箱", {exact:true}).fill(email);
+  await page.getByLabel("密码", {exact:true}).fill(password);
+  await page.locator(".login-submit").click();
+  await page.waitForURL(`${base}/`);
+  check(true, "实际登录拒绝外部返回地址，回到学习概览");
   await page.setViewportSize({width:1487,height:1058}); await go("/directions");
   await page.getByRole("button", {name:"创建学习方向",exact:true}).click();
   await page.locator("#course-create textarea").fill("我想学习数据结构中的栈和队列，从线性表基础到常用操作");

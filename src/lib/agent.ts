@@ -247,7 +247,7 @@ export function normalizeToolCallIds(
 }
 
 function userMessage(question: string, images: readonly string[] | undefined): AgentMessage {
-  // 图片只出现在当轮 user 内容里；不进 system、不进 tool 结果、不落库。
+  // 模型输入的图片只出现在当轮 user 内容里，完整附件另由会话存档保存。
   if (images === undefined || images.length === 0) {
     return { role: "user", content: question };
   }

@@ -2,21 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
-import { useHoverLift, useStaggerIn } from "@/components/motion";
-import { MARKET_RETRY_LABEL, marketStatusOf } from "@/components/market-status";
+import { ArrowLeft, ArrowRight, BookOpen, Search } from "lucide-react";
+import { SUBJECTS } from "@/data/subjects";
 import { useAuth } from "@/lib/useAuth";
-
-/**
- * 方向市场。
- *
- * 展示用户公开的自定义方向，其他人可以浏览、搜索、复制到自己名下。
- *
- * 设计取舍：
- * - 未登录也能浏览（降低门槛），但复制需要登录（要有归属）
- * - 只展示摘要，不返回完整图谱，避免响应体过大
- * - 没有「点赞」之类的社交功能——本期只需要「发现 + 选用」两件事
- */
+import { authStore } from "@/lib/authStore";
+import { MARKET_RETRY_LABEL, marketStatusOf } from "@/components/market-status";
 
 interface MarketItem {
   id: string;
@@ -30,240 +20,272 @@ interface MarketItem {
 
 export default function MarketPage() {
   const { user } = useAuth();
-
   const [items, setItems] = useState<MarketItem[]>([]);
   const [loading, setLoading] = useState(true);
-  /** 加载失败与「没有数据」是两件事：失败时不能落到空态文案。 */
   const [error, setError] = useState(false);
-  const [q, setQ] = useState("");
-  const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [query, setQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
   const [copying, setCopying] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
 
-  /*
-   * 展示层动效：列表是异步来的，useStaggerIn 每帧只给「还没播过」的卡片
-   * 组一批入场；useHoverLift 在 hover 设备上给卡片 2px 抬升，移出即回落。
-   * 两者都在 reduced-motion 下直接跳过，不注册任何 tween / 监听。
-   */
-  const mainRef = useRef<HTMLElement>(null);
-  useStaggerIn(mainRef);
-  useHoverLift(mainRef);
-
-  const load = useCallback(async (query: string) => {
+  const load = useCallback(async (value: string) => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setAppliedQuery(value.trim());
     setLoading(true);
     setError(false);
     try {
       const params = new URLSearchParams({ scope: "market" });
-      if (query.trim() !== "") params.set("q", query.trim());
-      const res = await fetch(`/api/directions?${params.toString()}`, { cache: "no-store" });
-      if (!res.ok) {
+      if (value.trim()) params.set("q", value.trim());
+      const response = await fetch("/api/directions?" + params, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("公开课程暂时无法读取");
+      const data = (await response.json()) as { directions?: MarketItem[] };
+      if (!controller.signal.aborted) setItems(data.directions ?? []);
+    } catch {
+      if (!controller.signal.aborted) {
         setItems([]);
         setError(true);
-        return;
       }
-      const data = (await res.json()) as { directions?: MarketItem[] };
-      setItems(data.directions ?? []);
-    } catch {
-      // 网络错误 / 非法 JSON 同样走错误态，异常内容不进入界面
-      setItems([]);
-      setError(true);
     } finally {
-      setLoading(false);
+      if (request.current === controller) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load("");
+    return () => request.current?.abort();
   }, [load]);
 
-  const status = marketStatusOf({ loading, error, count: items.length, query: q });
+  const visible = subject
+    ? items.filter((item) => item.subjectId === subject)
+    : items;
+  const subjectName = SUBJECTS.find((item) => item.id === subject)?.name ?? "";
+  const status = marketStatusOf({
+    loading,
+    error,
+    count: visible.length,
+    query: appliedQuery || subjectName,
+  });
 
   const copy = async (id: string) => {
     if (!user) {
-      setMessage({ kind: "err", text: "请先登录再选用方向" });
+      setMessage({ kind: "err", text: "登录后可将方向加入自己的课程。" });
       return;
     }
+    const owner = user.id;
     setCopying(id);
     setMessage(null);
     try {
-      const res = await fetch("/api/directions", {
+      const response = await fetch("/api/directions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ copyFrom: id }),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (res.ok && data.ok) {
-        setMessage({ kind: "ok", text: "已复制到「我的方向」，可在那里设为公开或用于规划" });
-      } else {
-        setMessage({ kind: "err", text: data.error ?? "复制失败" });
-      }
-    } catch (err) {
-      setMessage({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+      const data = (await response.json()) as { ok?: boolean; error?: string };
+      if (authStore.getSnapshot().user?.id !== owner) return;
+      if (!response.ok || !data.ok)
+        throw new Error(data.error ?? "加入失败，请重试。");
+      setMessage({ kind: "ok", text: "已加入我的课程，可继续学习和管理。" });
+    } catch (failure) {
+      if (authStore.getSnapshot().user?.id === owner)
+        setMessage({
+          kind: "err",
+          text:
+            failure instanceof Error ? failure.message : "加入失败，请重试。",
+        });
     } finally {
       setCopying(null);
     }
   };
 
+  const reset = () => {
+    setQuery("");
+    setSubject("");
+    void load("");
+  };
   return (
-    <>
-      <Nav />
-      <main id="main" ref={mainRef} className="mx-auto max-w-3xl px-5 py-10">
-        <div className="mb-6" data-motion="hero">
-          <h1 className="text-2xl font-semibold tracking-tight">方向市场</h1>
-          <p className="mt-1 text-sm text-[var(--ink-soft)]">
-            其他人公开的学习方向。选用后会复制一份到你名下，可以自己改。
-          </p>
+    <main id="main" className="market-page">
+      <nav className="course-page-tabs" aria-label="课程入口">
+        <Link href="/directions">我的课程</Link>
+        <Link href="/market" aria-current="page">
+          课程探索
+        </Link>
+      </nav>
+      <header className="market-heading">
+        <div>
+          <h1>课程探索</h1>
+          <p>查找公开的学习方向，加入后按自己的节奏学习。</p>
         </div>
-
-        {/* 搜索 */}
-        <Card className="mb-5" motion="search">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void load(q);
-            }}
-            className="flex gap-2"
-          >
-            <label htmlFor="q" className="sr-only">
-              搜索方向
-            </label>
-            <input
-              id="q"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索标题或描述，例如「树结构」「进程」"
-              className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
-            />
-            <button
-              type="submit"
-              className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] touch-target sm:min-h-0"
-            >
-              搜索
-            </button>
-            {q !== "" ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setQ("");
-                  void load("");
-                }}
-                className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-[var(--line-strong)] px-3 py-2 text-sm touch-target sm:min-h-0"
-              >
-                清除
-              </button>
-            ) : null}
-          </form>
-        </Card>
-
-        {message ? (
-          <Card
-            motion="notice"
-            className={`mb-5 ${
-              message.kind === "ok"
-                ? "border-[var(--good)] bg-[var(--good-soft)]"
-                : "border-[var(--bad)] bg-[var(--bad-soft)]"
-            }`}
-          >
-            <p
-              className={`text-sm ${
-                message.kind === "ok" ? "text-[var(--good)]" : "text-[var(--bad)]"
-              }`}
-            >
-              {message.text}
-            </p>
-            {message.kind === "ok" ? (
-              <Link href="/directions" className="mt-2 inline-block text-sm underline">
-                去看我的方向
-              </Link>
-            ) : null}
-          </Card>
+        <Link href="/directions">
+          <ArrowLeft size={18} />
+          返回我的课程
+        </Link>
+      </header>
+      <form
+        className="market-search-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void load(query);
+        }}
+      >
+        <label className="market-search">
+          <Search size={20} />
+          <input
+            type="search"
+            aria-label="搜索方向"
+            placeholder="搜索课程或学习方向"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <select
+          aria-label="筛选课程"
+          value={subject}
+          onChange={(event) => setSubject(event.target.value)}
+        >
+          <option value="">全部课程</option>
+          {SUBJECTS.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+        <button type="submit" className="market-search-submit">
+          搜索
+        </button>
+        {query || subject ? (
+          <button type="button" className="market-clear" onClick={reset}>
+            清除筛选
+          </button>
         ) : null}
-
-        {/* 列表 */}
-        <section aria-busy={loading}>
-          <SectionTitle hint={status.hint}>公开方向</SectionTitle>
-
-          {items.length > 0 ? (
-            <div className="space-y-2">
-              {items.map((d) => (
-                <div key={d.id} data-motion="market-card" data-motion-hover>
-                <Card>
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{d.title}</span>
-                        <span className="tabular text-xs text-[var(--ink-faint)]">
-                          {d.conceptCount} 点 / {d.edgeCount} 边
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-[var(--ink-soft)]">{d.description}</p>
-                      <p className="mt-1 text-xs text-[var(--ink-faint)]">
-                        更新于 {d.updatedAt.slice(0, 10)}
-                      </p>
-                    </div>
+      </form>
+      {message ? (
+        <div
+          role={message.kind === "err" ? "alert" : "status"}
+          className={"market-notice " + message.kind}
+        >
+          <p>{message.text}</p>
+          {message.kind === "ok" ? (
+            <Link href="/directions">
+              查看我的课程
+              <ArrowRight size={16} />
+            </Link>
+          ) : !user ? (
+            <Link href="/login?next=%2Fmarket">登录</Link>
+          ) : null}
+        </div>
+      ) : null}
+      <section aria-label="公开学习方向" aria-busy={loading}>
+        {status.kind === "loading" ? (
+          <div
+            className="market-loading"
+            role="status"
+            aria-label="正在读取公开方向"
+          >
+            <i />
+            <i />
+            <i />
+          </div>
+        ) : status.kind === "error" ? (
+          <div className="market-empty market-load-error">
+            <BookOpen size={86} aria-hidden="true" />
+            <div>
+              <h2>公开课程暂时无法读取</h2>
+              <p role="alert">{status.message}</p>
+              <button type="button" onClick={() => void load(appliedQuery)}>
+                {MARKET_RETRY_LABEL}
+              </button>
+            </div>
+          </div>
+        ) : status.kind === "empty" ? (
+          <div className="market-empty">
+            <BookOpen size={100} aria-hidden="true" />
+            <div>
+              <h2>
+                {appliedQuery || subject
+                  ? "没有找到匹配的学习方向"
+                  : "还没有公开的学习方向"}
+              </h2>
+              <p>
+                {appliedQuery || subject
+                  ? "可以换个关键词，或清除筛选查看全部方向。"
+                  : "你可以先学习内置课程，或创建自己的学习方向。"}
+              </p>
+              <div className="market-empty-actions">
+                <Link href="/directions" className="is-primary">
+                  查看课程目录
+                </Link>
+                <Link href="/directions?create=1">创建学习方向</Link>
+                {appliedQuery || subject ? (
+                  <button type="button" onClick={reset}>
+                    清除筛选
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="market-result-count">{status.hint}</p>
+            <div className="market-results">
+              {visible.map((item) => (
+                <article key={item.id}>
+                  <div>
+                    <h2>{item.title}</h2>
+                    <p>{item.description}</p>
+                    <small>
+                      {item.conceptCount} 个知识点 · {item.edgeCount} 条先修关系
+                      · 更新于 {item.updatedAt.slice(0, 10)}
+                    </small>
+                  </div>
+                  <div className="market-result-actions">
+                    <Link
+                      href={"/path?direction=" + encodeURIComponent(item.id)}
+                    >
+                      查看图谱
+                      <ArrowRight size={16} />
+                    </Link>
                     <button
                       type="button"
-                      onClick={() => void copy(d.id)}
-                      disabled={copying === d.id}
-                      className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--on-accent)] touch-target disabled:opacity-40 sm:min-h-0"
+                      onClick={() => void copy(item.id)}
+                      disabled={copying !== null}
                     >
-                      {copying === d.id ? "复制中…" : "选用"}
+                      {copying === item.id ? "正在加入…" : "加入我的课程"}
                     </button>
                   </div>
-                </Card>
-                </div>
+                </article>
               ))}
             </div>
-          ) : status.kind === "error" ? (
-            <Card motion="state" className="border-[var(--bad)] bg-[var(--bad-soft)]">
-              <p role="alert" className="text-sm text-[var(--bad)]">
-                {status.message}
-              </p>
-              {status.canRetry ? (
-                <button
-                  type="button"
-                  onClick={() => void load(q)}
-                  className="mt-3 inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--line-strong)] px-4 text-sm touch-target sm:min-h-0"
-                >
-                  {MARKET_RETRY_LABEL}
-                </button>
-              ) : null}
-            </Card>
-          ) : status.kind === "empty" ? (
-            <Card motion="state">
-              <p className="text-sm text-[var(--ink-soft)]">{status.message}</p>
-              {status.showCreate ? (
-                <Link
-                  href="/directions"
-                  className="mt-3 inline-flex min-h-11 items-center rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm touch-target sm:min-h-0"
-                >
-                  创建方向
-                </Link>
-              ) : null}
-            </Card>
-          ) : (
-            <Card motion="state">
-              <p role="status" className="text-sm text-[var(--ink-soft)]">
-                {status.message}
-              </p>
-            </Card>
-          )}
-        </section>
-
-        <div className="mt-6 flex flex-wrap items-center gap-3 text-sm" data-motion="links">
-          {user ? (
-            <Link href="/directions" className="underline">
-              管理我的方向
-            </Link>
-          ) : (
-            <>
-              <Pill tone="warn">未登录</Pill>
-              <Link href="/login" className="underline">
-                登录后可选方向
+          </>
+        )}
+      </section>
+      <section
+        className="market-starter-courses"
+        aria-labelledby="starter-title"
+      >
+        <h2 id="starter-title">可直接开始的课程</h2>
+        <ul>
+          {SUBJECTS.slice(0, 3).map((item) => (
+            <li key={item.id}>
+              <h3>{item.name}</h3>
+              <p>{item.tagline}</p>
+              <Link href={"/path?subject=" + item.id}>
+                进入课程
+                <ArrowRight size={17} />
               </Link>
-            </>
-          )}
-        </div>
-      </main>
-    </>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </main>
   );
 }

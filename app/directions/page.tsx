@@ -72,6 +72,9 @@ function DirectionsWorkspace() {
   const [publishNow, setPublishNow] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  useEffect(() => {
+    if (user && new URLSearchParams(window.location.search).get("create") === "1") setCreateOpen(true);
+  }, [user]);
 
   const [coverage, setCoverage] = useState<Record<string, Coverage>>({});
   /** 生成失败原因，按方向 id 记。进度由每个方向的按钮自己持有。 */
@@ -197,7 +200,7 @@ function DirectionsWorkspace() {
     });
   };
   const catalog = <>
-    <header className="courses-page-heading"><h1>我的课程</h1><div><Link href="/market">探索公开课程<ArrowUpRight size={18} /></Link>{user ? <button type="button" onClick={openCreate}><Plus size={18} />创建学习方向</button> : <Link className="course-create-link" href="/login"><Plus size={18} />创建学习方向</Link>}</div></header>
+    <header className="courses-page-heading"><h1>我的课程</h1><div><Link href="/market">探索公开课程<ArrowUpRight size={18} /></Link>{user ? <button type="button" onClick={openCreate}><Plus size={18} />创建学习方向</button> : <Link className="course-create-link" href="/login?next=%2Fdirections%3Fcreate%3D1"><Plus size={18} />创建学习方向</Link>}</div></header>
     <nav className="course-section-nav" aria-label="课程分类"><a href="#course-catalog">课程目录</a><a href="#custom-courses">自定义方向</a></nav>
     <CourseCatalog />
   </>;
@@ -222,7 +225,7 @@ function DirectionsWorkspace() {
           <section id="custom-courses" className="custom-courses"><h2>自定义学习方向</h2>
             <div className="courses-anonymous"><h3>围绕你的教材和目标学习</h3><p>登录后可以创建学习方向，保存图谱并上传自己的资料。</p>
             <Link
-              href="/login"
+              href="/login?next=%2Fdirections%3Fcreate%3D1"
               className="inline-flex rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"
             >
               登录并创建方向

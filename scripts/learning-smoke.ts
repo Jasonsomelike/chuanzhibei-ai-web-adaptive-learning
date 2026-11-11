@@ -96,6 +96,7 @@ try {
   check(await page.getByRole("tab", { name: /先了解自己/ }).count() === 0, "首页没有重复演示区");
   await visit("/guide");
   await page.getByRole("tab", { name: /先了解自己/ }).click();
+  await page.getByText("题目预览，不写入学习记录", { exact: false }).waitFor();
   check(await page.getByText("题目预览，不写入学习记录", { exact: false }).isVisible(), "指南保留真实课程诊断预览，明确不记分");
   await page.getByRole("tab", { name: /学懂，再验证/ }).click();
   check((await page.getByRole("link", { name: "带着这一步问导师" }).getAttribute("href"))?.includes("&q="), "指南学习预览带真实主题进入导师");

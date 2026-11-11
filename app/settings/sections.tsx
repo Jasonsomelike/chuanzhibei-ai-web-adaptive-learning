@@ -1490,12 +1490,12 @@ export function VectorSection({ userId }: VectorSectionProps) {
 
       <SettingsGroup
         title="隐私：图片与资料"
-        hint="这两类数据的外发边界不同，必须分开说清。"
+        hint="查看会话图片、教材资料和模型请求的保存范围。"
       >
         <ul className="max-w-[68ch] space-y-1.5 text-xs leading-relaxed text-[var(--ink-soft)]">
           <li>
-            · 图片：本机模式下浏览器直连供应商；服务端模式下图片会经本项目转发给你配置的模型供应商，
-            只在该次请求内存里存在，不落库、不写日志，刷新即失。
+            · 问题图片经过上传压缩后随会话保存。登录后存入当前账号，匿名时保存在本机 IndexedDB。
+            模型只接收当前轮附图，本机模式直连供应商，服务端模式由本项目转发。
           </li>
           <li>
             · 上传资料：正文留在本机 IndexedDB，同时按知识库同步规则写进账号；建索引会产生 512 维向量

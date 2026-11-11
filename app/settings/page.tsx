@@ -150,8 +150,8 @@ const MATERIAL_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: st
       "基于摘录生成的题目解析与「依据：」标注会随方向保存；方向设为公开后任何访问者都能看到，讲义正文原文不入库。",
   },
   {
-    term: "登出与换号都会清空。",
-    detail: "退出登录、或在本浏览器换另一个账号登录，都会删除上一位用户的资料存档。",
+    term: "登出与换号会清理本机副本。",
+    detail: "退出登录或换号后清理上一位用户的本机资料。已同步到账号的上传知识库仍可在登录后恢复，单独保存在本机的讲义摘录需要重新填写。",
   },
   {
     term: "支持 Markdown / TXT / PDF。",
@@ -159,9 +159,9 @@ const MATERIAL_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: st
       "PDF 在浏览器里用 pdfjs-dist 抽取文本，需要文件自带文本层；扫描件不做 OCR，PPT / DOCX 不解析。",
   },
   {
-    term: "上传资料只存在本浏览器。",
+    term: "上传资料可随账号同步。",
     detail:
-      "抽取后的文本按方向存进 IndexedDB，不保存原始文件、不上传本项目服务器；换浏览器或换设备需要重新上传，方向市场里的副本默认是空库。",
+      "抽取后的文本与片段按方向保存在 IndexedDB，登录后同步到当前账号。原始文件不保存，匿名资料留在当前浏览器，方向市场副本需要单独添加资料。同步失败时界面会提示。",
   },
 ];
 
@@ -184,12 +184,12 @@ const PRIVACY_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: str
   {
     term: "上传资料不随请求整份外发。",
     detail:
-      "只有检索命中的段落会随出题或问答请求发给你配置的模型；原文本身留在本浏览器的 IndexedDB。",
+      "只有检索命中的段落会随出题或问答请求发给你配置的模型。上传资料的抽取文本在浏览器保存，登录后也会同步到账号。资料与口径中的单独讲义摘录按该分区说明保存在本机。",
   },
   {
-    term: "图片只在当轮存在，不落库。",
+    term: "问题图片随会话保存。",
     detail:
-      "本机模式下图片由浏览器直连供应商；服务端模式下图片会经本项目转发给你配置的模型供应商，只在该次请求的内存里存在，不写入数据库、不写日志，刷新即失。",
+      "问题图片经上传压缩后随完整问答保存。登录后存入当前账号，未登录时保存在本浏览器的 IndexedDB。模型仅接收当前轮的附图，本机模式直连供应商，服务端模式经本项目转发。",
   },
   {
     term: "MCP 鉴权头只显示掩码。",
@@ -1087,7 +1087,7 @@ export default function SettingsPage() {
                 <MaterialSourcePanel />
                 <SettingsGroup
                   title="资料如何保存与外发"
-                  hint="这些边界不随界面折叠隐藏，避免误以为资料会上传。"
+                  hint="查看本机讲义、上传知识库与模型请求各自的保存范围。"
                 >
                   <dl className="divide-y divide-[var(--line)]">
                     {MATERIAL_NOTES.map((note) => (

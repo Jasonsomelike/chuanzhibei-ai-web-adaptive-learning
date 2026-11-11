@@ -1534,7 +1534,7 @@ export default function TutorPage() {
                 : "本方向没有上传资料"
           }`,
           uploadNotice,
-          hadImages ? "图片只在本次请求里发送，服务端不落库。" : null,
+          hadImages ? "本轮附图随会话保存，模型仅接收当前提问的图片。" : null,
           webOn ? "智能体模式不注入网络检索结果（联网补充只在普通问答生效）。" : null,
         ].filter((part): part is string => part !== null && part !== "");
 
@@ -1993,10 +1993,12 @@ export default function TutorPage() {
     return (
       <>
         <Nav />
-        <main id="main" className="mx-auto max-w-3xl px-5 py-10">
-          <p className="text-[var(--ink-soft)]">
-            {loadingTarget ? "正在加载自定义方向…" : "正在加载…"}
-          </p>
+        <main id="main" className="tutor-page tutor-editorial" aria-busy="true">
+          <h1 className="sr-only">课程导师</h1>
+          <div className="tutor-workspace tutor-loading" role="status" aria-label={loadingTarget ? "正在读取自定义方向" : "正在读取课程与学习记录"}>
+            <aside className="conversation-sidebar" aria-hidden="true"><i /><i /><i /><i /></aside>
+            <div className="tutor-stage" aria-hidden="true"><div className="tutor-conversation-heading"><i /></div><div className="tutor-loading-content"><i /><i /><i /></div><div className="tutor-loading-composer" /></div>
+          </div>
         </main>
       </>
     );
@@ -2113,7 +2115,7 @@ export default function TutorPage() {
               : kb.error !== null
                 ? `上传资料读取失败：${kb.error}`
                 : kbDocs.length > 0
-                  ? `本方向已上传 ${kbDocs.length} 份资料（${kbChunks.length} 段），回答会检索这些片段；只在本浏览器可见。`
+                  ? `本方向已上传 ${kbDocs.length} 份资料（${kbChunks.length} 段），回答会检索这些片段。${user ? "资料按账号同步，同步状态在资料管理中查看。" : "匿名资料保存在本浏览器。"}`
                   : "本方向还没有上传资料。上传教材、讲义或 PPT 文字稿（md / txt / pdf）后，回答会优先引用你自己的资料并标注出处。"}
             {" · "}
             <Link
@@ -2675,7 +2677,7 @@ export default function TutorPage() {
         </div>
         </div>
       </main>
-      <AppDialog open={!!previewImage && previewImage.owner === ownerId} onOpenChange={open => { if (!open) setPreviewImage(null); }} title={previewImage?.name ?? "问题图片"} description="本轮提问保存的原始图片。">
+      <AppDialog open={!!previewImage && previewImage.owner === ownerId} onOpenChange={open => { if (!open) setPreviewImage(null); }} title={previewImage?.name ?? "问题图片"} description="本轮提问保存的图片。">
         {previewImage && previewImage.owner === ownerId ? <img src={previewImage.dataUrl} alt={previewImage.name} width={previewImage.width} height={previewImage.height} className="mx-auto max-h-[65dvh] w-auto max-w-full object-contain" /> : null}
       </AppDialog>
       <AppDialog open={legacyOpen} onOpenChange={setLegacyOpen} title="旧版教学记录" description="旧版只保存最近四轮短文本和最后一个任务；更早的问答、引用原文及图片未被保存。新会话会完整存档。">
