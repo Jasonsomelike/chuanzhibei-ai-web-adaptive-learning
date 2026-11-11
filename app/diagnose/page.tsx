@@ -1712,8 +1712,8 @@ export default function DiagnosePage() {
           {revealed || done ? <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={readingSelection} /></div></details> : null}
           {/*
             错题重训与总结独立于折叠区直接展示：这是答错后最重要的下一步动作，
-            埋在「历史与错题复习」折叠里太隐蔽。面板自己会在没有可重训错题时
-            返回 null，所以未答题的新用户看到的侧栏依然是干净的。
+            埋在「历史与错题复习」折叠里太隐蔽。没有历史错题时面板返回 null，
+            未答题的新用户看到的侧栏依然是干净的；重训队列清空后总结仍保留供复习。
           */}
           <ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} readingByKc={readingByKc} kcOverview={kcOverview} onRetrainQuestion={retrainQuestion} emphasis className="mb-5" />
           <CalibrationCard attempts={progress.attempts} className="mb-5" />

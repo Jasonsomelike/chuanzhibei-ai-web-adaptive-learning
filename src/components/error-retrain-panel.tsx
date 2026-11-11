@@ -10,12 +10,14 @@
  *
  * 错题知识点总结是本地拼装（错因 = 该题解析），不调用模型——
  * 没配密钥也能看；解释文案如实标注来源是题库解析。
+ * 总结不随重训队列清空而消失：答对毕业的错题仍能在总结里展开复习。
  */
 
 import { useId, useMemo, useState } from "react";
 import type { Question } from "@/data/questions";
 import type { AttemptRecord } from "@/lib/learner";
 import {
+  historicalWrongQuestionIds,
   lastWrongQuestionIds,
   summarizeErrorsByKc,
   type ErrorKcSummary,
@@ -42,7 +44,7 @@ export interface ErrorRetrainProps {
   readonly kcOverview?: Readonly<Record<string, SummaryKcOverview>>;
   /** 点击「重做这道题」：页面把该题设为当前题并滚动到答题区。 */
   readonly onRetrainQuestion: (question: Question) => void;
-  /** 面板独立于折叠区直接展示时加警示描边，提示「这里有错题要处理」。 */
+  /** 队列里还有待重训错题时加警示描边，提示「这里有错题要处理」；队列清空只展示总结时不警示。 */
   readonly emphasis?: boolean;
   readonly className?: string;
 }
@@ -95,15 +97,24 @@ export function ErrorRetrainPanel({
     [retrainIds, questionById],
   );
 
-  /** 每道重训题最近一次计入证据的错答下标，用于展开区还原「你选了」。 */
+  /** 历史错题（含已毕业）：总结详情用它，队列清空后仍可复习。 */
+  const wrongQuestions = useMemo(
+    () =>
+      historicalWrongQuestionIds(attempts)
+        .map((id) => questionById.get(id))
+        .filter((q): q is Question => q !== undefined),
+    [attempts, questionById],
+  );
+
+  /** 每道历史错题最近一次计入证据的错答下标，用于展开区还原「你选了」。 */
   const chosenByQuestion = useMemo(() => {
     const map = new Map<string, number | null>();
-    for (const question of retrainQuestions) {
+    for (const question of wrongQuestions) {
       const attempt = lastWrongAttemptOf(attempts, question.id);
       map.set(question.id, attempt?.selectedIndex ?? null);
     }
     return map;
-  }, [retrainQuestions, attempts]);
+  }, [wrongQuestions, attempts]);
 
   const summaries = useMemo(() => summarizeErrorsByKc(attempts), [attempts]);
 
@@ -140,12 +151,13 @@ export function ErrorRetrainPanel({
     }
   };
 
-  if (retrainQuestions.length === 0) return null;
+  /** 队列清空但仍有历史错题时保留面板——总结与下载不消失，只有重训列表隐藏。 */
+  if (retrainQuestions.length === 0 && summaries.length === 0) return null;
 
   return (
     <section
       aria-label="错题重训"
-      className={`rounded-xl border bg-[var(--surface)] p-5 ${emphasis ? "error-retrain-emphasis" : "border-[var(--line)]"} ${className}`}
+      className={`rounded-xl border bg-[var(--surface)] p-5 ${emphasis && retrainQuestions.length > 0 ? "error-retrain-emphasis" : "border-[var(--line)]"} ${className}`}
     >
       <h2 className="text-lg font-semibold tracking-tight">
         <button
@@ -165,7 +177,7 @@ export function ErrorRetrainPanel({
         </button>
       </h2>
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
-        <span className="text-xs text-[var(--ink-soft)]">{retrainQuestions.length} 道题待重训</span>
+        <span className="text-xs text-[var(--ink-soft)]">{retrainQuestions.length > 0 ? `${retrainQuestions.length} 道题待重训` : "无待重训题目"}</span>
         <button
           type="button"
           onClick={downloadSummary}
@@ -182,6 +194,7 @@ export function ErrorRetrainPanel({
       ) : null}
       {!collapsed ? (
         <>
+      {retrainQuestions.length > 0 ? (<>
       <p className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">
         重做答对会毕业对应的错题记忆卡；答错则记忆卡重新到期、回到复习队列。
         同一道题只计一次证据（防刷分），所以重做不改动掌握度——想让掌握度真正回升，
@@ -212,6 +225,7 @@ export function ErrorRetrainPanel({
           </li>
         ))}
       </ul>
+      </>) : null}
 
       {summaries.length > 0 ? (
         <div className="mt-5 border-t border-[var(--line)] pt-4">
@@ -221,7 +235,7 @@ export function ErrorRetrainPanel({
           </p>
           <ul className="mt-2 space-y-2">
             {summaries.map((row: ErrorKcSummary) => {
-              const kcQuestions = retrainQuestions.filter((q) => q.kcId === row.kcId);
+              const kcQuestions = wrongQuestions.filter((q) => q.kcId === row.kcId);
               const open = expandedKc === row.kcId;
               const overview = kcOverview?.[row.kcId];
               return (
