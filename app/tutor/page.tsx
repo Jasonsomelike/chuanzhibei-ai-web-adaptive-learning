@@ -2734,24 +2734,23 @@ export default function TutorPage() {
           >
             <Mic size={17} />
           </button>
-          <button
-            type="button"
-            onClick={() => setWebOn(value => !value)}
-            disabled={busy}
-            aria-pressed={webOn}
-            title="联网补充（外部网页，未核对）"
-            className={
-              webOn
-                ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--accent)] text-[var(--accent)]"
-                : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
-            }
-          >
-            <Globe size={17} />
-          </button>
-          {webOn ? (
-            <span className="text-[11px] text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
-          ) : null}
-          <Link href="/settings?panel=search" className="text-[11px] text-[var(--ink-faint)] underline" title="联网搜索设置：供应商、默认开与关、测试">搜索设置</Link>
+          <span className="inline-flex items-center gap-2 text-[11px] text-[var(--ink-soft)]">
+            <Globe size={15} />
+            <span>联网模式</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={webOn}
+              aria-label="联网模式（外部网页，未核对）"
+              disabled={busy}
+              onClick={() => setWebOn(value => !value)}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 ${webOn ? "bg-[var(--accent)]" : "bg-[var(--line-strong)]"}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${webOn ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+            <span className="text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
+            <Link href="/settings?panel=search" className="underline" title="联网搜索设置：供应商、默认开与关、测试">搜索设置</Link>
+          </span>
           <span className="ml-auto text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
             {busy ? (
               <button
