@@ -106,7 +106,8 @@ try {
   await page.getByRole("textbox", { name: "搜索课程与功能", exact: true }).fill("线性代数");
   await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter");
   await page.waitForURL("**/diagnose?subject=linear-algebra");
-  check((await page.locator("main").innerText()).includes("线性代数"), "键盘搜索进入实际课程");
+  await page.locator('.diagnostic-page[aria-busy="false"]').waitFor();
+  check(await page.getByLabel("当前学习目标", { exact: true }).inputValue() === "linear-algebra", "键盘搜索进入实际课程");
   await page.getByRole("button", { name: "专注模式", exact: true }).click();
   check(await page.locator("main").getAttribute("data-focus") === "true" && !await page.locator(".diagnostic-sidebar").isVisible(), "专注模式隐藏辅助栏");
   await page.getByRole("button", { name: "退出专注", exact: true }).click();
