@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { Check, CircleHelp, Palette, ShieldCheck, SlidersHorizontal, BookOpen } from "lucide-react";
+import { Check, CircleHelp, ClipboardList, Palette, ShieldCheck, SlidersHorizontal, BookOpen } from "lucide-react";
 import paperPreview from "../../docs/design/editorial/path-paper.png";
 import atlasPreview from "../../docs/design/editorial/path-atlas.png";
 import chaptersPreview from "../../docs/design/editorial/path-chapters.png";
@@ -49,6 +49,7 @@ import {
   type ServerProviderState,
 } from "@/lib/serverConfig";
 import { MaterialSourcePanel } from "@/components/material-source-panel";
+import { LearningDataPanel } from "@/components/learning-data-panel";
 import { ThinkingSettings, type ProbeState } from "@/components/thinking-settings";
 import { TtsSettings } from "@/components/tts-settings";
 import { SearchSettings } from "@/components/search-settings";
@@ -121,6 +122,7 @@ const SECTIONS = [
   { id: "agent", label: "智能体与工具" },
   { id: "vector", label: "向量检索" },
   { id: "appearance", label: "外观" },
+  { id: "learning-data", label: "学习数据" },
   { id: "privacy", label: "密钥与隐私" },
 ] as const;
 
@@ -572,7 +574,7 @@ export default function SettingsPage() {
     const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
     if (!keys.includes(event.key)) return;
     event.preventDefault();
-    const visible = SECTIONS.map((section, i) => ({ section, i })).filter(({ section }) => !["appearance", "materials", "privacy"].includes(section.id));
+    const visible = SECTIONS.map((section, i) => ({ section, i })).filter(({ section }) => !["appearance", "materials", "learning-data", "privacy"].includes(section.id));
     const position = visible.findIndex(item => item.i === index);
     let next = position;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
@@ -652,8 +654,8 @@ export default function SettingsPage() {
           {/* 窄屏：分区标签换行铺满，11 个分区始终可见；lg 以上改为左侧竖向导航 */}
           <nav aria-label="设置分区" data-motion="nav" className="lg:sticky lg:top-8 lg:self-start">
             <div className="settings-category-nav">
-              {[{ id: "appearance", label: "外观", icon: Palette }, { id: "mode", label: "模型与工具", icon: SlidersHorizontal }, { id: "materials", label: "资料与口径", icon: BookOpen }, { id: "privacy", label: "账号与隐私", icon: ShieldCheck }].map(category => {
-                const selected = category.id === "mode" ? !["appearance", "materials", "privacy"].includes(active) : active === category.id;
+              {[{ id: "appearance", label: "外观", icon: Palette }, { id: "mode", label: "模型与工具", icon: SlidersHorizontal }, { id: "materials", label: "资料与口径", icon: BookOpen }, { id: "learning-data", label: "学习数据", icon: ClipboardList }, { id: "privacy", label: "账号与隐私", icon: ShieldCheck }].map(category => {
+                const selected = category.id === "mode" ? !["appearance", "materials", "learning-data", "privacy"].includes(active) : active === category.id;
                 return <button key={category.id} type="button" aria-current={selected ? "true" : undefined} onClick={() => setActive(category.id as SectionId)}><category.icon size={20} />{category.label}</button>;
               })}
               <a href="/guide"><CircleHelp size={20} />使用帮助</a>
@@ -662,7 +664,7 @@ export default function SettingsPage() {
               role="tablist"
               aria-label="模型与工具分区"
               aria-orientation="vertical"
-              hidden={["appearance", "materials", "privacy"].includes(active)}
+              hidden={["appearance", "materials", "learning-data", "privacy"].includes(active)}
               className="settings-model-tabs -mx-1 flex flex-wrap gap-1 px-1 pb-2 lg:mx-0 lg:flex-col lg:flex-nowrap lg:gap-0.5 lg:px-0 lg:pb-0"
             >
               {SECTIONS.map((section, index) => {
@@ -679,7 +681,7 @@ export default function SettingsPage() {
                     aria-selected={selected}
                     aria-controls={`settings-panel-${section.id}`}
                       tabIndex={selected ? 0 : -1}
-                      hidden={["appearance", "materials", "privacy"].includes(section.id)}
+                      hidden={["appearance", "materials", "learning-data", "privacy"].includes(section.id)}
                     onClick={() => setActive(section.id)}
                     onKeyDown={(event) => onTabKeyDown(event, index)}
                     className={`shrink-0 rounded-lg px-3 py-2 text-left text-sm transition-colors lg:w-full ${
@@ -1184,6 +1186,11 @@ export default function SettingsPage() {
                 </SettingsGroup>
                 <p className="appearance-saved"><Check size={17} />已自动应用，保存在本浏览器。</p>
               </SettingsSection>
+            </div>
+
+            {/* ── 学习数据 ── */}
+            <div {...panelAttrs("learning-data", active)}>
+              <LearningDataPanel />
             </div>
 
             {/* ── 密钥与隐私 ── */}

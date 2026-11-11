@@ -10,6 +10,28 @@ import { prerequisiteClosure, type KnowledgeGraph } from "./graph";
 /** 路径页与登出清理共用的 localStorage 键：记住用户当前勾选的章节。 */
 export const CHAPTERS_STORAGE_KEY = "alp.chapters.v1";
 
+/** 一个 localStorage 键里按目标 id 存章名列表。 */
+export type ChapterStore = Record<string, readonly string[]>;
+
+/**
+ * 读回某目标的章节选择。读不出来或格式损坏时一律当「没选」：
+ * 宁可回到整科，也不让坏数据缩窄范围。
+ * 学习路径页与设置的学习数据面板共用同一份选择，两边口径才会一致。
+ */
+export function readChapterSelection(targetId: string): readonly string[] {
+  try {
+    const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const value = (parsed as Record<string, unknown>)[targetId];
+    if (!Array.isArray(value)) return [];
+    return value.filter((name): name is string => typeof name === "string");
+  } catch {
+    return [];
+  }
+}
+
 /** 一个章节及其包含的知识点。 */
 export interface Chapter {
   readonly name: string;

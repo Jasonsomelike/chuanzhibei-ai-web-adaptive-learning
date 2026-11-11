@@ -8,7 +8,6 @@ import { useStaggerIn, useStepFlash, prefersReducedMotion } from "@/components/m
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
-import { LearningEvidence } from "@/components/learning-evidence";
 import { AppDialog } from "@/components/primitives/dialog";
 import { usePathFlip } from "@/components/path-motion";
 import { targetQuery } from "@/lib/target";
@@ -20,18 +19,15 @@ import {
   planPath,
   checkPrereqOrder,
   masteredSet,
-  computeInputHash,
-  computePathHash,
   applyManualOrder,
   movedKcIds,
   type ManualEdit,
-  ALGO_VERSION,
   type PathStep,
   type PlanResult,
 } from "@/lib/plan";
 import { masteryMean, masterySd } from "@/lib/mastery";
 import { computeDepths } from "@/lib/graph";
-import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf } from "@/lib/chapters";
+import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf, readChapterSelection, type ChapterStore } from "@/lib/chapters";
 import { summarizeCounterfactual } from "@/lib/planDiff";
 import { readManualPath, writeManualPath } from "@/lib/manualPath";
 import { readPathView, writePathView } from "@/lib/pathView";
@@ -52,27 +48,10 @@ const LearningGraph = dynamic(() => import("@/components/learning-graph"), { ssr
 /** 切目标后的第一帧不拿上一科的选择去算；用共享空数组保持引用稳定。 */
 const EMPTY_CHAPTERS: readonly string[] = [];
 
-/** 一个 localStorage 键里按目标 id 存章名列表。 */
-type ChapterStore = Record<string, readonly string[]>;
-
 /*
  * 章节选择按目标存进同一个键（登出清理只需 removeItem 一次）。
- * 读不出来或格式损坏时一律当「没选」：宁可回到整科，也不让坏数据缩窄范围。
+ * 读取逻辑在 @/lib/chapters 的 readChapterSelection：与设置的学习数据面板共用。
  */
-function readChapterSelection(targetId: string): readonly string[] {
-  try {
-    const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    const value = (parsed as Record<string, unknown>)[targetId];
-    if (!Array.isArray(value)) return [];
-    return value.filter((name): name is string => typeof name === "string");
-  } catch {
-    return [];
-  }
-}
-
 function writeChapterSelection(targetId: string, names: readonly string[]): void {
   try {
     const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
@@ -102,7 +81,6 @@ export default function PathPage() {
     ready: learnerReady,
     progress,
     setLearner,
-    synced,
   } = useLearner(targetId, target?.graph);
   const [chapterPickerOpen, setChapterPickerOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(true);
@@ -261,15 +239,6 @@ export default function PathPage() {
     });
   }, [progress, graph, compareBudget, chapterTargets]);
 
-  const inputHash = useMemo(() => {
-    if (!progress || !graph) return null;
-    return computeInputHash({
-      graph,
-      mastery: progress.mastery,
-      budgetMinutes: budget,
-      targets: chapterTargets,
-    });
-  }, [progress, graph, budget, chapterTargets]);
   /**
    * 实际显示的顺序：以当前预算的算法 plan 为集合，按用户调整过的相对次序重放。
    *
@@ -338,23 +307,6 @@ export default function PathPage() {
     [counterfactual, displayed],
   );
 
-  /*
-   * 当前显示顺序的指纹。
-   * 与算法路径指纹分开显示：手动改写后两者不同，面板必须能解释这个差异，
-   * 否则「路径指纹」会指向一个用户看到的路径之外的另一个东西。
-   */
-  const displayedHash = useMemo(() => {
-    if (!plan) return null;
-    const steps = displayed.map((s) => ({ ...s }));
-    return computePathHash({
-      steps,
-      totalMinutes: steps.reduce((sum, s) => sum + s.estMinutes, 0),
-      deferred: plan.deferred,
-      blocked: plan.blocked,
-      algoVersion: plan.algoVersion,
-      kgVersion: plan.kgVersion,
-    });
-  }, [displayed, plan]);
 
   const violations = useMemo(
     () =>
@@ -697,7 +649,6 @@ export default function PathPage() {
         </section>
         </details>
 
-        <LearningEvidence graph={graph} progress={progress} budgetMinutes={budget} />
         <details className="mb-5 rounded-xl border border-[var(--line)] p-4">
         <summary className="cursor-pointer text-sm font-medium">调整学习计划 · {target.name} · {budget} 分钟</summary>
         <div className="mt-4">
@@ -799,61 +750,6 @@ export default function PathPage() {
         </Card>
 
         </div>
-        </details>
-
-        {/* 可复现性面板 */}
-        <details className="rounded-xl border border-[var(--line)] p-4" data-technical-details>
-          <summary className="cursor-pointer text-sm font-medium">技术详情 · 可复现性</summary>
-          <Card motion="repro">
-            <dl className="space-y-2 text-sm">
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">输入指纹</dt>
-                <dd className="truncate font-mono text-xs" title={inputHash ?? undefined}>
-                  {inputHash ?? "—"}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">算法路径指纹</dt>
-                <dd className="truncate font-mono text-xs" title={plan?.pathHash}>
-                  {plan?.pathHash ?? "—"}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">当前显示顺序指纹</dt>
-                <dd className="truncate font-mono text-xs" title={displayedHash ?? undefined}>
-                  {displayedHash ?? "—"}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">算法版本</dt>
-                <dd className="font-mono text-xs">{ALGO_VERSION}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">图谱版本</dt>
-                <dd className="font-mono text-xs">{graph.version}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">因预算不足推迟</dt>
-                <dd className="tabular text-xs">{plan?.deferred.length ?? 0} 个知识点</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">因先修被推迟而阻塞</dt>
-                <dd className="tabular text-xs">{plan?.blocked.length ?? 0} 个知识点</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">进度存储</dt>
-                <dd className="text-xs">
-                  {synced ? "账号（跨设备同步）" : "本浏览器"}
-                </dd>
-              </div>
-            </dl>
-            <p className="mt-3 border-t border-[var(--line)] pt-3 text-xs text-[var(--ink-faint)]">
-              指纹不含任何模型标识：路径与用哪个大模型无关。
-              同一个 attempt 快照 + 同一算法版本，在任何时候都会得到同一个路径指纹。
-              注意「同一输入」指的是同一份掌握度快照——生成题会改变你的作答，
-              作答会改变掌握度，所以换一批题之后的路径本来就应该不同。
-            </p>
-          </Card>
         </details>
 
         <div className="mt-6 flex flex-wrap gap-3">

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight, Settings2 } from "lucide-react";
 import { LearningJourney } from "@/components/learning-journey";
 import { DocumentNav } from "@/components/document-nav";
 import { THEMES } from "@/lib/themes";
@@ -23,6 +23,10 @@ export default function GuidePage() {
         <Link href="/">
           <ArrowLeft size={18} />
           返回学习概览
+        </Link>
+        <Link href="/settings">
+          <Settings2 size={18} />
+          前往设置
         </Link>
       </header>
       <div className="guide-document-layout">
