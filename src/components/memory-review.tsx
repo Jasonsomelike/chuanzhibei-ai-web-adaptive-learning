@@ -7,7 +7,7 @@
  * 因此不会改动掌握度的 α/β。页面通过 onReview 把更新组合进一次 setLearner。
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   dueAt,
   dueMemories,
@@ -85,6 +85,9 @@ export function MemoryReview({
   className = "",
 }: MemoryReviewProps) {
   const [openId, setOpenId] = useState<string | null>(null);
+  /** 卡片折叠状态：默认收起，标题与统计始终可见，展开看到期卡列表。 */
+  const [collapsed, setCollapsed] = useState(true);
+  const bodyId = useId();
   const due = useMemo(() => dueMemories(memories, now), [memories, now]);
   const summary = memoryReviewSummary(memories, now);
 
@@ -99,11 +102,27 @@ export function MemoryReview({
       aria-label="记忆复习"
       className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 ${className}`}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">记忆复习</h2>
-        <span className="text-xs text-[var(--ink-soft)]">{summary}</span>
-      </div>
+      <h2 className="text-lg font-semibold tracking-tight">
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+          onClick={() => setCollapsed(value => !value)}
+          className="cursor-interaction flex items-center gap-1.5 rounded-md text-left"
+        >
+          记忆复习
+          <span
+            aria-hidden="true"
+            className={`text-base leading-none text-[var(--ink-faint)] transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`}
+          >
+            ▾
+          </span>
+        </button>
+      </h2>
+      <p className="mt-1.5 text-xs text-[var(--ink-soft)]">{summary}</p>
 
+      {!collapsed ? (
+        <>
       {due.length === 0 ? (
         <p className="mt-2 text-sm text-[var(--ink-soft)]">
           {nextAt === null
@@ -185,6 +204,8 @@ export function MemoryReview({
       <p className="mt-3 text-xs text-[var(--ink-faint)]">
         复习自评只调整下次到期时间，不计入掌握度（α/β 不变）。
       </p>
+        </>
+      ) : null}
     </section>
   );
 }

@@ -8,29 +8,26 @@ import { useStaggerIn, useStepFlash, prefersReducedMotion } from "@/components/m
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { ChapterGoals } from "@/components/chapter-goals";
-import { LearningEvidence } from "@/components/learning-evidence";
 import { AppDialog } from "@/components/primitives/dialog";
 import { usePathFlip } from "@/components/path-motion";
 import { targetQuery } from "@/lib/target";
 import { useSubject } from "@/lib/subject";
 import { recordPathEdit } from "@/lib/learner";
+import { historicalWrongQuestionIds } from "@/lib/errorRetrain";
 import { useLearner } from "@/lib/useLearner";
 import {
   planPath,
   checkPrereqOrder,
   masteredSet,
-  computeInputHash,
-  computePathHash,
   applyManualOrder,
   movedKcIds,
   type ManualEdit,
-  ALGO_VERSION,
   type PathStep,
   type PlanResult,
 } from "@/lib/plan";
 import { masteryMean, masterySd } from "@/lib/mastery";
 import { computeDepths } from "@/lib/graph";
-import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf } from "@/lib/chapters";
+import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf, readChapterSelection, type ChapterStore } from "@/lib/chapters";
 import { summarizeCounterfactual } from "@/lib/planDiff";
 import { readManualPath, writeManualPath } from "@/lib/manualPath";
 import { readPathView, writePathView } from "@/lib/pathView";
@@ -51,27 +48,10 @@ const LearningGraph = dynamic(() => import("@/components/learning-graph"), { ssr
 /** 切目标后的第一帧不拿上一科的选择去算；用共享空数组保持引用稳定。 */
 const EMPTY_CHAPTERS: readonly string[] = [];
 
-/** 一个 localStorage 键里按目标 id 存章名列表。 */
-type ChapterStore = Record<string, readonly string[]>;
-
 /*
  * 章节选择按目标存进同一个键（登出清理只需 removeItem 一次）。
- * 读不出来或格式损坏时一律当「没选」：宁可回到整科，也不让坏数据缩窄范围。
+ * 读取逻辑在 @/lib/chapters 的 readChapterSelection：与设置的学习数据面板共用。
  */
-function readChapterSelection(targetId: string): readonly string[] {
-  try {
-    const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    const value = (parsed as Record<string, unknown>)[targetId];
-    if (!Array.isArray(value)) return [];
-    return value.filter((name): name is string => typeof name === "string");
-  } catch {
-    return [];
-  }
-}
-
 function writeChapterSelection(targetId: string, names: readonly string[]): void {
   try {
     const raw = window.localStorage.getItem(CHAPTERS_STORAGE_KEY);
@@ -101,7 +81,6 @@ export default function PathPage() {
     ready: learnerReady,
     progress,
     setLearner,
-    synced,
   } = useLearner(targetId, target?.graph);
   const [chapterPickerOpen, setChapterPickerOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(true);
@@ -260,15 +239,6 @@ export default function PathPage() {
     });
   }, [progress, graph, compareBudget, chapterTargets]);
 
-  const inputHash = useMemo(() => {
-    if (!progress || !graph) return null;
-    return computeInputHash({
-      graph,
-      mastery: progress.mastery,
-      budgetMinutes: budget,
-      targets: chapterTargets,
-    });
-  }, [progress, graph, budget, chapterTargets]);
   /**
    * 实际显示的顺序：以当前预算的算法 plan 为集合，按用户调整过的相对次序重放。
    *
@@ -337,23 +307,6 @@ export default function PathPage() {
     [counterfactual, displayed],
   );
 
-  /*
-   * 当前显示顺序的指纹。
-   * 与算法路径指纹分开显示：手动改写后两者不同，面板必须能解释这个差异，
-   * 否则「路径指纹」会指向一个用户看到的路径之外的另一个东西。
-   */
-  const displayedHash = useMemo(() => {
-    if (!plan) return null;
-    const steps = displayed.map((s) => ({ ...s }));
-    return computePathHash({
-      steps,
-      totalMinutes: steps.reduce((sum, s) => sum + s.estMinutes, 0),
-      deferred: plan.deferred,
-      blocked: plan.blocked,
-      algoVersion: plan.algoVersion,
-      kgVersion: plan.kgVersion,
-    });
-  }, [displayed, plan]);
 
   const violations = useMemo(
     () =>
@@ -421,6 +374,26 @@ export default function PathPage() {
     setLearner(updated);
   };
 
+  // 剩余预算的推荐动作：错题重做（错题本）与最薄弱知识点的课本原文巩固。
+  // 注意：钩子必须放在下方加载骨架屏的提前 return 之前，否则两次渲染
+  // 钩子数不一致会触发 React #310（Rendered more hooks than previous render）。
+  const wrongCount = useMemo(
+    () => historicalWrongQuestionIds(progress?.attempts ?? []).length,
+    [progress],
+  );
+  const weakestKc = useMemo(() => {
+    if (!graph) return null;
+    const states = new Map((progress?.mastery ?? []).map((state) => [state.kcId, state]));
+    let best: { id: string; mean: number } | null = null;
+    for (const concept of graph.concepts) {
+      const state = states.get(concept.id);
+      if (!state || state.evidenceN === 0) continue;
+      const mean = masteryMean(state);
+      if (best === null || mean < best.mean) best = { id: concept.id, mean };
+    }
+    return best;
+  }, [graph, progress]);
+
   if (!ready || !learnerReady || !learner || !progress || !target || !graph) {
     return (
       <>
@@ -448,8 +421,27 @@ export default function PathPage() {
           <label className="path-budget-select">学习预算<select aria-label="本次学习预算" value={budget} onChange={event => changeBudget(Number(event.target.value))}>{!BUDGET_OPTIONS.includes(budget) ? <option value={budget}>{budget} 分钟</option> : null}{BUDGET_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{minutes} 分钟</option>)}</select></label>
         </div>
 
-        <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟。`}</p>
-        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
+        <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟，剩余 ${budget - totalMinutes} 分钟；随学习推进，达标的知识点会移出计划，剩余时间自动更新。`}</p>
+        {budget - totalMinutes > 0 && (wrongCount > 0 || weakestKc !== null) ? (
+          <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">
+            <p className="text-sm font-medium">剩余 {budget - totalMinutes} 分钟，还可以：</p>
+            <ul className="mt-1.5 space-y-1 text-sm text-[var(--ink-soft)]">
+              {wrongCount > 0 ? (
+                <li>
+                  <Link href={`/mistakes?${target.kind === "direction" ? `direction=${targetId}` : `subject=${targetId}`}`} className="text-[var(--accent)] underline">重做 {wrongCount} 道历史错题（约 {wrongCount * 3} 分钟）</Link>
+                  ——在错题本里按知识点或按错题顺序重做，可先看解析与自己的笔记
+                </li>
+              ) : null}
+              {weakestKc !== null ? (
+                <li>
+                  <Link href={`/tutor${targetQuery(target)}&kc=${encodeURIComponent(weakestKc.id)}&materials=1`} className="text-[var(--accent)] underline">阅读课本原文，巩固「{kcById.get(weakestKc.id)?.name ?? weakestKc.id}」</Link>
+                  （当前掌握度 {Math.round(weakestKc.mean * 100)}%，历史错题里最薄弱）
+                </li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
+        {plan && graphOpen ? <div id="path-graph" className="scroll-mt-6"><LearningGraph key={targetId} graph={graph} mastery={progress.mastery} plan={plan} steps={displayed} query={targetQuery(target)} selectedId={highlightKc} addedKcIds={budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).map(step => step.kcId) : []} targetName={target.name} onSelect={selectConcept} onLocate={locateConcept} /></div> : null}
         <div className="path-control-bar">
         {workflowTargets?.targetId === targetId ? <p className="path-goal-caption">学习目标：{workflowTargets.ids.map(id => kcById.get(id)?.name).join("、")}<button type="button" onClick={() => { setWorkflowTargets(null); const url = new URL(window.location.href); url.searchParams.delete("targets"); window.history.replaceState(window.history.state, "", url); }} className="ml-3 text-[var(--accent)] underline">返回课程范围</button></p> : null}
         <div className="path-view-controls">
@@ -582,7 +574,7 @@ export default function PathPage() {
                               requestAnimationFrame(() => document.getElementById("path-graph")?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" }));
                             }}>{c?.name ?? step.kcId}</button>
                             <Pill>{step.kind === "learn" ? "新学" : "复习"}</Pill>
-                            <Pill>{step.estMinutes} 分钟</Pill>
+                            <Pill>剩余 {budget - displayed.slice(0, i + 1).reduce((sum, s) => sum + s.estMinutes, 0)} 分钟</Pill>
                             <Pill>深度 {depths.get(step.kcId) ?? 0}</Pill>
                             {moved.has(step.kcId) ? <Pill tone="warn">已手动调整</Pill> : null}
                             {/* 只影响视觉：?kc= 跳转过来的定位标记，不参与路径计算 */}
@@ -657,7 +649,6 @@ export default function PathPage() {
         </section>
         </details>
 
-        <LearningEvidence graph={graph} progress={progress} budgetMinutes={budget} />
         <details className="mb-5 rounded-xl border border-[var(--line)] p-4">
         <summary className="cursor-pointer text-sm font-medium">调整学习计划 · {target.name} · {budget} 分钟</summary>
         <div className="mt-4">
@@ -759,61 +750,6 @@ export default function PathPage() {
         </Card>
 
         </div>
-        </details>
-
-        {/* 可复现性面板 */}
-        <details className="rounded-xl border border-[var(--line)] p-4" data-technical-details>
-          <summary className="cursor-pointer text-sm font-medium">技术详情 · 可复现性</summary>
-          <Card motion="repro">
-            <dl className="space-y-2 text-sm">
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">输入指纹</dt>
-                <dd className="truncate font-mono text-xs" title={inputHash ?? undefined}>
-                  {inputHash ?? "—"}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">算法路径指纹</dt>
-                <dd className="truncate font-mono text-xs" title={plan?.pathHash}>
-                  {plan?.pathHash ?? "—"}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">当前显示顺序指纹</dt>
-                <dd className="truncate font-mono text-xs" title={displayedHash ?? undefined}>
-                  {displayedHash ?? "—"}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">算法版本</dt>
-                <dd className="font-mono text-xs">{ALGO_VERSION}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">图谱版本</dt>
-                <dd className="font-mono text-xs">{graph.version}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">因预算不足推迟</dt>
-                <dd className="tabular text-xs">{plan?.deferred.length ?? 0} 个知识点</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">因先修被推迟而阻塞</dt>
-                <dd className="tabular text-xs">{plan?.blocked.length ?? 0} 个知识点</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-[var(--ink-soft)]">进度存储</dt>
-                <dd className="text-xs">
-                  {synced ? "账号（跨设备同步）" : "本浏览器"}
-                </dd>
-              </div>
-            </dl>
-            <p className="mt-3 border-t border-[var(--line)] pt-3 text-xs text-[var(--ink-faint)]">
-              指纹不含任何模型标识：路径与用哪个大模型无关。
-              同一个 attempt 快照 + 同一算法版本，在任何时候都会得到同一个路径指纹。
-              注意「同一输入」指的是同一份掌握度快照——生成题会改变你的作答，
-              作答会改变掌握度，所以换一批题之后的路径本来就应该不同。
-            </p>
-          </Card>
         </details>
 
         <div className="mt-6 flex flex-wrap gap-3">

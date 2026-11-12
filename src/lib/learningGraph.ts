@@ -97,3 +97,53 @@ export function layoutLearningNodes(nodes: readonly LearningGraphNode[], directi
     return { ...node, position };
   }));
 }
+
+export type LearningEdgeTone = "accent" | "warn" | "plain";
+
+/** 一条先修边的视觉语义：颜色由 tone 决定，宽弱由 emphasized / opacity / dashed 决定。 */
+export interface LearningEdgeVisual {
+  readonly tone: LearningEdgeTone;
+  readonly emphasized: boolean;
+  readonly opacity: number;
+  readonly dashed: boolean;
+}
+
+export interface LearningEdgeContext {
+  /** 当前选中的知识点；null 表示画布上没有选中项。 */
+  readonly selectedId: string | null;
+  /** 是否处于「全科关系」模式（全部 60 条边同屏，需要整体降权让节点颜色可读）。 */
+  readonly showAll: boolean;
+  /** 目标节点是否处于 blocked 状态——它的全部入边都是阻塞来源。 */
+  readonly isBlockedTarget: (id: string) => boolean;
+}
+
+/**
+ * 先修边的视觉规则（纯函数）。
+ *
+ * 优先级：阻塞来源（warn）> 选中相连（accent）> 选中淡化 / 全科降权 > 常态。
+ * 阻塞边永远用警示色虚线——它回答「卡在哪」，比「选中了谁」更值得看见；
+ * 选中阻塞边自身时只加粗强调，不改色。
+ */
+export function learningEdgeVisual(source: string, target: string, context: LearningEdgeContext): LearningEdgeVisual {
+  const connected = context.selectedId !== null && (source === context.selectedId || target === context.selectedId);
+  if (context.isBlockedTarget(target)) {
+    return {
+      tone: "warn",
+      emphasized: connected,
+      opacity: context.selectedId !== null && !connected ? 0.3 : 1,
+      dashed: true,
+    };
+  }
+  if (connected) return { tone: "accent", emphasized: true, opacity: 1, dashed: false };
+  if (context.selectedId !== null) return { tone: "plain", emphasized: false, opacity: 0.3, dashed: false };
+  if (context.showAll) return { tone: "plain", emphasized: false, opacity: 0.55, dashed: false };
+  return { tone: "plain", emphasized: false, opacity: 1, dashed: false };
+}
+
+/** 导出文件名：目标名里的路径与空白字符替换为连字符，日期取 ISO 日期段。 */
+export function learningGraphFileName(targetName: string, exportedAt: string): string {
+  const safe = targetName.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "");
+  const ms = Date.parse(exportedAt);
+  const day = Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : "export";
+  return `先修图谱-${safe || "学习目标"}-${day}.png`;
+}

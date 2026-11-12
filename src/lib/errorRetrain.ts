@@ -53,6 +53,27 @@ export function lastWrongQuestionIds(
   return ids;
 }
 
+/**
+ * 历史错题的题 id：只要有**任意一次**计入证据的答错就入选（含后来答对毕业的），
+ * 按首次答错的先后排列（去重、确定性）。
+ *
+ * 与 lastWrongQuestionIds 的区别：队列只留「最近一次仍是错」的题，
+ * 这里保留全部历史错题——复习总结不随毕业消失。
+ */
+export function historicalWrongQuestionIds(
+  attempts: readonly AttemptRecord[],
+): readonly string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const attempt of attempts) {
+    if (seen.has(attempt.questionId)) continue;
+    if (!isCounted(attempt) || attempt.correct) continue;
+    seen.add(attempt.questionId);
+    ids.push(attempt.questionId);
+  }
+  return ids;
+}
+
 /** 按知识点汇总错题；无错题的知识点不出现。排序：错得多的在前，同数按 kcId 稳定排序。 */
 export function summarizeErrorsByKc(
   attempts: readonly AttemptRecord[],

@@ -11,7 +11,6 @@ import { targetQuery } from "@/lib/target";
 import { TargetPicker, targetCaption } from "@/components/target-picker";
 import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
-import { ErrorRetrainPanel } from "@/components/error-retrain-panel";
 import { MaterialReader } from "@/components/material-reader";
 import { useSubject } from "@/lib/subject";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
@@ -151,7 +150,22 @@ export default function DiagnosePage() {
   const [revealed, setRevealed] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [requestedKc, setRequestedKc] = useState<string | null>(null);
-  useEffect(() => { setRequestedKc(new URLSearchParams(window.location.search).get("kc")); }, []);
+  /** 错题本带来的重做队列种子：?redo=逗号分隔题目id&redoLabel=显示名。 */
+  const [redoSeed, setRedoSeed] = useState<{ ids: readonly string[]; label: string } | null>(null);
+  /** 激活后的重做队列。非空时按队列逐题走，作答仍走既有 submit 流程。 */
+  const [redoQueue, setRedoQueue] = useState<{ ids: readonly string[]; index: number; label: string } | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setRequestedKc(params.get("kc"));
+    const redo = params.get("redo");
+    if (redo !== null && redo.trim() !== "") {
+      const ids = redo.split(",").map(id => id.trim()).filter(id => id !== "");
+      if (ids.length > 0) setRedoSeed({ ids, label: params.get("redoLabel") ?? "" });
+    }
+  }, []);
+
+  /** 当前题的学习者笔记（错题本里写的）：重做时直接摆在题面旁，复习闭环。 */
+  const currentNote = current && progress ? progress.notes?.[current.question.id] ?? null : null;
 
   const [directionItems, setDirectionItems] = useState<DirectionItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -235,10 +249,25 @@ export default function DiagnosePage() {
   );
   /*
    * 教材阅读模块用合并包：与 materialForConcept 的出题口径一致
-   * （内置教材/讲义 + 我的笔记 + 上传资料）。上传来源由阅读视图
-   * 按选中来源过滤——uploadsToPack 的来源 id 不在用户选择里时，
-   * 阅读模块同样不显示，保持「出题引用什么、阅读就有什么」。
+   * （内置教材/讲义 + 我的笔记 + 上传资料）。
+   *
+   * 口径对齐的关键一步：uploadsToPack 的来源 id（文档 id）不在用户的
+   * 教材选择里，materialForConcept 出题前会把它们追加进选择末尾
+   * （优先级低于教材 / 讲义）。阅读与总结导出必须做同样的追加，
+   * 否则上传片段「出题引用它、阅读和导出却看不到」。
    */
+  const readingSelection = useMemo(
+    () => ({
+      ...materialSelection,
+      sourceIds: [
+        ...materialSelection.sourceIds,
+        ...uploadedPack.sources
+          .map((source) => source.id)
+          .filter((id) => !materialSelection.sourceIds.includes(id)),
+      ],
+    }),
+    [materialSelection, uploadedPack],
+  );
   const readingPack = useMemo(
     () => (uploadedPack.chunks.length > 0 ? mergePacks([materialPack, uploadedPack]) : materialPack),
     [materialPack, uploadedPack],
@@ -815,6 +844,50 @@ export default function DiagnosePage() {
     });
   };
 
+  // ── 错题重做队列（错题本 → 诊断页）────────────────────────────────
+  // 题目就绪（方向题要等落库题拉回）后进入第一题；作答走既有 submit，
+  // 掌握度 / 记忆卡 / 预测校准与正常答题完全同一条路径。
+  useEffect(() => {
+    if (!redoSeed || !graph || availableQuestions.length === 0) return;
+    const questions = redoSeed.ids
+      .map(id => availableQuestions.find(q => q.id === id))
+      .filter((q): q is Question => q !== undefined);
+    setRedoSeed(null);
+    const first = questions[0];
+    if (!first) return;
+    setRedoQueue({ ids: questions.map(q => q.id), index: 0, label: redoSeed.label });
+    retrainQuestion(first);
+  }, [redoSeed, graph, availableQuestions, retrainQuestion]);
+
+  /** 进入队列下一题；走完时清队列回到常规出题。 */
+  const advanceRedo = () => {
+    if (!redoQueue) return;
+    const nextIndex = redoQueue.index + 1;
+    if (nextIndex >= redoQueue.ids.length) {
+      exitRedo();
+      return;
+    }
+    const id = redoQueue.ids[nextIndex];
+    const question = availableQuestions.find(q => q.id === id);
+    if (question) retrainQuestion(question);
+    setRedoQueue({ ...redoQueue, index: nextIndex });
+  };
+
+  /** 退出重做：清队列与 URL 参数，恢复常规出题。 */
+  const exitRedo = () => {
+    setRedoQueue(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("redo");
+    url.searchParams.delete("redoLabel");
+    window.history.replaceState(window.history.state, "", url);
+    setSelected(null);
+    setRevealed(false);
+    submittedQuestion.current = null;
+    setConfusionWith("");
+    setConfusionSaved(false);
+    if (learner) setCurrent(pickNext(learner));
+  };
+
   /**
    * 重置本次会话，保留 learner（掌握度与历史作答都不动）。
    *
@@ -1357,6 +1430,24 @@ export default function DiagnosePage() {
         {/* 题卡上方的口径分歧提示 */}
         {current && !done ? conflictLine : null}
 
+        {/* 错题重做队列条 */}
+        {redoQueue ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--warn)] bg-[var(--surface)] px-4 py-3" role="status" aria-label="错题重做队列">
+            <p className="text-sm">
+              <strong>错题重做</strong>
+              {redoQueue.label !== "" ? ` · ${redoQueue.label}` : ""} · 第 {redoQueue.index + 1} / {redoQueue.ids.length} 题
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {redoQueue.index + 1 < redoQueue.ids.length ? (
+                <button type="button" onClick={advanceRedo} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]">下一题</button>
+              ) : (
+                <button type="button" onClick={exitRedo} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]">完成重做</button>
+              )}
+              <button type="button" onClick={exitRedo} className="rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs text-[var(--ink-soft)]">退出重做</button>
+            </div>
+          </div>
+        ) : null}
+
         {/* 当前题目 */}
         {current && !done ? (
           <div ref={questionCardRef} data-motion="question-card" data-motion-manual>
@@ -1384,6 +1475,14 @@ export default function DiagnosePage() {
               {current.practiceOnly ? <Pill tone="warn">仅练习，不计入掌握度</Pill> : null}
             </div>
             <h2 tabIndex={-1} className="text-lg font-semibold leading-[1.8] sm:text-xl">{current.question.stem}</h2>
+
+            {/* 错题本笔记：重做时把学习者自己的批注摆在眼前 */}
+            {currentNote !== null ? (
+              <div className="mt-3 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2">
+                <p className="text-xs font-medium text-[var(--warn)]">我的笔记{currentNote.at !== "" ? ` · 写于 ${currentNote.at.slice(0, 10)}` : ""}</p>
+                <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed">{currentNote.text}</p>
+              </div>
+            ) : null}
 
             {/* L5 难度理由不匹配这类「未拒绝但值得提示」的问题 */}
             {current.checkNotes.length > 0 ? (
@@ -1660,8 +1759,8 @@ export default function DiagnosePage() {
             })}</ul>
             <p className="mt-4 text-[11px] leading-relaxed text-[var(--ink-faint)]">未测评不代表不会。证据与不确定性随作答更新。</p>
           </Card>
-          {revealed || done ? <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={materialSelection} /></div></details> : null}
-          <details className="diagnostic-disclosure"><summary><Icon name="clock" size={18} />历史与错题复习</summary><div><CalibrationCard attempts={progress.attempts} className="mb-5" /><ErrorRetrainPanel attempts={progress.attempts} questions={availableQuestions} kcName={id => kcName.get(id) ?? id} targetName={target.name} onRetrainQuestion={retrainQuestion} className="mb-5" /></div></details>
+          {revealed || done ? <details className="diagnostic-disclosure"><summary><Icon name="book" size={18} />相关资料</summary><div><MaterialReader pack={readingPack} concepts={graph.concepts} selection={readingSelection} /></div></details> : null}
+          <CalibrationCard attempts={progress.attempts} className="mb-5" />
           <MemoryReview memories={progress.memories ?? []} now={nowIso} kcName={id => kcName.get(id) ?? id} onReview={reviewCard} />
         </aside>
         </div>

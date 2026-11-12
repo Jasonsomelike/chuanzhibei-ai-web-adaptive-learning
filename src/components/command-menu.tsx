@@ -8,6 +8,7 @@ import { Icon } from "@/components/icons";
 
 const shortcuts = [
   { label: "诊断测评", hint: "了解当前基础", href: "/diagnose" },
+  { label: "错题本", hint: "复习历史错题，勾选导出总结", href: "/mistakes" },
   { label: "学习路径", hint: "安排时间与下一步", href: "/path" },
   { label: "课程导师", hint: "阅读资料，带着卡点提问", href: "/tutor" },
   { label: "我的方向", hint: "上传课程资料", href: "/directions" },

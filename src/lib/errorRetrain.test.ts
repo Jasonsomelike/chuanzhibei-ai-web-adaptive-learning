@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AttemptRecord } from "@/lib/learner";
-import { lastWrongQuestionIds, summarizeErrorsByKc } from "@/lib/errorRetrain";
+import { historicalWrongQuestionIds, lastWrongQuestionIds, summarizeErrorsByKc } from "@/lib/errorRetrain";
 
 function attempt(
   partial: Pick<AttemptRecord, "questionId" | "kcId" | "correct"> &
@@ -44,6 +44,29 @@ describe("lastWrongQuestionIds", () => {
       attempt({ questionId: "qa", kcId: "k1", correct: false, at: "2026-10-29T00:00:00.000Z" }),
     ]);
     expect(ids).toEqual(["qa", "qb"]);
+  });
+});
+
+describe("historicalWrongQuestionIds", () => {
+  it("答错后答对毕业的题也入选（复习总结不随毕业消失）", () => {
+    const ids = historicalWrongQuestionIds([
+      attempt({ questionId: "q1", kcId: "k1", correct: false }),
+      attempt({ questionId: "q1", kcId: "k1", correct: true }),
+      attempt({ questionId: "q2", kcId: "k1", correct: true }),
+      attempt({ questionId: "q3", kcId: "k2", correct: false }),
+    ]);
+    expect(ids).toEqual(["q1", "q3"]);
+  });
+
+  it("仅练习题（counted=false）不算历史错题", () => {
+    const ids = historicalWrongQuestionIds([
+      attempt({ questionId: "q1", kcId: "k1", correct: false, counted: false }),
+    ]);
+    expect(ids).toEqual([]);
+  });
+
+  it("空记录返回空数组", () => {
+    expect(historicalWrongQuestionIds([])).toEqual([]);
   });
 });
 

@@ -7,11 +7,11 @@ const route = vi.hoisted(() => ({ pathname: "/path" }));
 vi.mock("next/navigation", () => ({ usePathname: () => route.pathname }));
 
 describe("学习导航", () => {
-  it("桌面导航和手机导航提供相同的五个学习入口", () => {
+  it("桌面导航和手机导航提供相同的六个学习入口", () => {
     for (const Component of [NavLinks, MobileNav]) {
       const markup = renderToStaticMarkup(createElement(Component));
-      expect(markup.match(/<a /g)).toHaveLength(5);
-      for (const name of ["学习概览", "知识图谱", "诊断测评", "课程导师", "我的课程"]) expect(markup).toContain(`aria-label="${name}"`);
+      expect(markup.match(/<a /g)).toHaveLength(6);
+      for (const name of ["学习概览", "知识图谱", "诊断测评", "错题本", "课程导师", "我的课程"]) expect(markup).toContain(`aria-label="${name}"`);
       expect(markup.match(/aria-current="page"/g)).toHaveLength(1);
       expect(markup.match(/<a [^>]*href="\/path"[^>]*>/)?.[0]).toContain('aria-current="page"');
     }

@@ -84,7 +84,7 @@ export function LearningDashboard() {
           <div className="overview-recent-body">
             {last ? <div className="recent-record"><CheckCircle2 size={20} /><p>最近作答：<strong>{names.get(last.kcId) ?? last.kcId}</strong><span>{new Date(last.at).toLocaleString("zh-CN")} · {last.correct ? "答对" : "答错"}</span></p></div> : <div className="overview-empty"><BookOpen size={66} /><h3>尚无学习记录</h3><p>完成作答后，会在这里保留学习记录。</p><Link href="/guide" className="editorial-text-link">使用指南<ArrowRight size={17} /></Link></div>}
             {due.length ? <><h3>待复习内容</h3><ul className="review-links">{due.slice(0, 3).map(item => <li key={item.id}><Link href={`/diagnose${query}#memory-review`}>{names.get(item.kcId) ?? item.kcId}<span>{item.kind === "error" ? "错题" : "易混知识点"}</span></Link></li>)}</ul></> : null}
-            {last ? <Link href={`/diagnose${query}#memory-review`} className="editorial-text-link"><PencilLine size={17} />复习错题</Link> : null}
+            {last ? <Link href={`/mistakes${query}`} className="editorial-text-link"><PencilLine size={17} />复习错题</Link> : null}
             {history.length ? <details className="overview-history"><summary>课程学习记录 · {history.length} 门</summary><ul>{history.map(subject => <li key={subject.id}><Link href={`/path?subject=${subject.id}`}>{subject.name}</Link><span>{learner?.subjects[subject.id]?.attempts.length} 次作答</span></li>)}</ul></details> : null}
             <p className="overview-storage">{synced ? "已读取账号进度" : "记录保存在本浏览器，登录后可同步。"}</p>
           </div>

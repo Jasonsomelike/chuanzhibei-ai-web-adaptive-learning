@@ -175,7 +175,9 @@ async function main() {
 
   if (failures > 0) {
     console.error(`\n[fetch-model] ${failures} 个文件未通过校验。`);
-    process.exitCode = 1;
+    // --optional 的契约（见文件头）：构建期失败只告警，不阻断 next build；
+    // 向量检索会按设计退化为 BM25。
+    if (!optional) process.exitCode = 1;
     return;
   }
   if (checkOnly) {

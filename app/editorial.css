@@ -511,9 +511,10 @@ button, a { touch-action: manipulation; }
 .courses-page-heading a, .courses-page-heading button { display: inline-flex; align-items: center; gap: 9px; min-height: 46px; font-size: 15px; color: var(--accent); }
 .courses-page-heading button, .courses-page-heading .course-create-link { padding: 9px 22px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-weight: 550; }
 .course-section-nav { display: flex; gap: 0; padding-bottom: 14px; border-bottom: 1px solid var(--line-strong); }
-.course-section-nav a { padding: 8px 24px; min-height: 44px; font-size: 15px; border: 1px solid var(--line); }
-.course-section-nav a:first-child { background: var(--accent); color: var(--on-accent); border-radius: 8px 0 0 8px; }
-.course-section-nav a:last-child { border-radius: 0 8px 8px 0; }
+.course-section-nav a, .course-section-nav button { padding: 8px 24px; min-height: 44px; font-size: 15px; border: 1px solid var(--line); background: transparent; color: inherit; font-family: inherit; cursor: pointer; }
+.course-section-nav a:first-child, .course-section-nav button:first-child { border-radius: 8px 0 0 8px; }
+.course-section-nav a:last-child, .course-section-nav button:last-child { border-radius: 0 8px 8px 0; }
+.course-section-nav [aria-current="true"] { background: var(--accent); color: var(--on-accent); }
 .course-catalog { scroll-margin-top: 25px; }
 .course-search { display: flex; align-items: center; gap: 12px; width: min(100%,540px); min-height: 44px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px 15px; margin: 26px 0 16px; color: var(--ink-soft); }
 .course-search input { width: 100%; min-width: 0; background: transparent; outline: 0; }
