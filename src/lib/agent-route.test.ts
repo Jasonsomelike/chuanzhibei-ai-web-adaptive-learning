@@ -245,7 +245,7 @@ describe("/api/agent：SSE 主路径", () => {
     // 第一轮：工具集是 5 个本地只读工具，system 里带学科与预算。
     const first = upstream.requests[0];
     const tools = first.body.tools as { function: { name: string } }[];
-    expect(tools.map((tool) => tool.function.name)).toEqual(READ_ONLY_TOOL_NAMES.filter(n => n !== "plan_path"));
+    expect(tools.map((tool) => tool.function.name)).toEqual([...READ_ONLY_TOOL_NAMES.filter(n => n !== "plan_path"),"estimate_learning_time"]);
     const messages = first.body.messages as { role: string; content: unknown }[];
     expect(messages[0].role).toBe("system");
     expect(String(messages[0].content)).toContain("os");
@@ -337,7 +337,7 @@ describe("/api/agent：降级路径", () => {
     expect(doneOf(events).stopReason).toBe("stop");
 
     const tools = upstream.requests[0].body.tools as { function: { name: string } }[];
-    expect(tools.map((tool) => tool.function.name)).toEqual(READ_ONLY_TOOL_NAMES.filter(n => n !== "plan_path"));
+    expect(tools.map((tool) => tool.function.name)).toEqual([...READ_ONLY_TOOL_NAMES.filter(n => n !== "plan_path"),"estimate_learning_time"]);
   });
 
   it("上游把密钥回显进错误体时，错误消息已脱敏", async () => {
@@ -414,11 +414,13 @@ describe("teaching workflow HTTP contracts", () => {
     await saveLlm();
     const events = parseEvents(await (await postAgent({ question: "出一道题", intent: "practice", budgetMinutes: 30 })).text());
     const workflow = doneOf(events).workflow as { runId: string; targetId: string; exercise: { questionId: string } };
-    expect(upstream.requests).toHaveLength(0);
+    const estimationRequests=upstream.requests.length;
+    expect(estimationRequests).toBeGreaterThan(0);
     const makeAnswer = (extra = {}) => new Request("http://localhost/api/agent/answer", { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" }, body: JSON.stringify({ targetId: workflow.targetId, runId: workflow.runId, questionId: workflow.exercise.questionId, selectedIndex: 0, ...extra }) });
     expect((await answer(makeAnswer({ correct: true }))).status).toBe(400);
     const response = await answer(makeAnswer());
     expect(response.status).toBe(200);
+    expect(upstream.requests).toHaveLength(estimationRequests);
     expect(await response.json()).toMatchObject({ evidenceN: 1, workflow: { status: "complete", plan: { totalMinutes: expect.any(Number) } } });
     const recovered = await session(new Request(`http://localhost/api/agent/session?targetId=${workflow.targetId}`));
     expect(await recovered.json()).toMatchObject({ workflow: { runId: workflow.runId, status: "complete" }, assessment: { evidenceN: 1 } });

@@ -334,6 +334,11 @@ export async function startMockProvider(
     }
 
     const { user } = messageContent(body);
+    if(user.includes("你是学习时长估算 Agent")&&user.includes("数据：")) {
+      const sample=JSON.parse(user.slice(user.indexOf("\n数据：")+4).slice(0,user.slice(user.indexOf("\n数据：")+4).lastIndexOf("}")+1)) as {graph:{concepts:{id:string}[]}};
+      const estimates=sample.graph.concepts.map(c=>({kcId:c.id,learnMinutes:22,reviewMinutes:10,lowMinutes:8,highMinutes:30,confidence:"medium",reason:"根据内容与现有作答证据估算；独立检查后再调整。"}));
+      sendJson(res,{choices:[{message:{content:JSON.stringify({estimates})},finish_reason:"stop"}]});return;
+    }
     const questions = parseQuestions(user);
 
     if (questions.length > 0) {

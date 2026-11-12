@@ -1,3 +1,4 @@
+import { timeEstimate } from "./learningTime";
 /** Browser-safe contracts for the learning supervisor. No answers or model credentials. */
 import { z } from "zod";
 
@@ -20,9 +21,10 @@ export const workflowSnapshot = z.object({
   status: z.enum(["running", "awaiting_answer", "complete", "failed"]),
   persisted: z.boolean(),
   stages: z.array(z.object({
-    node: z.enum(["supervisor", "context", "planner", "retriever", "tutor", "exercise", "verifier", "checkpoint"]),
+    node: z.enum(["supervisor", "context", "planner", "retriever", "tutor", "exercise", "verifier", "checkpoint", "estimator", "time_validator"]),
     label: z.string().max(120), status: z.enum(["running", "complete", "failed"]),
   })).max(12),
+  timeEstimation:z.object({source:z.enum(["llm","rules"]),fingerprint:z.string(),model:z.string().optional(),notice:z.string().optional(),estimates:z.array(timeEstimate).max(500)}).optional(),
   plan: z.object({
     pathHash: z.string(), inputHash: z.string(), totalMinutes: z.number(),
     steps: z.array(z.object({ kcId: z.string(), name: z.string(), kind: z.enum(["learn", "review"]), estMinutes: z.number(), reason: z.string() })).max(200),

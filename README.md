@@ -17,6 +17,8 @@
 
 ![自适应学习路径首页](screenshots/ui-v3/after-home-1440.png)
 
+**2026-11-12 更新**：合并队友错题本与学习体验改进。导师附件改为服务端分片上传、哈希去重、PDF/OCR 解析及预算检索，完整会话保留文件来源与引用原文；配置模型后通过时长估算 Agent、结构校验和先修约束排程生成可解释用时。详见 [文档与时长编排](docs/document-and-time-orchestration.md)。
+
 **2026-11-04 更新**：首页支持诊断、规划与学习的交互预览；导师采用教材与对话双栏工作台，移动端使用材料抽屉。诊断增加专注模式、连续反馈和证据更新；学习路径加入 React Flow 先修图谱、预算变化提示及 GSAP Flip 重排。保留五套配色、明暗模式与减少动态效果设置。Agent 学情隔离、进度合并与历史保留等改进见 [改进记录](docs/improvements-2026-11-04.md)，当前验收见下表；较早截图仅供历史参考。
 
 ## 评审入口
@@ -32,7 +34,7 @@
 和常见推荐系统的区别只有一句话：**它判断的是「能不能学」，不是「想不想学」**。先修 DAG 是硬约束，未掌握的先修排在后继之前；先修被预算推迟时，后继进 `blocked` 而不是照排。
 
 - **9 学科 · 360 知识点 · 540 条先修边 · 1080 题**，每学科 40 点 / 60 边 / 120 题，`npm run kg:validate` 逐科校验无环、无悬空边、每点恰好 3 题。
-- **排序是纯函数**：`planPath` 只依赖图谱与掌握度，不联网、不取时钟、不用随机数；给定输入，路径逐位可复现（`pathHash`）。
+- **排序是纯函数**：`planPath` 只依赖图谱、掌握证据、显式时长估算与预算，不联网、不取时钟、不用随机数；给定输入，路径逐位可复现（`pathHash`）。
 - **不配任何 API key 也能完整使用核心链路**：诊断、路径、章节目标、手动改写、记忆卡、预测校准、教材与上传资料的 BM25 检索都不需要模型。Agent 工具循环、MCP 与图片问答需要登录并保存服务端模型配置；本地 512 维语义检索需要预取模型文件，缺失时自动退回 BM25。
 
 ## 核心特性
@@ -125,7 +127,7 @@ RAG 在这个项目里不是「给聊天加点上下文」，而是**回答必�
 | 切块 | 500 字 + 50 字重叠；单方向默认上限 50,000 段 / 1000 万字（`ALP_MAX_KB_*` 可收紧） |
 | 评测 | 50 条（字面 15 / 同义 15 / 答不上 10 / 域外 10） |
 
-**存储链路**：浏览器解析 PDF / Markdown → 切块 → 未登录写 IndexedDB（单事务）；登录后本地先写，再 `PUT /api/kb` 做文档级 CAS 写入 `kb_docs` / `kb_chunks`。512 维本地向量不随文档 PUT 提交，而是由浏览器分批 `POST /api/kb/vectors`（每批 ≤32 条）写入 `kb_chunk_vectors`（`vector(512)`，按 `(user_id, chunk_id, model)` 主键）；查询时浏览器只发查询向量到 `POST /api/kb/similar`，服务端用精确余弦扫描后回 `chunkId + score`。向量表不存 `direction_id`，方向过滤靠 JOIN `kb_chunks`；默认不启用 HNSW，也不做 `SET LOCAL`（Neon HTTP 每次 query 独立）。12 张表：`users`、`sessions`、`progress`、`directions`、`direction_picks`、`direction_items`、`user_secrets`、`kb_docs`、`kb_chunks`、`kb_chunk_vectors`、`mcp_servers`、`memories`。
+**存储链路**：登录后的文档优先走服务端解析与 OCR，详见 [文档生命周期](docs/document-and-time-orchestration.md)。匿名文字层资料：浏览器解析 PDF / Markdown → 切块 → 未登录写 IndexedDB（单事务）；登录后本地先写，再 `PUT /api/kb` 做文档级 CAS 写入 `kb_docs` / `kb_chunks`。512 维本地向量不随文档 PUT 提交，而是由浏览器分批 `POST /api/kb/vectors`（每批 ≤32 条）写入 `kb_chunk_vectors`（`vector(512)`，按 `(user_id, chunk_id, model)` 主键）；查询时浏览器只发查询向量到 `POST /api/kb/similar`，服务端用精确余弦扫描后回 `chunkId + score`。向量表不存 `direction_id`，方向过滤靠 JOIN `kb_chunks`；默认不启用 HNSW，也不做 `SET LOCAL`（Neon HTTP 每次 query 独立）。12 张表：`users`、`sessions`、`progress`、`directions`、`direction_picks`、`direction_items`、`user_secrets`、`kb_docs`、`kb_chunks`、`kb_chunk_vectors`、`mcp_servers`、`memories`。
 
 **实测与边界**（`npm run eval:rag`，2026-10-30 本机）：recall@3 `1.000`、MRR@10 `1.000`、全文金句 `1.000`；answer-absent relatedHit `1.000`、unanswerableEmpty `0.500`；域外门控后 out-of-domain emptyRate `1.000`（10/10）、falseContext `0.000`。但这套评测**已饱和**，只能证明基础检索没坏，不能证明标题加权、向量或 RRF 的提升；混合检索只接上传资料，且本轮没有跑向量臂。**chunk 级 hard 集、nDCG@10 / recall@20、配对 bootstrap 区间都还没有做**，所以「向量有收益」目前不能宣称。
 

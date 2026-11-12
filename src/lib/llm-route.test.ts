@@ -403,8 +403,8 @@ describe("POST /api/llm/chat：上游控制面", () => {
     expect(upstreamRef.requests[0]?.body["response_format"]).toEqual({ type: "json_object" });
   });
 
-  it("缺省 purpose 时沿用账号思考档，与本轮基线一致", async () => {
-    rowRef.current = publicIpChatRow({ thinking: "deep" });
+  it("上下文足够时缺省 purpose 沿用账号思考档", async () => {
+    rowRef.current = publicIpChatRow({ thinking: "deep", contextWindowTokens:64000 });
 
     await chatPost(request("/api/llm/chat", { messages: MESSAGES, stream: false }));
 

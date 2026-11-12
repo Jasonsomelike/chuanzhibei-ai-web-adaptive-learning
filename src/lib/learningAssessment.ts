@@ -14,7 +14,7 @@ function resultFor(context: LearningContext, snapshot: WorkflowSnapshot, questio
   const q = context.course.questions.find(q => q.id === questionId)!;
   const attempt = context.progress.attempts.find(a => a.attemptId === `${snapshot.runId}:${q.id}`)!;
   const mastery = context.progress.mastery.find(m => m.kcId === q.kcId)!;
-  const input = { graph: context.course.graph, mastery: context.progress.mastery, budgetMinutes: snapshot.budgetMinutes, targets: snapshot.planTargets };
+  const input = { graph: context.course.graph, mastery: context.progress.mastery, budgetMinutes: snapshot.budgetMinutes, targets: snapshot.planTargets,timeEstimates:snapshot.timeEstimation?.estimates };
   const plan = planPath(input);
   return { runId: snapshot.runId, questionId: q.id, selectedIndex, correct: selectedIndex === q.answerIndex,
     answerIndex: q.answerIndex, explanation: q.explanation, counted: attempt.counted === true,

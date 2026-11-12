@@ -1,5 +1,8 @@
 "use client";
 
+import { useLearningTime } from "@/lib/useLearningTime";
+import { LearningTimeNote } from "@/components/learning-time-note";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -126,6 +129,7 @@ export default function PathPage() {
   }>({ targetId: "", names: [] });
 
   const graph = target?.graph;
+  const timing=useLearningTime(targetId,graph,progress);
   const depths = useMemo(() => (graph ? computeDepths(graph) : new Map<string, number>()), [graph]);
   const kcById = useMemo(
     () => new Map((graph?.concepts ?? []).map((c) => [c.id, c])),
@@ -226,8 +230,9 @@ export default function PathPage() {
       mastery: progress.mastery,
       budgetMinutes: budget,
       targets: chapterTargets,
+      timeEstimates:timing.estimates,
     });
-  }, [progress, graph, budget, chapterTargets]);
+  }, [progress, graph, budget, chapterTargets,timing.estimates]);
 
   const counterfactual: PlanResult | null = useMemo(() => {
     if (!progress || !graph || compareBudget === null) return null;
@@ -236,8 +241,9 @@ export default function PathPage() {
       mastery: progress.mastery,
       budgetMinutes: compareBudget,
       targets: chapterTargets,
+      timeEstimates:timing.estimates,
     });
-  }, [progress, graph, compareBudget, chapterTargets]);
+  }, [progress, graph, compareBudget, chapterTargets,timing.estimates]);
 
   /**
    * 实际显示的顺序：以当前预算的算法 plan 为集合，按用户调整过的相对次序重放。
@@ -421,6 +427,7 @@ export default function PathPage() {
           <label className="path-budget-select">学习预算<select aria-label="本次学习预算" value={budget} onChange={event => changeBudget(Number(event.target.value))}>{!BUDGET_OPTIONS.includes(budget) ? <option value={budget}>{budget} 分钟</option> : null}{BUDGET_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{minutes} 分钟</option>)}</select></label>
         </div>
 
+        <LearningTimeNote timing={timing}/>
         <p role="status" data-path-summary className="path-summary">{budgetBaseline && budgetBaseline.targetId === targetId && budgetBaseline.progress === progress && budgetBaseline.chapters === chapters ? `相比 ${budgetBaseline.budget} 分钟预算，新增 ${displayed.filter(step => !budgetBaseline.ids.includes(step.kcId)).length} 步，移出 ${budgetBaseline.ids.filter(id => !displayed.some(step => step.kcId === id)).length} 步。` : `当前 ${budget} 分钟预算，已安排 ${displayed.length} 步，预计 ${totalMinutes} 分钟，剩余 ${budget - totalMinutes} 分钟；随学习推进，达标的知识点会移出计划，剩余时间自动更新。`}</p>
         {budget - totalMinutes > 0 && (wrongCount > 0 || weakestKc !== null) ? (
           <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3">

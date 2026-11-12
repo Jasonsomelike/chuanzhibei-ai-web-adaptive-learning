@@ -158,12 +158,12 @@ const MATERIAL_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: st
   {
     term: "支持 Markdown / TXT / PDF。",
     detail:
-      "PDF 在浏览器里用 pdfjs-dist 抽取文本，需要文件自带文本层；扫描件不做 OCR，PPT / DOCX 不解析。",
+      "登录后由服务端解析 PDF，扫描页自动尝试中英 OCR，按文件哈希复用索引。匿名模式只解析文字层；PPT / DOCX 暂不支持。",
   },
   {
     term: "上传资料可随账号同步。",
     detail:
-      "抽取后的文本与片段按方向保存在 IndexedDB，登录后同步到当前账号。原始文件不保存，匿名资料留在当前浏览器，方向市场副本需要单独添加资料。同步失败时界面会提示。",
+      "抽取后的文本与片段按方向保存在 IndexedDB，登录后同步到当前账号。服务端解析完成后删除临时原文件分片，匿名资料留在当前浏览器，方向市场副本需要单独添加资料。同步失败时界面会提示。",
   },
 ];
 
@@ -259,6 +259,9 @@ const LLM_FIELDS: readonly SecretField[] = [
     placeholder: "sk-…",
   },
   { name: "model", label: "模型名", required: true, placeholder: "deepseek-chat" },
+  { name:"contextWindowTokens",label:"上下文窗口（tokens）",type:"number",placeholder:"8192",hint:"按当前供应商与模型填写；未填写采用保守的 8192。" },
+  { name:"responseReserveTokens",label:"回答预留（tokens）",type:"number",placeholder:"2048" },
+  { name:"retrievalMaxTokens",label:"资料检索预算（tokens）",type:"number",placeholder:"2048",hint:"资料仅发送命中片段，系统还会扣除提问和历史占用。" },
   {
     name: "extraHeaders",
     label: "额外请求头（可选）",
@@ -364,6 +367,7 @@ export default function SettingsPage() {
   const [thinking, setThinking] = useState<ThinkingStrength>("off");
   const [thinkingStatus, setThinkingStatus] = useState<ThinkingStatus>("unknown");
   const [verification, setVerification] = useState(true);
+  const [contextLimits,setContextLimits]=useState({contextWindowTokens:8192,responseReserveTokens:2048,retrievalMaxTokens:2048});
   const [probe, setProbe] = useState<ProbeState>({ status: "idle" });
   const probeController = useRef<AbortController | null>(null);
 
@@ -387,6 +391,7 @@ export default function SettingsPage() {
       setThinking(p.thinking ?? "off");
       setThinkingStatus(p.thinkingStatus ?? "unknown");
       setVerification(p.verification !== false);
+      setContextLimits({contextWindowTokens:p.contextWindowTokens??8192,responseReserveTokens:p.responseReserveTokens??2048,retrievalMaxTokens:p.retrievalMaxTokens??2048});
       // 匹配到预设就选中它，否则落到对应协议的自定义
       const matched = PRESETS.find(
         (x) => x.baseUrl === p.baseUrl && x.kind === p.kind,
@@ -522,6 +527,7 @@ export default function SettingsPage() {
     thinking,
     thinkingStatus,
     verification,
+    ...contextLimits,
   });
 
   const canTest = baseUrl.trim() !== "" && apiKey.trim() !== "" && model.trim() !== "";
@@ -813,6 +819,7 @@ export default function SettingsPage() {
                         ))}
                       </div>
 
+                      <div className="mt-4 grid gap-3 sm:grid-cols-3">{([{key:"contextWindowTokens",label:"上下文窗口"},{key:"responseReserveTokens",label:"回答预留"},{key:"retrievalMaxTokens",label:"检索预算"}] as const).map(field=><label key={field.key} className="text-xs">{field.label}（tokens）<input className="mt-1 w-full rounded border border-[var(--line)] p-2" type="number" min={field.key==="contextWindowTokens"?4096:256} max={field.key==="contextWindowTokens"?2000000:128000} value={contextLimits[field.key]} onChange={event=>setContextLimits(old=>({...old,[field.key]:Number(event.target.value)}))}/></label>)}</div><p className="mt-2 text-xs text-[var(--ink-soft)]">请按供应商当前模型填写容量；未设置使用保守预算。资料会先检索，再按预算选择片段。</p>
                       <p className="mt-4 text-xs font-medium text-[var(--ink-soft)]">自定义端点</p>
                       <div className="mt-1.5 flex flex-wrap gap-1.5">
                         {PRESETS.filter((p) => p.id.startsWith("custom")).map((p) => (

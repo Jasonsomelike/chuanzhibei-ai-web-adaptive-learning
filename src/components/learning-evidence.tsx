@@ -2,12 +2,13 @@
 import { useMemo } from "react";
 import type { KnowledgeGraph } from "@/lib/graph";
 import type { SubjectProgress } from "@/lib/learner";
+import type { TimeEstimate } from "@/lib/learningTime";
 import { learningReport } from "@/lib/learningReport";
 
-export function LearningEvidence({ graph, progress, budgetMinutes }: {
-  graph: KnowledgeGraph; progress: SubjectProgress; budgetMinutes: number;
+export function LearningEvidence({ graph, progress, budgetMinutes,timeEstimates }: {
+  graph: KnowledgeGraph; progress: SubjectProgress; budgetMinutes: number;timeEstimates?:readonly TimeEstimate[];
 }) {
-  const report = useMemo(() => learningReport(graph, progress, budgetMinutes), [graph, progress, budgetMinutes]);
+  const report = useMemo(() => learningReport(graph, progress, budgetMinutes,timeEstimates), [graph, progress, budgetMinutes,timeEstimates]);
   const names = new Map(graph.concepts.map((c) => [c.id, c.name]));
   return (
     <details className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">

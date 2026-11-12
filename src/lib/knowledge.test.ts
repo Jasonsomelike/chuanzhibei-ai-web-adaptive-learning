@@ -497,3 +497,13 @@ describe("ImportResult", () => {
     }
   });
 });
+
+
+describe("上传资料的单主题语料",()=>{
+  it("低 IDF 的真实主题仍能检索，域外问题保持拒绝",()=>{
+    const chunks=Array.from({length:120},(_,index)=>makeChunk({id:`queue-${index}`,index,text:"队列采用先进先出，队尾插入，队头删除。".repeat(10)}));
+    const index=buildUploadIndex(chunks);
+    expect(retrieveUploads(index,chunks,"队列为什么从队头删除",3).length).toBeGreaterThan(0);
+    expect(retrieveUploads(index,chunks,"北京旅游推荐",3)).toEqual([]);
+  });
+});

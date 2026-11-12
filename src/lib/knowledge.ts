@@ -541,7 +541,7 @@ export function retrieveUploads(
 ): UploadHit[] {
   const byId = new Map(chunks.map((chunk) => [chunk.id, chunk] as const));
   const hits: UploadHit[] = [];
-  for (const doc of search(index, query, k)) {
+  for (const doc of search(index, query, k, {minScore:0})) {
     const chunk = byId.get(doc.kcId);
     if (chunk === undefined) continue;
     hits.push({ chunk, score: doc.score });
@@ -576,7 +576,7 @@ export function formatUploadContext(hits: readonly UploadHit[]): string {
     return `[资料${index + 1}] ${label}\n${hit.chunk.text.trim()}`;
   });
 
-  return `【上传资料（仅本浏览器）｜引用时标注 [资料n]】\n${blocks.join("\n\n")}`;
+  return `【上传资料｜引用时标注 [资料n]】\n${blocks.join("\n\n")}`;
 }
 
 /**

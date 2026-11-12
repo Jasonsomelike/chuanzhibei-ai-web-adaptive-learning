@@ -1,4 +1,7 @@
 "use client";
+import { markdownBlocks,plainBlocks } from "@/lib/documentText";
+import { uploadDocument } from "@/lib/documentClient";
+import { updateDocKcIds } from "@/lib/kbStore";
 
 /**
  * 上传资料到当前方向的知识库。
@@ -8,7 +11,7 @@
  * docs + chunks 单事务、要么全写要么一条都不写，所以失败时界面只显示错误，
  * 不会留下半份文档。
  *
- * 不保存原始文件，也不做 OCR：扫描件没有文本层时如实拒绝。
+ * 登录后走服务端解析与扫描 OCR；匿名模式仅在浏览器抽取文字层。
  */
 
 import { useRef, useState } from "react";
@@ -78,44 +81,7 @@ export function uploadTextError(charCount: number): string | null {
   return null;
 }
 
-const MD_HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
-
-/**
- * 按 Markdown 标题分段。
- *
- * 标题行保留在正文里：导师检索与出题核对都按片段文本匹配，
- * 只把标题放进 section 会让「这一节叫什么」检索不到。
- */
-export function markdownBlocks(text: string, fallbackSection: string): TextBlock[] {
-  const fallback = fallbackSection.trim();
-  const blocks: TextBlock[] = [];
-  let section = fallback;
-  let buffer: string[] = [];
-
-  const flush = (): void => {
-    const body = buffer.join("\n").trim();
-    if (body !== "") blocks.push({ text: body, section });
-    buffer = [];
-  };
-
-  for (const line of text.split(/\r?\n/)) {
-    const heading = MD_HEADING.exec(line);
-    if (heading !== null) {
-      flush();
-      const title = heading[2]?.trim() ?? "";
-      if (title !== "") section = title;
-    }
-    buffer.push(line);
-  }
-  flush();
-
-  return blocks;
-}
-
-/** 纯文本只有一段，小节名用文件名兜底（不编页码）。 */
-export function plainBlocks(text: string, section: string): TextBlock[] {
-  return text.trim() === "" ? [] : [{ text, section }];
-}
+export { markdownBlocks,plainBlocks } from "@/lib/documentText";
 
 export interface UploadRowsInput {
   readonly directionId: string;
@@ -305,6 +271,15 @@ export function KnowledgeUpload({
     setStage("reading");
 
     try {
+      if(userId){
+        const storage=getKbStorageForUser(userId);
+        if(!storage)throw new Error("当前浏览器无法加载知识库。");
+        setStage("parsing");
+        const doc=await uploadDocument(file,directionId,setMessage);
+        if(selectedKcs.length){const binding=await updateDocKcIds(storage,doc.id,selectedKcs);if(!binding.ok)throw new Error(binding.error);}
+        setMessage(`已保存「${doc.name}」· ${doc.chunkCount} 个片段${doc.ocrPages?` · ${doc.ocrPages} 页 OCR`:""}，重复文件复用索引。`);
+        setStage("done");onImported();return;
+      }
       if (detected === "pdf") setStage("parsing");
       const outcome = await parseUpload(file, detected);
       if (!outcome.ok) {
@@ -410,7 +385,7 @@ export function KnowledgeUpload({
       <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
         Markdown（.md）、纯文本（.txt）与带文本层的 PDF；单份 ≤{formatBytes(MAX_FILE_BYTES)}、
         ≤{MAX_FILE_CHARS.toLocaleString("zh-CN")} 字，PDF ≤{MAX_PDF_PAGES} 页。
-        解析在本浏览器完成，不保存原始文件；扫描件没有文本层会被拒绝（本版本不做 OCR）。
+        登录后由服务端解析、去重并保存检索片段，扫描 PDF 自动尝试中英 OCR。匿名模式仅在本浏览器解析文字层；扫描件请登录后导入。
         {hasAccount ? "登录状态下会同时写入账号，换设备可继续使用。" : ""}
       </p>
 

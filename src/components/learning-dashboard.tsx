@@ -1,5 +1,8 @@
 "use client";
 
+import { useLearningTime } from "@/lib/useLearningTime";
+import { LearningTimeNote } from "@/components/learning-time-note";
+
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, BookOpen, CheckCircle2, Circle, CircleDot, PencilLine } from "lucide-react";
@@ -22,11 +25,12 @@ function LearningSkeleton() {
 export function LearningDashboard() {
   const { target, targetId, setTargetId, ready, targetError } = useSubject();
   const { learner, progress, ready: learnerReady, synced } = useLearner(targetId, target?.graph);
+  const timing=useLearningTime(targetId,target?.graph,progress);
   const [budget, setBudget] = useState(60);
   const [now] = useState(() => new Date().toISOString());
   const root = useRef<HTMLElement>(null);
   useStaggerIn(root);
-  const plan = useMemo(() => target && progress ? planPath({ graph: target.graph, mastery: progress.mastery, budgetMinutes: budget }) : null, [target, progress, budget]);
+  const plan = useMemo(() => target && progress ? planPath({ graph: target.graph, mastery: progress.mastery, budgetMinutes: budget,timeEstimates:timing.estimates }) : null, [target, progress, budget,timing.estimates]);
   const query = target ? targetQuery(target) : "";
   const attempts = progress?.attempts.filter(attempt => !attempt.retired) ?? [];
   const last = attempts.reduce<(typeof attempts)[number] | undefined>((latest, attempt) => !latest || attempt.at > latest.at ? attempt : latest, undefined);
@@ -73,6 +77,7 @@ export function LearningDashboard() {
       <div className="overview-secondary">
         <section aria-labelledby="session-heading">
           <div className="overview-section-heading"><h2 id="session-heading">本次学习安排</h2><fieldset><legend className="sr-only">可用学习时间</legend><div className="segmented">{[30, 60, 90].map(minutes => <button type="button" key={minutes} aria-pressed={budget === minutes} onClick={() => setBudget(minutes)}>{minutes} 分钟</button>)}</div></fieldset></div>
+          <LearningTimeNote timing={timing}/>
           <div className="overview-steps">
             <p className="sr-only" aria-live="polite">建议 {plan.steps.length} 步，预计 {plan.totalMinutes} 分钟。{!last ? "尚未测评，按先修顺序建议；诊断后更新。" : ""}</p>
             {plan.steps.length ? <ol>{plan.steps.slice(0, 4).map((step, index) => <li key={step.kcId}><span className="overview-step-number tabular">{index + 1}</span><div><Link href={`${pathHref}&kc=${encodeURIComponent(step.kcId)}`}>{names.get(step.kcId)}</Link></div><span className="overview-step-time">{step.estMinutes} 分钟</span></li>)}</ol> : <p className="py-4 text-sm text-[var(--ink-soft)]">当前范围内没有待学步骤。</p>}

@@ -1,3 +1,5 @@
+
+import { validateDocumentReferences, DocumentError } from "./documentReferences";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Db } from "./db";
@@ -90,7 +92,10 @@ export async function appendConversationTurn(db: Db, userId: string, raw: unknow
   if (body.user.id === body.assistantId) throw new ConversationError(400, "本轮消息标识重复。");
   const conversation = await getConversation(db, userId, body.conversationId);
   writable(conversation);
-  const { content: userContent } = contentJson({ text: body.user.content.text, attachments: body.user.content.attachments, images: body.user.content.attachments.length });
+  let documents;
+  try { documents=await validateDocumentReferences(db,userId,conversation.targetId,body.user.content.documents.map(d=>d.id)); }
+  catch(e) { throw new ConversationError(e instanceof DocumentError?e.status:500,e instanceof DocumentError?e.message:"附件校验失败。"); }
+  const { content: userContent } = contentJson({ text: body.user.content.text, attachments: body.user.content.attachments, documents, images: body.user.content.attachments.length });
   if (!userContent.text.trim() && !userContent.attachments.length) throw new ConversationError(400, "请先输入问题或附图。");
   const pair = await db.all<ConversationMessageRow>(SQL.pair, [userId, body.conversationId, body.user.id, body.assistantId]);
   const existing = pair.find(row => row.id === body.user.id);

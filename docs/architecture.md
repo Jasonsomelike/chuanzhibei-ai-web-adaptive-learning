@@ -1,3 +1,5 @@
+> 2026-11-12：文档上传与时长编排以 [新增设计](document-and-time-orchestration.md) 为准。
+
 # 自适应学习路径系统设计与实现
 
 ## 2026-11-09 Learning Supervisor
@@ -118,7 +120,7 @@ flowchart LR
 [排序 plan.ts:128]  depth ↑ → |0.6-mean| ↑ → sd ↓ → 拓扑序/id
         │
         ▼
-[装包 plan.ts:169]  15 分钟/新学，8 分钟/复习；先修被推迟 → 后继 blocked
+[装包 plan.ts:169]  经校验的知识点时长估算；先修被推迟 → 后继 blocked
         │
         ├──► [pathHash plan.ts:296]
         ▼
@@ -175,7 +177,7 @@ flowchart LR
 ## ② 排序：下一步学哪个
 
 - **输入**：`PlanInput { graph, mastery, budgetMinutes, targets?, masteryTarget? }`。
-- **规则**：先取目标点的先修闭包 ∪ 目标点，去掉已达 0.6 的点；再按 **先修深度升序 → ZPD 距离升序 → `sd` 降序 → 拓扑序/id** 排序（`src/lib/plan.ts:128-148`）；最后按 15 分钟/新学、8 分钟/复习贪心装包（`src/lib/plan.ts:169-197`）。
+- **规则**：先取目标点的先修闭包 ∪ 目标点，去掉已达 0.6 的点；再按 **先修深度升序 → ZPD 距离升序 → `sd` 降序 → 拓扑序/id** 排序（`src/lib/plan.ts:128-148`）；最后按知识点的已校验时长估算贪心装包（`src/lib/plan.ts:169-197`）。
 - **输出**：`steps`（带 `reason`）、`totalMinutes`、`deferred`、`blocked`、`pathHash`。
 - **为什么是这个顺序**：深度保证不跳级；ZPD 距离让「跳一跳够得着」成为显式规则；`sd` 降序让最不确定的点优先获得证据；拓扑序与 id 只是兜底，保证完全确定。前三个键决定「先学哪个」，后两个键只负责在同分时给出稳定结果。
 
@@ -280,7 +282,7 @@ predictCorrect(p, d) = 1 / (1 + exp(−(logit(p) − 0.6·(d − 3))))
 ```
 1. 候选集  目标先修闭包 ∪ 目标点，去掉 mean ≥ 0.6 的
 2. 软排序  depth ↑ → |0.6 − mean| ↑ → sd ↓ → 拓扑序/id
-3. 装包    15 分钟/新学、8 分钟/复习，装不下进 deferred；先修被推迟则后继进 blocked
+3. 装包    使用已校验时长，装不下进 deferred；先修被推迟则后继进 blocked
 ```
 
 不用 0-1 背包求最优：知识点之间有先修约束，不能只按价值密度挑；带先修约束的预算装包是 NP-hard，本期不做精确解。贪心 + 拓扑序的每一步都能说清「为什么排在这」，这比「最优但说不清」更符合产品目标。
@@ -367,7 +369,7 @@ src/lib/vectorCache.ts 片段向量缓存（IndexedDB，按 model+FNV 键）
 src/lib/embeddingClient.ts /api/llm/embeddings 客户端、LRU 50 条
 src/lib/hybridSearchClient.ts 检索适配层：BM25 + 向量 + RRF + 降级说明
 src/lib/embedLocal.ts  浏览器本地 bge-small-zh-v1.5 嵌入（Worker，失败降级）
-src/lib/pdf.ts         pdfjs-dist 抽文本；无文本层如实拒绝（不做 OCR）
+src/lib/pdf.ts         匿名浏览器文字层解析；登录后使用 documentParser.ts 服务端解析与扫描 OCR
 src/lib/image.ts       图片格式 / 压缩 / 体积 / 张数限制（纯逻辑）
 src/lib/speech.ts      Web Speech 可用性检测、转写拼接、错误翻译（纯逻辑）
 src/lib/tools.ts       5 个只读工具定义与实现（MCP 与 Agent 共用）

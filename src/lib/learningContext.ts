@@ -1,3 +1,4 @@
+import { ruleTimeEstimates, type LearningTimeResult } from "./learningTime";
 /** 登录学习上下文：身份、课程及判分依据均从服务端解析，模型不能提供掌握度。 */
 import { SUBJECTS, DEFAULT_SUBJECT_ID, type Subject } from "@/data/subjects";
 import type { Question } from "@/data/questions";
@@ -82,6 +83,8 @@ export function recomputeProgress(raw: unknown, course: LearningCourse): Subject
 }
 
 export interface LearningContext {
+  readonly timeEstimation?:LearningTimeResult;
+  readonly uploadNotice?:string;
   readonly course: LearningCourse;
   readonly progress: SubjectProgress;
   readonly revision: string | null;
@@ -112,13 +115,15 @@ export async function loadLearningContext(db: Db, userId: string, targetId?: str
 
 /** 工具参数不再暴露 mastery，学科固定为页面当前目标。公开 MCP 的模拟接口保持独立。 */
 export function learningAgentTools(): AgentToolSpec[] {
-  return TOOLS.map((tool) => {
+  const tools:AgentToolSpec[]=TOOLS.map((tool) => {
     const properties = { ...(tool.inputSchema.properties as Record<string, unknown> ?? {}) };
     delete properties.mastery;
     delete properties.subject;
     return { name: tool.name, description: `${tool.description} 使用当前账号、当前课程的服务端学习证据，不接受自报掌握度。`,
       parameters: { ...tool.inputSchema, properties, additionalProperties: false }, serverId: null };
   });
+  tools.push({name:"estimate_learning_time",description:"读取本轮经校验的知识点时长估算、依据和区间。估算已由前置 Agent 完成；此工具只读，不接受模型改写时长。可指定 kcIds 查路径中某几步的依据。",parameters:{type:"object",properties:{kcIds:{type:"array",items:{type:"string"},maxItems:20}},additionalProperties:false},serverId:null});
+  return tools;
 }
 
 export function callLearningTool(context: LearningContext, name: string, args: Record<string, unknown>, budgetMinutes = 90): string {
@@ -126,8 +131,15 @@ export function callLearningTool(context: LearningContext, name: string, args: R
   if (args.mastery !== undefined) throw new Error("掌握度由服务端作答证据计算，不能由模型提供");
   if (args.subject !== undefined && args.subject !== course.id) throw new Error("工具仅能读取当前学习目标");
   const provenance = { targetId: course.id, targetName: course.name, source: "server-validated-attempts", revision: context.revision,
-    inputHash: computeInputHash({ graph: course.graph, mastery: progress.mastery, budgetMinutes }) };
+    inputHash: computeInputHash({ graph: course.graph, mastery: progress.mastery, budgetMinutes,timeEstimates:context.timeEstimation?.estimates }) };
   if (name === "list_subjects") return callReadOnlyToolText(name, {});
+  if(name==="estimate_learning_time") {
+    const ids=args.kcIds;
+    if(ids!==undefined&&(!Array.isArray(ids)||ids.length>20||ids.some(id=>typeof id!=="string"||!course.graph.concepts.some(c=>c.id===id))))throw new Error("时长查询只能指定本课程知识点。");
+    const all=context.timeEstimation?.estimates??ruleTimeEstimates(course.graph,progress.mastery);
+    const estimates=Array.isArray(ids)?all.filter(e=>ids.includes(e.kcId)):all.slice(0,8);
+    return JSON.stringify({...provenance,source:context.timeEstimation?.source??"rules",model:context.timeEstimation?.model,fingerprint:context.timeEstimation?.fingerprint,estimates,notice:estimates.length<all.length?"按 kcIds 读取其他步骤的估算依据。":undefined});
+  }
   if (name === "get_learner_state") return JSON.stringify({ ...provenance,
     observedCount: progress.mastery.filter((m) => m.evidenceN > 0).length,
     unobservedCount: progress.mastery.filter((m) => m.evidenceN === 0).length,
@@ -141,7 +153,7 @@ export function callLearningTool(context: LearningContext, name: string, args: R
     if (typeof requested !== "number" || !Number.isFinite(requested) || requested < 5 || requested > 480) throw new Error("学习预算必须是 5–480 分钟");
     const targets = Array.isArray(args.targets) ? args.targets.filter((id): id is string => typeof id === "string") : undefined;
     if (targets?.some((id) => !course.graph.concepts.some((c) => c.id === id))) throw new Error("目标知识点不属于当前课程");
-    const input = { graph: course.graph, mastery: progress.mastery, budgetMinutes: requested, targets };
+    const input = { graph: course.graph, mastery: progress.mastery, budgetMinutes: requested, targets,timeEstimates:context.timeEstimation?.estimates };
     return JSON.stringify({ ...provenance, inputHash: computeInputHash(input), ...planPath(input),
       evidenceNote: "未观测的知识点按基础顺序探索，不代表学生薄弱。" });
   }
@@ -160,7 +172,7 @@ export function callLearningTool(context: LearningContext, name: string, args: R
     };
     const material = buildMaterialContext(pack, course.graph.concepts.filter((c) => hits.some((hit) => hit.kcId === c.id)), selection);
     // 优先保留原文；即使工具结果被截断，也不会只剩知识摘要而丢掉教材依据。
-    return JSON.stringify({ ...provenance, material: material.text, materialSources: material.citations.map((citation) => citation.label), uploads: context.uploads, hits });
+    return JSON.stringify({ ...provenance, material: material.text, materialSources: material.citations.map((citation) => citation.label), uploads: context.uploads, uploadNotice:context.uploadNotice, hits });
   }
   throw new Error(`未知工具：${name}`);
 }

@@ -143,7 +143,7 @@ describe("章节范围与预算", () => {
     expect(checkPrereqOrder(knowledgeGraph, result.steps, { mastered: new Set() })).toEqual([]);
   });
 
-  it("预算 90 时只排得下 6 步，与候选范围 15 是两回事", () => {
+  it("规则初估下预算 90 时排得下 9 步，与候选范围 15 是两回事", () => {
     const scope = chapterScope(knowledgeGraph, [CH5]);
     const result = planPath({
       graph: knowledgeGraph,
@@ -153,7 +153,7 @@ describe("章节范围与预算", () => {
     });
     // 候选范围仍是 15；预算内真正排出的步数由 planPath 决定
     expect(scope.scopeSize).toBe(15);
-    expect(result.steps).toHaveLength(6);
+    expect(result.steps).toHaveLength(9);
     expect(result.totalMinutes).toBeLessThanOrEqual(90);
   });
 });

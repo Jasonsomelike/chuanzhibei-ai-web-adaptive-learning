@@ -40,6 +40,7 @@ export function isSecretKind(value: string): value is SecretKind {
  * extraHeaders（可能含 Authorization）与任何 *ApiKey 都不在名单里。
  */
 export const SECRET_OPTION_KEYS = [
+  "contextWindowTokens", "responseReserveTokens", "retrievalMaxTokens",
   "embeddingBaseUrl",
   "embeddingModel",
   "embeddingStatus",

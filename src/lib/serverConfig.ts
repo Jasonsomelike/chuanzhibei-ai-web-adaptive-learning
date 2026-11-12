@@ -1,3 +1,4 @@
+import type { ContextBudgetConfig } from "./contextBudget";
 /**
  * 调用模式与账号级供应商配置。
  *
@@ -268,7 +269,7 @@ export async function fetchConfigs(signal?: AbortSignal): Promise<ConfigsResult>
   return { ok: true, configs: parseServerConfigs(body.config) };
 }
 
-export interface LlmConfigInput {
+export interface LlmConfigInput extends ContextBudgetConfig {
   readonly provider: "llm";
   readonly label?: string;
   readonly kind: ProviderKind;

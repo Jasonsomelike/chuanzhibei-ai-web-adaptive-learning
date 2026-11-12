@@ -1,3 +1,7 @@
+import { estimateLearningTime } from "@/lib/learningTimeServer";
+import { routeTeachingTask } from "@/lib/learningWorkflow";
+import { retrieveDocuments } from "@/lib/documentRetrieval";
+import { budgetUploadHits, contextBudget, estimateTokens } from "@/lib/contextBudget";
 /**
  * POST /api/agent —— Learning Supervisor + 专业化教学工作流 + SSE。
  *
@@ -552,6 +556,19 @@ export async function POST(request: Request): Promise<Response> {
     learningContext = await loadLearningContext(db, auth.user.id, learningContext.course.id,
       `${previous.session.snapshot.focusName} ${body.question}`, body.materialSourceIds);
   }
+  const documentIds=archive ? archive.question.content.documents.map(d=>d.id) : body.documentIds??[];
+  try {
+    const occupied=estimateTokens(body.question)+(previous.session?.turns.reduce((n,t)=>n+estimateTokens(t.question)+estimateTokens(t.answer),0)??0);
+    const retrieval=documentIds.length ? await retrieveDocuments(db,auth.user.id,learningContext.course.id,`${previous.session?.snapshot.focusName??""} ${body.question}`,documentIds,config.options,occupied) : budgetUploadHits(learningContext.uploadHits,config.options,occupied);
+    const uploadNotice="notice" in retrieval?String(retrieval.notice):undefined;
+    if(uploadNotice)notices.push({type:"notice",level:"info",message:uploadNotice});
+    learningContext={...learningContext,uploadNotice,uploadHits:retrieval.hits,uploads:retrieval.hits.map(({chunk},i)=>({kcId:`资料${i+1}`,docId:chunk.docId,title:chunk.title,text:chunk.text,...(chunk.pageFrom?{pageFrom:chunk.pageFrom}:{})}))};
+    const intent=routeTeachingTask(body,previous.session?.snapshot).intent;
+    if(intent==="review_path"||intent==="practice")learningContext={...learningContext,timeEstimation:await estimateLearningTime(db,auth.user.id,learningContext,config,request.signal)};
+  } catch {
+    notices.push({type:"notice",level:"warn",message:"附件检索或模型时长估算暂时不可用，本轮仅使用已确认资料与规则时长。"});
+    if(documentIds.length)learningContext={...learningContext,uploadHits:[],uploads:[]};
+  }
   const task = prepareTeachingTask(learningContext, body, previous.session);
   if (archive && !body.resetSession) {
     task.history = archive.turns;
@@ -625,13 +642,13 @@ export async function POST(request: Request): Promise<Response> {
         {
           messages: toUpstreamMessages(req.messages),
           stream: false,
-          maxTokens: MAX_AGENT_TOKENS,
+          maxTokens: Math.min(MAX_AGENT_TOKENS,contextBudget(config.options).response),
           jsonMode: false,
           ...(req.tools.length > 0
             ? { tools: toChatTools(req.tools), toolChoice: "auto" as const }
             : {}),
         },
-        config.options.thinking ?? "off",
+        contextBudget(config.options).thinking,
       );
 
       let response;

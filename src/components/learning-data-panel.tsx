@@ -14,6 +14,8 @@ import { useSubject } from "@/lib/subject";
 import { useLearner } from "@/lib/useLearner";
 import { chapterScope, readChapterSelection } from "@/lib/chapters";
 import { planPath, computeInputHash, ALGO_VERSION } from "@/lib/plan";
+import { useLearningTime } from "@/lib/useLearningTime";
+import { LearningTimeNote } from "@/components/learning-time-note";
 import { LearningEvidence } from "@/components/learning-evidence";
 import { TargetPicker } from "@/components/target-picker";
 
@@ -22,6 +24,7 @@ export function LearningDataPanel() {
   const { learner, ready: learnerReady, progress, synced } = useLearner(targetId, target?.graph);
   /** 与学习路径页的默认预算一致；路径页的临时预算调整不进设置。 */
   const budget = 60;
+  const timing=useLearningTime(targetId,target?.graph,progress);
 
   // 章节口径：与学习路径页共用同一份 localStorage 选择
   const [chapters, setChapters] = useState<readonly string[]>([]);
@@ -49,8 +52,9 @@ export function LearningDataPanel() {
       mastery: progress.mastery,
       budgetMinutes: budget,
       targets: chapterTargets,
+      timeEstimates:timing.estimates,
     });
-  }, [target, progress, chapterTargets]);
+  }, [target, progress, chapterTargets,timing.estimates]);
 
   const inputHash = useMemo(() => {
     if (!target?.graph || !progress) return null;
@@ -59,8 +63,9 @@ export function LearningDataPanel() {
       mastery: progress.mastery,
       budgetMinutes: budget,
       targets: chapterTargets,
+      timeEstimates:timing.estimates,
     });
-  }, [target, progress, chapterTargets]);
+  }, [target, progress, chapterTargets,timing.estimates]);
 
   if (!ready || !learnerReady || !learner || !progress || !target) {
     return (
@@ -87,7 +92,8 @@ export function LearningDataPanel() {
         <p role="alert" className="text-xs text-[var(--bad)]">{targetError}</p>
       ) : null}
 
-      <LearningEvidence graph={target.graph} progress={progress} budgetMinutes={budget} />
+      <LearningTimeNote timing={timing}/>
+      <LearningEvidence timeEstimates={timing.estimates} graph={target.graph} progress={progress} budgetMinutes={budget} />
 
       <div className="rounded-xl border border-[var(--line)] p-4" data-technical-details>
         <p className="text-sm font-medium">技术详情 · 可复现性</p>

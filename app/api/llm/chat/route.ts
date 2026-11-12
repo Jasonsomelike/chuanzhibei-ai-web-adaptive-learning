@@ -16,6 +16,7 @@
  */
 
 import type { Readable } from "node:stream";
+import { contextBudget } from "@/lib/contextBudget";
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -46,8 +47,8 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-/** 50 条 × 16000 字符的消息体在最坏情况下约 1.6MB。 */
-const MAX_CHAT_BODY_BYTES = 2 * 1024 * 1024;
+/** Transport safety ceiling, independent from the configured model's token window. */
+const MAX_CHAT_BODY_BYTES = 4 * 1024 * 1024;
 
 /** 流式对话可能持续几分钟；非流式（出题、核对）给两分钟足够。 */
 const STREAM_TIMEOUT_MS = 300_000;
@@ -220,11 +221,11 @@ export async function POST(request: Request): Promise<Response> {
       {
         messages: body.messages,
         temperature: body.temperature,
-        maxTokens: body.maxTokens,
+        maxTokens: body.purpose&&body.purpose!=="tutor"?body.maxTokens:Math.min(body.maxTokens??600,contextBudget(config.options).response),
         stream: body.stream,
         jsonMode: body.jsonMode,
       },
-      thinkingForPurpose(body.purpose, config.options.thinking),
+      thinkingForPurpose(body.purpose, contextBudget(config.options).thinking),
     ),
   );
 

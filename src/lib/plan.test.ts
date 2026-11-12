@@ -23,8 +23,8 @@ import { computeDepths } from "@/lib/graph";
  */
 // 2026-10-26：inputHash 改为覆盖图谱内容（concepts/edges），
 // 此字面量随之更新；pathHash 未变（ad7c…），因为排序逻辑没动。
-const GOLDEN_INPUT_HASH = "f9f9999230b4c06be74c235e4f7bedc39dcb7c4b947dea80f4dbb89539e61ecd";
-const GOLDEN_PATH_HASH = "ad7ccec537db36ee7b0070aca3f9f99006e92521e16ce2608def4df76f2b9e66";
+const GOLDEN_INPUT_HASH = "e2f69125db0ed63b0162cec22b085fc783ed079b40ce458455f5a9c9fef440b3";
+const GOLDEN_PATH_HASH = "fa4515aff133d1c6b36b535e7ffa7545027237d44edd63895e47a4ba07593a07";
 
 /** 构造一个确定性的掌握度快照：前 n 个知识点已掌握。 */
 function masterySnapshot(masteredCount: number): MasteryState[] {
@@ -164,7 +164,7 @@ describe("确定性：同一输入必须得到同一路径", () => {
 
     expect(randomSpy).not.toHaveBeenCalled();
     expect(nowSpy).not.toHaveBeenCalled();
-    expect(ALGO_VERSION).toBe("plan-v2");
+    expect(ALGO_VERSION).toBe("plan-v3");
   });
 });
 
@@ -197,9 +197,10 @@ describe("golden case：把当前输出固定住", () => {
   it("路径步骤数量与预算的对应关系稳定", () => {
     const r120 = planPath(baseInput({ budgetMinutes: 120 }));
     const r30 = planPath(baseInput({ budgetMinutes: 30 }));
-    // 30 分钟最多 2 步（每步 15 分钟）
-    expect(r30.steps.length).toBeLessThanOrEqual(2);
-    expect(r120.steps.length).toBeLessThanOrEqual(8);
+    expect(r30.steps).toHaveLength(3);
+    expect(r30.totalMinutes).toBeLessThanOrEqual(30);
+    expect(r120.totalMinutes).toBeLessThanOrEqual(120);
+    expect(r120.steps.length).toBeGreaterThan(r30.steps.length);
   });
 
   it("深度先验进入输入指纹，但同一预算下路径未必变（覆盖范围说明）", () => {
@@ -249,7 +250,7 @@ describe("先修闭包装包（回归）", () => {
       updateMastery(initialMastery("b", 1), true, 2 as Difficulty),
     ];
 
-    const result = planPath({ graph, mastery, budgetMinutes: 10 });
+    const result = planPath({ graph, mastery, budgetMinutes: 5 });
     expect(result.steps.map((s) => s.kcId)).toEqual([]);
     expect(result.deferred).toEqual(["a"]);
     expect(result.blocked).toEqual([{ kcId: "b", by: ["a"] }]);

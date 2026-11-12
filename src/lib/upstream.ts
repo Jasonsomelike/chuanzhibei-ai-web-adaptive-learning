@@ -1,3 +1,4 @@
+import { readContextBudget, type ContextBudgetConfig } from "./contextBudget";
 /**
  * 服务端代发上游请求的构造层：请求体、请求头、端点、脱敏、SSE 透传，
  * 以及从 user_secrets 读回 llm 配置（含密钥解密）。
@@ -415,7 +416,7 @@ export function isLlmConfigError(value: unknown): value is LlmConfigError {
   return value instanceof LlmConfigError;
 }
 
-export interface LlmOptions {
+export interface LlmOptions extends ContextBudgetConfig {
   readonly baseUrl: string;
   readonly model: string;
   /** 存在密文 payload 里：可能含 Authorization，因此不能放进 options_json。 */
@@ -495,6 +496,7 @@ function toLlmConfig(loaded: LoadedUserSecret): LlmConfig {
   return {
     api,
     options: {
+      ...readContextBudget(options),
       baseUrl,
       model,
       ...(payload.extraHeaders === undefined ? {} : { extraHeaders: payload.extraHeaders }),

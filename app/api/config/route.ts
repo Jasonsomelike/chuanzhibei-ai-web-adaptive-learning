@@ -1,3 +1,4 @@
+import { readContextBudget } from "@/lib/contextBudget";
 /**
  * 用户级供应商配置：GET 掩码回显 / PUT 加密保存 / DELETE 删除。
  *
@@ -351,6 +352,7 @@ function toSaveInput(body: ConfigPutBody, payload: SecretPayload): SaveUserSecre
         ...(body.thinking === undefined ? {} : { thinking: body.thinking }),
         ...(body.thinkingStatus === undefined ? {} : { thinkingStatus: body.thinkingStatus }),
         ...(body.verification === undefined ? {} : { verification: body.verification }),
+        ...readContextBudget(body),
       };
       return {
         kind: "llm",

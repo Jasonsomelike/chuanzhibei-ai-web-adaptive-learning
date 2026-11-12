@@ -1,10 +1,11 @@
+import type { TimeEstimate } from "./learningTime";
 import { computeDepths, type KnowledgeGraph } from "@/lib/graph";
 import { initialMastery, updateMasteryScaled } from "@/lib/mastery";
 import { planPath } from "@/lib/plan";
 import type { SubjectProgress } from "@/lib/learner";
 
 /** 从保留的证据重建最近一次作答前后版本，无需额外复制路径快照。 */
-export function learningReport(graph: KnowledgeGraph, progress: SubjectProgress, budgetMinutes: number) {
+export function learningReport(graph: KnowledgeGraph, progress: SubjectProgress, budgetMinutes: number,timeEstimates?:readonly TimeEstimate[]) {
   const active = progress.attempts.filter((a) => !a.retired && a.counted !== false && (a.weightScale ?? 1) > 0);
   const last = active.at(-1);
   if (!last) return null;
@@ -14,8 +15,8 @@ export function learningReport(graph: KnowledgeGraph, progress: SubjectProgress,
     const m = states.get(attempt.kcId);
     if (m) states.set(m.kcId, updateMasteryScaled(m, attempt.correct, attempt.difficulty, attempt.weightScale ?? 1));
   }
-  const before = planPath({ graph, mastery: [...states.values()], budgetMinutes });
-  const after = planPath({ graph, mastery: progress.mastery, budgetMinutes });
+  const before = planPath({ graph, mastery: [...states.values()], budgetMinutes,timeEstimates });
+  const after = planPath({ graph, mastery: progress.mastery, budgetMinutes,timeEstimates });
   const beforeIds = new Set(before.steps.map((step) => step.kcId));
   const afterIds = new Set(after.steps.map((step) => step.kcId));
   return { last, before, after,

@@ -14,6 +14,8 @@
 import { neon } from "@neondatabase/serverless";
 import { createConversationMemory } from "@/lib/conversationMemory";
 import { CONVERSATION_SCHEMA } from "@/lib/conversationSql";
+import { ARTIFACT_SCHEMA, createArtifactMemory } from "@/lib/learningArtifacts";
+import { DOCUMENT_PUBLISH_SQL } from "@/lib/documentSql";
 
 /** 一个可执行查询的最小接口，让内存实现与 Postgres 实现共用上层代码。 */
 export interface Db {
@@ -311,6 +313,7 @@ function createMemoryDb(): Db {
   const progress = new Map<string, Record<string, unknown>>();
   const learningSessions = new Map<string, Record<string, unknown>>();
   const conversationArchive = createConversationMemory(id => users.has(id));
+  const artifacts = createArtifactMemory();
   const directions = new Map<string, Record<string, unknown>>();
   /** key = `${direction_id}|${content_hash}`，对应 Postgres 的唯一约束。 */
   const directionItems = new Map<string, Record<string, unknown>>();
@@ -345,6 +348,17 @@ function createMemoryDb(): Db {
       const q = norm(text);
       const archiveResult = conversationArchive.run(text, params);
       if (archiveResult !== undefined) return archiveResult;
+      const artifactResult = artifacts.run(text, params);
+      if (artifactResult !== undefined) return artifactResult;
+      if (text === DOCUMENT_PUBLISH_SQL) {
+        const doc = JSON.parse(String(params[0])) as Record<string,unknown>;
+        const key = `${doc.user_id}|${doc.doc_id}`;
+        if (kbDocs.has(key)) return 0;
+        const chunks = JSON.parse(String(params[1])) as Record<string,unknown>[];
+        kbDocs.set(key,doc);
+        for (const chunk of chunks) kbChunks.set(`${chunk.user_id}|${chunk.chunk_id}`,chunk);
+        return chunks.length;
+      }
 
       if (q.startsWith("insert into learning_sessions")) {
         const [user_id, target_id, revision, data, base] = params;
@@ -724,6 +738,8 @@ function createMemoryDb(): Db {
       const q = norm(text);
       const archiveRows = conversationArchive.all(text, params);
       if (archiveRows !== undefined) return archiveRows as T[];
+      const artifactRows = artifacts.all(text, params);
+      if (artifactRows !== undefined) return artifactRows as T[];
 
       if (q.includes("from user_secrets")) {
         const rows = [...userSecrets.values()]
@@ -833,7 +849,9 @@ function createMemoryDb(): Db {
          * 按文档列片段（putKbDocument 用它找「本次没提交的旧片段」）。
          * 少了这一层过滤会返回该用户所有文档的片段，调用方会把别的文档也删掉。
          */
-        if (q.includes("doc_id =")) {
+        if (q.includes("doc_id = any($3::text[])")) {
+          rows=rows.filter(r=>(params[2] as string[]).includes(String(r.doc_id)));
+        } else if (q.includes("doc_id =")) {
           rows = rows.filter((r) => r.doc_id === params[1]);
         }
         if (q.includes("order by chunk_id")) {
@@ -930,6 +948,8 @@ function createMemoryDb(): Db {
       const q = norm(text);
       const archiveRows = conversationArchive.all(text, params);
       if (archiveRows !== undefined) return (archiveRows[0] ?? null) as T | null;
+      const artifactRows = artifacts.all(text, params);
+      if (artifactRows !== undefined) return (artifactRows[0] ?? null) as T | null;
 
       if (q.includes("from learning_sessions")) {
         return (learningSessions.get(`${params[0]}|${params[1]}`) ?? null) as T | null;
@@ -1074,6 +1094,7 @@ export const SCHEMA = [
     PRIMARY KEY (user_id, target_id)
   )`,
   ...CONVERSATION_SCHEMA,
+  ARTIFACT_SCHEMA,
   `CREATE TABLE IF NOT EXISTS directions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

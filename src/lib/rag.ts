@@ -119,6 +119,8 @@ export function buildIndex(docs: readonly KbDocument[]): Bm25Index {
 }
 
 export interface SearchOptions {
+  /** Chunk corpora can have tiny IDF even for a real shared topic. Zero scores are always excluded. */
+  readonly minScore?: number;
   /**
    * 标题加权倍数，默认 1。
    *
@@ -178,6 +180,7 @@ export function search(
   const rawBoost = opts.titleBoost ?? 1;
   const titleBoost = Number.isFinite(rawBoost) && rawBoost > 1 ? rawBoost : 1;
   const useTitleBoost = titleBoost > 1;
+  const minScore=typeof opts.minScore==="number"&&Number.isFinite(opts.minScore)&&opts.minScore>=0?opts.minScore:MIN_SCORE;
 
   const n = index.docs.length;
   const scores: number[] = new Array(n).fill(0);
@@ -210,7 +213,7 @@ export function search(
 
   const ranked = scores
     .map((score, i) => ({ i, score }))
-    .filter((x) => x.score >= MIN_SCORE)
+    .filter((x) => x.score > 0 && x.score >= minScore)
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.i - b.i));
 
   // 门控在截断之前看完整候选分布；没过门控就整体清空，不挑「最像」的几条。

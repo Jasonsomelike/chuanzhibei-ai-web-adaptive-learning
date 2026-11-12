@@ -1,3 +1,5 @@
+
+import { documentReference } from "./documentContracts";
 /** Archive content is user-owned text. Learning proofs are a separate server-only field. */
 import { z } from "zod";
 import { assessmentResult, workflowSnapshot } from "./learningWorkflowContracts";
@@ -61,6 +63,7 @@ export const archiveContent = z.strictObject({
   verificationError: nullableText.default(null), verificationSkipped: nullableText.default(null), checking: z.boolean().default(false),
   finishReason: short.nullable().default(null), images: z.number().int().min(0).max(IMAGE_MAX_COUNT).default(0),
   attachments: z.array(archiveImage).max(IMAGE_MAX_COUNT).default([]),
+  documents:z.array(documentReference).max(20).default([]),
   agentTools: z.array(toolTrace).max(200).default([]), agentNotices: z.array(agentNotice).max(100).default([]), agentDone: agentDone.nullable().default(null),
 }).superRefine((content, context) => {
   if (!validStrings(content)) context.addIssue({ code: "custom", message: "文字包含不受支持的字符" });

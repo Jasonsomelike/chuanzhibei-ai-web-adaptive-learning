@@ -17,6 +17,7 @@ function planWith(budgetMinutes: number) {
     mastery: [],
     budgetMinutes,
     targets: TARGETS,
+    timeEstimates:knowledgeGraph.concepts.map(c=>({kcId:c.id,learnMinutes:15,reviewMinutes:8,lowMinutes:5,highMinutes:20,confidence:"low",reason:"固定测试输入：验证阻塞与反事实汇总"})),
   });
 }
 

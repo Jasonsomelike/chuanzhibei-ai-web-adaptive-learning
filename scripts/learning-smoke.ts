@@ -85,6 +85,7 @@ try {
   check(progress.attempts.length === 1 && progress.attempts[0].selectedIndex === 0, "真实答题保存选项与历史");
   check(progress.mastery.some((m: { evidenceN: number }) => m.evidenceN === 1), "真实答题更新掌握度证据");
   await visit("/path?subject=data-structures&budget=30");
+  await visit("/settings?panel=learning-data");
   await page.getByText("学习证据与路径变化", { exact: false }).click();
   check((await page.locator("main").innerText()).includes("作答前路径"), "学习证据抽屉展示前后版本");
 
@@ -153,7 +154,7 @@ try {
     return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
   });
   check(await page.locator(".react-flow__node").count() > 0 && await page.locator(".react-flow__edge-path").count() > 0, "图谱先修连线已绘制，初始视野无基础节点裁切");
-  check(!await page.locator("[data-technical-details]").getAttribute("open"), "技术指纹默认收起");
+  check(await page.locator("[data-technical-details]").count()===0, "技术指纹移入设置，路径保持学习主界面简洁");
   check(await page.locator(".knowledge-sequence li button").count() === await page.locator("[data-flip-id]").count(), "图谱同屏清单展示实际步骤数");
   await page.locator("#path-step-editor > summary").click();
   const firstStep = page.locator("[data-flip-id]").first();
@@ -225,7 +226,7 @@ try {
     }
     if (width === 390) {
       check(await page.getByRole("link", { name: "设置中心", exact: true }).isVisible(), "手机可直接访问设置");
-      check(await page.locator(".mobile-learning-nav a").count() === 5, "手机五个主要学习入口完整可达");
+      check(await page.locator(".mobile-learning-nav a").count() === 6, "手机六个主要学习入口（含错题本）完整可达");
     }
   }
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -303,12 +304,14 @@ try {
     await page.getByRole("button", { name: "发送", exact: true }).click();
     await page.getByText("回归模型已读取学习证据", { exact: false }).waitFor();
     check(modelRequests.length > 0, "导师界面经真实 Agent 路由调用本机模型");
-    const messages = modelRequests[0].messages as { role: string; content: string }[];
+    const agentRequest=modelRequests.findLast(request=>Array.isArray(request.tools));
+    assert(agentRequest,"实际导师请求应携带冻结工具集；前置时长估算请求单独计数");
+    const messages = agentRequest.messages as { role: string; content: string }[];
     check(messages[0].content.includes("【语气：严格】"), "设置页语气进入真实模型请求");
     const toolContext = messages.filter((message) => message.role === "tool").map((message) => message.content).join("\n");
     check(toolContext.includes("server-validated-attempts") && /"observedCount":[1-9]/.test(toolContext), "Agent 首次调用已携带验证后的真实学习证据");
     check(toolContext.includes("回归讲义原文") && toolContext.includes("资料1") && toolContext.includes("栈顶"), "Agent 检索包含账号上传原文、教材与一致的引用编号");
-    check(!((modelRequests[0].tools as { function: { parameters: { properties: unknown } } }[]).some((tool) => JSON.stringify(tool.function.parameters.properties).includes('"mastery"'))), "Agent 工具不允许模型自报掌握度");
+    check(!((agentRequest.tools as { function: { parameters: { properties: unknown } } }[]).some((tool) => JSON.stringify(tool.function.parameters.properties).includes('"mastery"'))), "Agent 工具不允许模型自报掌握度");
     await page.locator("[data-teaching-task]").waitFor();
     check(await page.locator("[data-teaching-task]").last().getByText("任务完成", { exact: true }).isVisible(), "知识辅导工作流完成并显示教学卡");
     await page.getByText("教学任务与学习时间", { exact: true }).click();

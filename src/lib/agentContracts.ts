@@ -54,6 +54,7 @@ export const agentRequest = z.strictObject({
   tone: z.enum(["companion", "senior", "strict"]).optional(),
   helpLevel: z.enum(["hint", "steps", "explain"]).optional(),
   materialSourceIds: z.array(z.string().min(1).max(64)).max(20).optional(),
+  documentIds:z.array(z.string().uuid()).max(20).optional(),
   /** 用户本次可投入的学习时间，用于 plan_path 的预算；不是服务端的运行时限。 */
   budgetMinutes: z.number().int().min(5).max(480).optional(),
   intent: teachingIntent.optional(),

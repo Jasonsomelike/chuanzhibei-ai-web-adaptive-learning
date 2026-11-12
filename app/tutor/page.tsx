@@ -1,5 +1,9 @@
 "use client";
 
+import { uploadDocument } from "@/lib/documentClient";
+import type { DocumentReference } from "@/lib/documentContracts";
+import { estimateTokens, budgetUploadHits, contextBudget, readContextBudget } from "@/lib/contextBudget";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -8,8 +12,6 @@ import { appendAttachedImages } from "@/components/image-input";
 import { browserImageCodec, prepareImage, remainingImageSlots, IMAGE_MAX_COUNT } from "@/lib/image";
 import { detectUploadKind } from "@/components/knowledge-upload";
 import { MAX_FILE_BYTES } from "@/lib/knowledge";
-import { extractPdfText } from "@/lib/pdf";
-import { readFileBytes, readTextFile } from "@/lib/textFile";
 import { AppDialog } from "@/components/primitives/dialog";
 import { ConversationSidebar } from "@/components/conversation-sidebar";
 import { archiveContent, type ArchivedMessage } from "@/lib/conversationContracts";
@@ -229,6 +231,7 @@ interface Message {
   workflow: WorkflowSnapshot | null;
   assessment: AssessmentResult | null;
   attachments: AttachedImage[];
+  documents:DocumentReference[];
 }
 
 /**
@@ -276,6 +279,7 @@ function emptyMessage(id: string, role: Message["role"]): Message {
     workflow: null,
     assessment: null,
     attachments: [],
+    documents: [],
   };
 }
 
@@ -574,7 +578,7 @@ function parseAgentEvent(raw: unknown): AgentStreamEvent | null {
       workflow: workflowSnapshot.safeParse(record.workflow).success ? workflowSnapshot.parse(record.workflow) : undefined,
       materialContext: typeof record.materialContext === "string" ? record.materialContext : "",
       materialSources: Array.isArray(record.materialSources) ? record.materialSources.filter((source): source is string => typeof source === "string").slice(0, 100) : [],
-      uploads: Array.isArray(record.uploads) ? record.uploads.slice(0, 3).filter((hit): hit is UploadHit => {
+      uploads: Array.isArray(record.uploads) ? record.uploads.slice(0, 100).filter((hit): hit is UploadHit => {
         const row = asRecord(hit); const chunk = asRecord(row?.chunk);
         return typeof row?.score === "number" && Number.isFinite(row.score) && chunk !== null &&
           ["id", "docId", "directionId", "title", "section", "text"].every((key) => typeof chunk[key] === "string") && typeof chunk.index === "number";
@@ -696,19 +700,19 @@ export default function TutorPage() {
   const setError = (value: string | null) => { if (history.isCurrent()) setErrorState(value); };
   const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
   const [webOn, setWebOn] = useState(false);
-  /** 附件（📎）的结果提示：图片压缩问题 / 文档文字并入情况。 */
+  /** 附件（📎）的处理进度和结果。 */
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  const [documentDraft,setDocumentDraft]=useState<{scope:string;items:DocumentReference[]}|null>(null);
+  const [documentBusy,setDocumentBusy]=useState(false);
+  const documentScope=`${user?.id??"anonymous"}:${targetId}:${history.active?.id??"new"}`;
+  const currentDocumentScope=useRef(documentScope);currentDocumentScope.current=documentScope;
+  const pendingDocuments=documentDraft?.scope===documentScope?documentDraft.items:[];
   const attachInputRef = useRef<HTMLInputElement>(null);
   const attachIdRef = useRef(0);
 
-  /**
-   * 📎 附件：图片走压缩管线随消息发送（最多 3 张，含粘贴）；
-   * txt / md / pdf 抽出文字直接并入输入框（上限 2 万字，超出截断并说明）——
-   * 对话消息本身不支持文档附件，把文字摆进输入框是当下最诚实的做法；
-   * 更大的讲义 / 教材应传到课程资料库（我的课程 → 知识库），回答会检索引用。
-   */
+  /** Images accompany the question; documents are parsed and indexed once on the server. */
   const onAttachFiles = (files: FileList | null): void => {
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0 || documentBusy || busy) return;
     setAttachNotice(null);
     void (async () => {
       const notes: string[] = [];
@@ -749,31 +753,18 @@ export default function TutorPage() {
           continue;
         }
         try {
-          let text = "";
-          if (kind === "pdf") {
-            const parsed = await extractPdfText(await readFileBytes(file));
-            if (!parsed.ok) {
-              notes.push(`${file.name}：${parsed.reason}`);
-              continue;
-            }
-            text = parsed.blocks.map((block) => block.text).join("\n\n");
-          } else {
-            text = (await readTextFile(file)).text;
-          }
-          if (text.trim() === "") {
-            notes.push(`${file.name}：没有可读取的文字`);
-            continue;
-          }
-          const capped =
-            text.length > 20000
-              ? `${text.slice(0, 20000)}\n…（文件过长已截断，全文 ${text.length} 字）`
-              : text;
-          setInput((prev) => `${prev}${prev.trim() !== "" && !prev.endsWith("\n") ? "\n" : ""}【附件：${file.name}】\n${capped}\n【附件结束】\n`);
-          notes.push(`已把「${file.name}」的文字并入输入`);
+          if(!user) {notes.push("请先登录，再上传可跨设备复用的文档附件。");continue;}
+          if(pendingDocuments.length>=20) {notes.push("每个会话最多关联 20 份附件。");continue;}
+          const scope=documentScope;
+          setDocumentBusy(true);
+          const doc=await uploadDocument(file,targetId,message=>{if(currentDocumentScope.current===scope)setAttachNotice(message);});
+          if(currentDocumentScope.current===scope)setDocumentDraft(old=>({scope,items:[...(old?.scope===scope?old.items:[]).filter(d=>d.id!==doc.id),doc].slice(-20)}));
+          notes.push(`「${doc.name}」已就绪${doc.ocrPages?`，含 ${doc.ocrPages} 页 OCR`:""}，回答时会按需引用`);
         } catch (err) {
           notes.push(`${file.name}：读取失败（${err instanceof Error ? err.message : String(err)}）`);
         }
       }
+      setDocumentBusy(false);
       setAttachNotice(notes.length > 0 ? notes.join("；") : null);
     })();
   };
@@ -1182,6 +1173,7 @@ export default function TutorPage() {
     readonly images: readonly string[];
     readonly signal: AbortSignal;
     readonly conversationId?: string;
+    readonly documentIds?:readonly string[];
   }): Promise<AgentStreamOutcome> => {
     const { assistantId, question, images: imageUrls, signal } = input;
     let response: Response;
@@ -1202,6 +1194,7 @@ export default function TutorPage() {
           ...(teachingBudget === null ? {} : { budgetMinutes: teachingBudget }),
           resetSession: resetTeachingSession,
           materialSourceIds: materialSelection.sourceIds.slice(0, 20),
+          documentIds:input.documentIds,
         }),
         signal,
       });
@@ -1445,11 +1438,12 @@ export default function TutorPage() {
   ): Promise<void> => {
     const typed = text.trim();
     const sendingImages = options?.images ?? images;
+    const sendingDocuments=[...new Map([...messages.flatMap(m=>m.documents),...pendingDocuments].map(d=>[d.id,d])).values()].slice(-20);
     /*
      * 只贴图不写字也必须能发送；两者都空才早退。
      * 给模型的 question 用带图指令，保证 /api/agent 的 question 非空（契约 min 1）。
      */
-    if ((typed.length === 0 && sendingImages.length === 0) || busy || !index || !target || history.loading || !history.writable) return;
+    if ((typed.length === 0 && sendingImages.length === 0) || documentBusy || busy || !index || !target || history.loading || !history.writable) return;
 
     const imageUrls = sendingImages.map((image) => image.dataUrl);
     const hadImages = imageUrls.length > 0;
@@ -1499,7 +1493,7 @@ export default function TutorPage() {
     const assistantId = nextId();
     let conversationId: string;
     try {
-      conversationId = await history.begin(archiveContent.parse({ text:typed,attachments:sendingImages,images:sendingImages.length }),userId,assistantId);
+      conversationId = await history.begin(archiveContent.parse({ text:typed,attachments:sendingImages,documents:sendingDocuments,images:sendingImages.length }),userId,assistantId);
     } catch (failure) {
       setError(`问题尚未发送：${messageOf(failure)}`); setBusy(false); return;
     }
@@ -1512,6 +1506,7 @@ export default function TutorPage() {
     }));
     setInput("");
     setImages([]);
+    setDocumentDraft(null);
     setListening(false);
     setSpeechError(null);
     setSpeechInterim("");
@@ -1526,12 +1521,19 @@ export default function TutorPage() {
      */
     let uploads: UploadHit[] = [];
     let uploadNotice: string | null = null;
+    let documentNotice:string|null=null;
     let vector: VectorRetrievalStatus = { mode: "none", reason: null };
     try {
       const retrieval = await retrieveUploadsForQuestion(searchQuery, kbChunks, controller.signal);
       uploads = [...retrieval.hits];
+      const occupiedTokens=estimateTokens(typed)+messages.slice(-8).reduce((n,m)=>n+estimateTokens(m.text.slice(0,1500)),0);
+      if(user && sendingDocuments.length){
+        const response=await fetch("/api/documents/retrieve",{method:"POST",headers:{"content-type":"application/json"},signal:controller.signal,body:JSON.stringify({targetId,query:searchQuery,documentIds:sendingDocuments.map(d=>d.id),providerMode:activeProvider?.mode??"local",occupiedTokens,...readContextBudget(activeProvider??{})})});
+        const result=await response.json();if(!response.ok)throw new Error(result.error?.message??"附件检索失败");
+        uploads=result.hits;documentNotice=result.notice??null;
+      }else uploads=budgetUploadHits(uploads,activeProvider??{},occupiedTokens).hits;
       vector = retrieval.status;
-      uploadNotice = retrieval.status.reason;
+      uploadNotice = documentNotice??retrieval.status.reason;
     } catch (err) {
       if (controller.signal.aborted) {
         setBusy(false);
@@ -1572,6 +1574,7 @@ export default function TutorPage() {
         images: imageUrls,
         signal: controller.signal,
         conversationId:user ? conversationId : undefined,
+        documentIds:sendingDocuments.map(d=>d.id),
       });
       if (!outcome.ok) await history.stop(assistantId).catch(() => undefined);
       else await history.serverFinished(assistantId).catch(failure => setError(messageOf(failure)));
@@ -1818,10 +1821,10 @@ export default function TutorPage() {
           system: tutorSystemPrompt({ tone: loadTutorTone() }) + "\n" + tutoringPolicy(helpLevel),
           user: userContent,
           history: resetTeachingSession ? [] : messages.filter(message => message.text.trim() && !message.streaming).slice(-8).map(message => ({ role:message.role,content:message.text })),
-          maxTokens: TUTOR_MAX_TOKENS,
+          maxTokens: Math.min(TUTOR_MAX_TOKENS,contextBudget(activeProvider).response),
           temperature: 0.3,
           timeoutMs: TUTOR_TIMEOUT_MS,
-          thinking: effectiveThinking(activeProvider),
+          thinking: contextBudget({...activeProvider,thinking:effectiveThinking(activeProvider)}).thinking,
           signal: controller.signal,
         },
         {
@@ -2355,6 +2358,7 @@ export default function TutorPage() {
                 <div className="text-sm leading-[1.75]">
                   {message.text !== "" ? <MiniMarkdown text={message.text} /> : "（图片提问）"}
                 </div>
+                {message.documents.length ? <ul className="mt-2 flex flex-wrap gap-2" aria-label="本轮文档附件">{message.documents.map(doc=><li key={doc.id} className="max-w-full break-all rounded border border-[var(--line)] px-3 py-2 text-xs">📄 {doc.name} · {doc.pageCount?`${doc.pageCount} 页`:"文本资料"}{doc.ocrPages?` · OCR ${doc.ocrPages} 页`:""}<span className="block text-[var(--ink-soft)]">已保存至课程资料 · 回答可核对引用</span></li>)}</ul>:null}
                 {message.images > 0 ? (
                   <div className="tutor-saved-images">{message.attachments.map(attachment => <button type="button" key={attachment.id} onClick={() => setPreviewImage({ ...attachment,owner:ownerId })} aria-label={`查看问题图片：${attachment.name}`}><img src={attachment.dataUrl} alt={attachment.name} width={attachment.width} height={attachment.height} /></button>)}<p>{message.attachments.length ? `附 ${message.attachments.length} 张问题图片 · 已随会话保存` : `附 ${message.images} 张图片，旧记录未保存原图`}</p></div>
                 ) : null}
@@ -2645,6 +2649,8 @@ export default function TutorPage() {
           {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}>{label}</button>)}
         </div></fieldset>
         {/* 状态行：附件 / 听写 / 联网 / 语音错误，只在有内容时出现 */}
+        {pendingDocuments.length?<ul className="mb-2 flex flex-wrap gap-2" aria-label="待发送文档">{pendingDocuments.map(doc=><li key={doc.id} className="max-w-full break-all rounded border border-[var(--line)] px-2 py-1 text-xs">📄 {doc.name}<button type="button" aria-label={`移除附件 ${doc.name}`} className="ml-2" onClick={()=>setDocumentDraft({scope:documentScope,items:pendingDocuments.filter(d=>d.id!==doc.id)})}>×</button></li>)}</ul>:null}
+        {documentBusy?<p role="status" className="mb-2 text-xs">文档处理中，完成后即可提问。重复文件会复用索引。</p>:null}
         {attachNotice !== null ? (
           <p className="mb-1.5 text-xs text-[var(--ink-soft)]">{attachNotice}</p>
         ) : null}
@@ -2714,8 +2720,9 @@ export default function TutorPage() {
           <button
             type="button"
             onClick={() => attachInputRef.current?.click()}
-            disabled={busy}
-            title="上传图片或文档：图片随消息发送；txt / md / pdf 会把文字并入输入框"
+            disabled={busy || documentBusy || authLoading || history.loading}
+            aria-label="上传图片或文档"
+            title="图片随消息发送；PDF、TXT 和 Markdown 在服务端解析后检索引用"
             className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line-strong)] text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
           >
             <Paperclip size={17} />
@@ -2763,7 +2770,7 @@ export default function TutorPage() {
             ) : (
               <button
                 type="submit"
-                disabled={history.loading || !history.writable || input.trim().length === 0 && images.length === 0}
+                disabled={documentBusy || history.loading || !history.writable || input.trim().length === 0 && images.length === 0}
                 className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
               >
                 发送

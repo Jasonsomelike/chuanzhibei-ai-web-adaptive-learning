@@ -99,6 +99,9 @@ export type ConfigProvider = (typeof CONFIG_PROVIDERS)[number];
  * 因此它们永远不进入 llmChat。
  */
 export const llmConfigPut = z.strictObject({
+  contextWindowTokens:z.number().int().min(4096).max(2_000_000).optional(),
+  responseReserveTokens:z.number().int().min(256).max(128000).optional(),
+  retrievalMaxTokens:z.number().int().min(256).max(128000).optional(),
   provider: z.literal("llm"),
   label: z.string().trim().min(1).max(60).optional(),
   kind: z.enum(PROVIDER_KINDS),
@@ -165,10 +168,10 @@ export type TtsConfigPut = z.infer<typeof ttsConfigPut>;
 // ── POST /api/llm/chat ────────────────────────────────────────────
 
 /**
- * 单条消息的正文上限。导师提示词含教材摘录（≤2400 字）与上传资料（3×500 字），
- * 16k 足够宽裕；再大说明调用方把整份文档塞进来了。
+ * 单条消息的传输安全上限。模型上下文另按供应商 token 预算处理；
+ * 较长窗口可携带更多检索片段，文档原文通过服务端索引复用。
  */
-export const CHAT_MESSAGE_MAX_CHARS = 16_000;
+export const CHAT_MESSAGE_MAX_CHARS = 256_000;
 
 /** 一条消息最多 4 个 parts；图片再多也装不下，别把请求体撑爆。 */
 export const CHAT_MESSAGE_MAX_PARTS = 4;

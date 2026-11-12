@@ -318,8 +318,8 @@ describe("llmChat", () => {
     expect(accepts(llmChat, { messages: [{ role: "user", content: "" }] })).toBe(false);
     expect(accepts(llmChat, { messages: [{ role: "tool", content: "x" }] })).toBe(false);
     expect(accepts(llmChat, { messages: [{ role: "developer", content: "x" }] })).toBe(false);
-    expect(accepts(llmChat, { messages: [{ role: "user", content: "a".repeat(16_001) }] })).toBe(false);
-    expect(accepts(llmChat, { messages: [{ role: "user", content: "a".repeat(16_000) }] })).toBe(true);
+    expect(accepts(llmChat, { messages: [{ role: "user", content: "a".repeat(256_001) }] })).toBe(false);
+    expect(accepts(llmChat, { messages: [{ role: "user", content: "a".repeat(256_000) }] })).toBe(true);
   });
 
   it("content 允许「文本 + 图片」parts，最多 4 段", () => {

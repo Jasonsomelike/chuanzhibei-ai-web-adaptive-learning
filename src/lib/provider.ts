@@ -1,3 +1,4 @@
+import { readContextBudget, type ContextBudgetConfig } from "./contextBudget";
 /**
  * 用户自配模型供应商。
  *
@@ -47,7 +48,7 @@ export type ProviderMode = "local" | "server";
 /** 向量化能力状态。unsupported 表示服务端明确回了 404/503，而不是网络抖动。 */
 export type EmbeddingStatus = "unknown" | "available" | "unsupported";
 
-export interface ProviderConfig {
+export interface ProviderConfig extends ContextBudgetConfig {
   /** 显示名，用户自己起。 */
   readonly label: string;
   readonly kind: ProviderKind;
@@ -208,6 +209,7 @@ export function loadProvider(): ProviderConfig | null {
       // server 模式即使旧存档里残留过 key，也不读回内存
       apiKey: mode === "server" ? "" : storedKey,
       model: (p.model ?? "").trim(),
+      ...readContextBudget(p as unknown as Record<string,unknown>),
       extraHeaders: p.extraHeaders,
       /*
        * 三项必须显式读出并补默认值。只靠 saveProvider 写入是不够的：
@@ -410,6 +412,7 @@ export async function hydrateProviderFromServer(signal?: AbortSignal): Promise<P
     baseUrl: entry.baseUrl.replace(/\/+$/, ""),
     apiKey: "",
     model: entry.model,
+    ...readContextBudget(entry.options),
     thinking: thinkingOf(entry.options["thinking"]),
     thinkingStatus: thinkingStatusOf(entry.options["thinkingStatus"]),
     verification: entry.options["verification"] !== false,

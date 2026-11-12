@@ -61,6 +61,7 @@ export function TeachingTaskCard({ workflow, query, onFollowup, onAssessed, init
       <p className="mt-1">{assessment.explanation}</p>
       <p className="mt-2 text-xs text-[var(--ink-soft)]">{assessment.counted ? "本题已计入学习证据" : "本题未重复增加证据"}；当前知识点有 {assessment.evidenceN} 条证据。{assessment.evidenceStatus === "insufficient" ? "证据仍不足，继续独立练习后再判断掌握情况。" : assessment.evidenceStatus === "needs_review" ? "现有证据提示需要复习。" : assessment.evidenceStatus === "likely_mastered" ? "现有证据支持可能掌握。" : "尚未形成有效测评证据。"}</p>
     </div> : null}
+    {current.timeEstimation?<p className="mt-3 text-xs text-[var(--ink-soft)]">{current.timeEstimation.source==="llm"?`用时由 ${current.timeEstimation.model} 估算，已通过结构校验。`:"当前用时为规则初估。"}{current.timeEstimation.notice}</p>:null}
     {current.plan ? <div className="mt-4 border-t border-[var(--line)] pt-3" data-workflow-plan>
       <p className="font-medium">{assessment ? "作答后的学习计划" : "本次学习计划"} · {current.budgetMinutes} 分钟预算</p>
       <ol className="mt-2 space-y-2">{current.plan.steps.slice(0, 4).map((step, index) => <li key={step.kcId} className="flex justify-between gap-3"><Link href={`/path${query}&kc=${encodeURIComponent(step.kcId)}&budget=${current.budgetMinutes}${current.planTargets?.length ? `&targets=${encodeURIComponent(current.planTargets.join(","))}` : ""}`} className="text-[var(--accent)] underline">{index + 1}. {step.name}</Link><span className="shrink-0 text-xs text-[var(--ink-soft)]">{step.estMinutes} 分钟</span></li>)}</ol>

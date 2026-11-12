@@ -237,6 +237,7 @@ export function toConfigInput(
         thinking: thinkingOf(text("thinking")),
         thinkingStatus,
         verification: text("verification") !== "false",
+        ...Object.fromEntries(["contextWindowTokens","responseReserveTokens","retrievalMaxTokens"].filter(k=>text(k).trim()!=="").map(k=>[k,Number(text(k))])),
         ...(embeddingBaseUrl !== undefined ? { embeddingBaseUrl } : {}),
         ...(embeddingModel !== undefined ? { embeddingModel } : {}),
         ...(embeddingApiKey !== undefined ? { embeddingApiKey } : {}),

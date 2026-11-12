@@ -99,7 +99,7 @@ try {
       check(fits, `${route}在${width}px无页面横向溢出`);
       if (width === 390) {
         check(await page.getByRole("link", { name: "设置中心", exact: true }).isVisible(), "手机可直接进入设置");
-        check(await page.locator(".mobile-learning-nav a").count() === 5, "手机具有五个完整导航入口");
+        check(await page.locator(".mobile-learning-nav a").count() === 6, "手机具有六个完整导航入口（含错题本）");
         await page.screenshot({ path: join(output, `${route.startsWith("/path") ? "path" : route.startsWith("/settings") ? "settings" : "home"}-390.png`) });
       }
     }
@@ -237,7 +237,7 @@ try {
           return rect.left < -1 || rect.right > innerWidth + 1;
         }).map(control => control.getAttribute("aria-label") ?? control.textContent?.slice(0,25) ?? control.tagName));
         check(clipped.length === 0, `${layout} ${name} ${width}px主要输入与导航完整可达 ${clipped.join(",")}`);
-        if (width < 769) check(await page.locator(".shell-wordmark").isVisible() && await page.locator(".mobile-learning-nav a").count() === 5, `${layout} ${name} ${width}px保留品牌与五个手机入口`);
+        if (width < 769) check(await page.locator(".shell-wordmark").isVisible() && await page.locator(".mobile-learning-nav a").count() === 6, `${layout} ${name} ${width}px保留品牌与六个手机入口`);
         if ((layout === "atlas" && [1487,390].includes(width)) || (name === "path" && [1487,390].includes(width))) await page.screenshot({path:join(output,`final-${name}-${layout}-${width}.png`)});
         if (name === "path" && width === 390) {
           await page.getByRole("group", {name:"图谱与学习清单",exact:true}).getByRole("button", {name:"学习清单",exact:true}).click();
