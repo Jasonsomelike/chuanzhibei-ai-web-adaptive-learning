@@ -46,7 +46,7 @@
 | **预算反事实** | 同一份掌握度换一个预算，直接看到哪些步骤被推迟、哪些因先修阻塞，阻塞点列出阻塞者 |
 | **可改写** | 每步可上移 / 下移 / 移除，即时重算先修违规；章节多选只收窄候选，跨章先修点自动带上 |
 | **证据链** | 导师回答先检索再生成，引用逐个逐字核对；联网结果与方向无关时被过滤，教材没有就说没有 |
-| **账号级知识库** | 每个自定义方向一份知识库，支持 Markdown / TXT / 带文本层 PDF；登录后同步到账号，换设备能拿回 |
+| **账号级知识库** | 每个自定义方向一份知识库，支持 Markdown / TXT / PDF（登录后扫描件走服务端 OCR）；登录后同步到账号，换设备能拿回 |
 | **密钥不进浏览器** | server 模式下模型 / 搜索 / 语音密钥 AES-256-GCM 加密存库，任何响应只回 `••••` + 末 4 位 |
 | **方向市场与 MCP** | 方向可公开、可复制；`POST /api/mcp` 暴露 5 tools / 18 resources / 2 prompts，全部只读 |
 | **教学工作流** | Supervisor 协调学情路径、知识辅导与练习测评；保留有界工具循环及 MCP，教学卡支持作答、重规划与检查点恢复 |
@@ -206,7 +206,7 @@ src/lib/image.ts         图片格式 / 压缩 / 体积 / 张数限制（纯逻�
 src/lib/speech.ts        Web Speech 可用性检测、转写拼接、错误翻译
 src/lib/kbServer.ts      知识库行映射、文档级 CAS、片段分页
 src/lib/secretCrypto.ts  AES-256-GCM、AAD、kid、掩码（服务端）
-app/                     10 个页面 + 18 个 API 路由
+app/                     11 个页面 + 25 个 API 路由
 scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / db-migrate / 三个 E2E
 ```
 
@@ -220,8 +220,8 @@ scripts/                 validate-kg / eval-rag / eval-tutor / check-secrets / d
 - **Agent 只在服务端模式可用**：local（BYOK）模式没有工具循环，Anthropic 协议不发 tools；单次 run 默认上限 8 步 / 180s，工具全部只读。
 - **MCP 只支持 Streamable HTTP**，不支持 stdio 与旧版 HTTP+SSE；本轮没有用真实第三方 MCP 服务器做端到端验证。
 - **pgvector DDL 与浏览器本地嵌入的端到端仍未验证**：迁移脚本、建表与相似查询的单元测试已通过，但 `CREATE EXTENSION` / `<=>` 未在真实 Neon 分支执行；首次使用要下载约 22.8MB 模型权重，模型缺失时退回 BM25。
-- **没有 OCR、没有服务端 ASR**；图片只走 OpenAI 兼容协议且不落库；Lighthouse / Core Web Vitals、真实 TTS、PDF worker 浏览器侧仍未验证。
-- **知识库尚非协同编辑系统**：版本争用与待上传修改保护已修复；文档及片段仍非整单事务，删除没有跨设备 tombstone。
+- **没有服务端 ASR**；图片只走 OpenAI 兼容协议且不落库；服务端 OCR 已用于登录后的文档解析（见 2026-11-12 更新），但 Lighthouse / Core Web Vitals、真实 TTS 凭据、PDF worker 浏览器侧仍未验证。
+- **知识库尚非协同编辑系统**：文档与片段的写入是整单事务，删除会写 tombstone、并发删除优先于在途上传；但仍无多人协同与操作级合并。
 - **没有全站分布式限流**；搜索、语音、方向与进度已有解析前请求体限制，公网部署仍需配置流量保护。
 
 逐条边界与缺口（含原因、修法与「未验证」清单）见 [已知限制](docs/limits.md)；评分点逐项对照与「不可宣称」的措辞见 [评分对照](docs/scoring.md)。

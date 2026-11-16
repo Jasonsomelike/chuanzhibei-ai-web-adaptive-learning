@@ -3,18 +3,30 @@
 import { Children, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AppDialog } from "@/components/primitives/dialog";
 import { Icon } from "@/components/icons";
+import { useClientSnapshot } from "@/lib/useClientSnapshot";
 
 /** Materials are on demand on every screen, leaving the conversation as the main stage. */
 export function TutorRail({ children, course, sourceRequest = 0, sourcePanel }: { children: ReactNode; course: string; sourceRequest?: number; sourcePanel?: ReactNode }) {
   const [tab, setTab] = useState(0);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("materials") === "1") setOpen(true);
-  }, []);
+  // ?materials=1 深链只在客户端可读；override 为 null 时跟随深链值
+  const openFromUrl = useClientSnapshot(
+    () => new URLSearchParams(window.location.search).get("materials") === "1",
+    false,
+  );
+  const [openOverride, setOpen] = useState<boolean | null>(null);
+  const open = openOverride ?? openFromUrl;
+  // 引用跳转请求是计数器：变化时在渲染期同步 Tab 与展开状态（React 的 adjust-on-change 模式）
+  const [seenRequest, setSeenRequest] = useState(sourceRequest);
+  if (sourceRequest !== seenRequest) {
+    setSeenRequest(sourceRequest);
+    if (sourceRequest) {
+      setTab(0);
+      setOpen(true);
+    }
+  }
+  // 聚焦是 DOM 操作，留在 effect；状态调整已移到渲染期
   useEffect(() => {
     if (!sourceRequest) return;
-    setTab(0);
-    setOpen(true);
     const timer = window.setTimeout(() => document.querySelector<HTMLElement>("[data-citation-source]")?.focus(), 50);
     return () => window.clearTimeout(timer);
   }, [sourceRequest]);

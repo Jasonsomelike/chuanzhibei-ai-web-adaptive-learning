@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useMounted } from "@/lib/useClientSnapshot";
 import { SUBJECTS, DEFAULT_SUBJECT_ID, getSubject } from "@/data/subjects";
 import type { KnowledgeGraph } from "@/lib/graph";
 import {
@@ -176,7 +177,13 @@ export function useSubject(): UseTargetResult {
     return () => pending.current?.abort();
   }, []);
 
-  useEffect(() => {
+  /*
+   * 初始目标只在挂载后确定（URL > localStorage > 默认学科，见文件头注释）。
+   * 内置学科在渲染期直接应用；自定义方向的拉取有副作用，留在 effect 里由 wanted 驱动。
+   */
+  const mounted = useMounted();
+  const [wanted, setWanted] = useState<string | null>(null);
+  if (mounted && wanted === null) {
     const params = new URLSearchParams(window.location.search);
     const fromUrl = params.get("direction") ?? params.get("subject");
 
@@ -187,20 +194,26 @@ export function useSubject(): UseTargetResult {
       saved = null;
     }
 
-    const wanted = fromUrl ?? saved;
-
-    if (!wanted || isBuiltin(wanted)) {
-      const id = isBuiltin(wanted ?? "") ? (wanted as string) : DEFAULT_SUBJECT_ID;
+    const initial = fromUrl ?? saved;
+    setWanted(initial ?? "");
+    if (!initial || isBuiltin(initial)) {
+      const id = isBuiltin(initial ?? "") ? (initial as string) : DEFAULT_SUBJECT_ID;
       applyBuiltin(id);
       persist(id);
       setReady(true);
-      return;
     }
+  }
 
-    // 图谱到达前不展示默认学科，避免读取或作答到另一学科的进度。
-    void loadDirection(wanted);
-    return () => pending.current?.abort();
-  }, [applyBuiltin, loadDirection, persist]);
+  // 图谱到达前不展示默认学科，避免读取或作答到另一学科的进度。
+  // 拉取推迟到宏任务：loadDirection 的同步前缀会 setState，直接在 effect 里调用触发级联渲染告警
+  useEffect(() => {
+    if (wanted === null || wanted === "" || isBuiltin(wanted)) return;
+    const timer = window.setTimeout(() => void loadDirection(wanted), 0);
+    return () => {
+      window.clearTimeout(timer);
+      pending.current?.abort();
+    };
+  }, [wanted, loadDirection]);
 
   return { target, targetId, setTarget, setTargetId, ready, loadingTarget, targetError };
 }

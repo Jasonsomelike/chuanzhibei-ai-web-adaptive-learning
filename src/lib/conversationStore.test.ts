@@ -29,7 +29,19 @@ describe.each(["memory", "postgres"] as const)("完整会话存档 · %s", backe
       const pg = postgres;
       db = { run: async (sql, params = []) => (await pg.query(sql, params)).affectedRows ?? 0,
         all: async <T>(sql: string, params: unknown[] = []) => (await pg.query<T>(sql, params)).rows,
-        one: async <T>(sql: string, params: unknown[] = []) => (await pg.query<T>(sql, params)).rows[0] ?? null };
+        one: async <T>(sql: string, params: unknown[] = []) => (await pg.query<T>(sql, params)).rows[0] ?? null,
+        tx: async (statements) => {
+          await pg.query("BEGIN");
+          try {
+            const counts: number[] = [];
+            for (const s of statements) counts.push((await pg.query(s.sql, s.params ?? [])).affectedRows ?? 0);
+            await pg.query("COMMIT");
+            return counts;
+          } catch (err) {
+            await pg.query("ROLLBACK");
+            throw err;
+          }
+        } };
     } else { __setDbBackendForTests("memory"); __resetMemoryDbForTests(); db = await getDb(); }
     for (const id of ["alice", "bob"]) await db.run(insertUser, [id, `${id}@test.local`, "hash", id, "2026-11-10T00:00:00.000Z"]);
   });

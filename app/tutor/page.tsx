@@ -963,10 +963,12 @@ export default function TutorPage() {
     });
     abortRef.current?.abort();
     speechRef.current?.abort();
-    setBusy(false);
+    // 用原始 setter 而不是 setBusy/setError 包装：这里是「切目标就重置」，
+    // 不需要 isCurrent 守卫；包装函数每次渲染都变，会让本 effect 的依赖永远凑不齐。
+    setBusyState(false);
     setIndex(buildIndex(docs));
     setSourceFocus(null);
-    setError(null);
+    setErrorState(null);
     setImages([]);
     setImageRetry(null);
     setVectorStatus(null);
@@ -2360,6 +2362,7 @@ export default function TutorPage() {
                 </div>
                 {message.documents.length ? <ul className="mt-2 flex flex-wrap gap-2" aria-label="本轮文档附件">{message.documents.map(doc=><li key={doc.id} className="max-w-full break-all rounded border border-[var(--line)] px-3 py-2 text-xs">📄 {doc.name} · {doc.pageCount?`${doc.pageCount} 页`:"文本资料"}{doc.ocrPages?` · OCR ${doc.ocrPages} 页`:""}<span className="block text-[var(--ink-soft)]">已保存至课程资料 · 回答可核对引用</span></li>)}</ul>:null}
                 {message.images > 0 ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- 用户上传的 data: URL，next/image 无法优化
                   <div className="tutor-saved-images">{message.attachments.map(attachment => <button type="button" key={attachment.id} onClick={() => setPreviewImage({ ...attachment,owner:ownerId })} aria-label={`查看问题图片：${attachment.name}`}><img src={attachment.dataUrl} alt={attachment.name} width={attachment.width} height={attachment.height} /></button>)}<p>{message.attachments.length ? `附 ${message.attachments.length} 张问题图片 · 已随会话保存` : `附 ${message.images} 张图片，旧记录未保存原图`}</p></div>
                 ) : null}
               </Card>
@@ -2786,7 +2789,10 @@ export default function TutorPage() {
         </div>
       </main>
       <AppDialog open={!!previewImage && previewImage.owner === ownerId} onOpenChange={open => { if (!open) setPreviewImage(null); }} title={previewImage?.name ?? "问题图片"} description="本轮提问保存的图片。">
-        {previewImage && previewImage.owner === ownerId ? <img src={previewImage.dataUrl} alt={previewImage.name} width={previewImage.width} height={previewImage.height} className="mx-auto max-h-[65dvh] w-auto max-w-full object-contain" /> : null}
+        {previewImage && previewImage.owner === ownerId ? (
+          // eslint-disable-next-line @next/next/no-img-element -- data: URL 原图预览，next/image 无法优化
+          <img src={previewImage.dataUrl} alt={previewImage.name} width={previewImage.width} height={previewImage.height} className="mx-auto max-h-[65dvh] w-auto max-w-full object-contain" />
+        ) : null}
       </AppDialog>
       <AppDialog open={legacyOpen} onOpenChange={setLegacyOpen} title="旧版教学记录" description="旧版只保存最近四轮短文本和最后一个任务；更早的问答、引用原文及图片未被保存。新会话会完整存档。">
         {resumableTask ? <div><div className="space-y-5">{resumableTask.turns.map((turn,index) => <div key={index}><p className="text-sm font-medium whitespace-pre-wrap">{turn.question}</p><p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap text-[var(--ink-soft)]">{turn.answer}</p></div>)}</div><TeachingTaskCard key={`legacy-${ownerId}-${resumableTask.workflow.runId}`} workflow={resumableTask.workflow} query={targetQuery(target)} initialAssessment={resumableTask.assessment} disabled={busy} onFollowup={(intent,question) => { prepareFollowup(intent,question); setLegacyOpen(false); }} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /></div> : <p className="text-sm text-[var(--ink-soft)]">当前课程没有可恢复的旧版教学任务。</p>}

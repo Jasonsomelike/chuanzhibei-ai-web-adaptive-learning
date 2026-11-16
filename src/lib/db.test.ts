@@ -948,6 +948,11 @@ function fakeDb(run: (sql: string) => Promise<number>): Db {
     async one<T>() {
       return null as T | null;
     },
+    async tx(statements) {
+      const counts: number[] = [];
+      for (const stmt of statements) counts.push(await run(stmt.sql));
+      return counts;
+    },
   };
 }
 
@@ -1012,6 +1017,38 @@ describe("ensureSchema 与 pgvector", () => {
   });
 });
 
+// ── 内存事务 ─────────────────────────────────────────────────────
+
+describe("内存 tx", () => {
+  const INSERT_USER =
+    "INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES ($1, $2, $3, $4, $5)";
+  const userParams = (id: string) => [id, `${id}@test.local`, "hash", "用户", "2026-10-26T00:00:00.000Z"];
+
+  it("全部成功时返回每条语句的受影响行数", async () => {
+    const db = await getDb();
+    const counts = await db.tx([
+      { sql: INSERT_USER, params: userParams("tx1") },
+      { sql: INSERT_USER, params: userParams("tx2") },
+    ]);
+    expect(counts).toEqual([1, 1]);
+    expect(await db.one("SELECT * FROM users WHERE id = $1", ["tx1"])).not.toBeNull();
+    expect(await db.one("SELECT * FROM users WHERE id = $1", ["tx2"])).not.toBeNull();
+  });
+
+  it("中途失败整体回滚，不留半批", async () => {
+    const db = await getDb();
+    await expect(
+      db.tx([
+        { sql: INSERT_USER, params: userParams("tx3") },
+        // 重复 email：内存实现与 Postgres 的 23505 对齐，抛错
+        { sql: INSERT_USER, params: ["tx4", "tx3@test.local", "hash", "用户", "2026-10-26T00:00:00.000Z"] },
+      ]),
+    ).rejects.toThrow();
+    expect(await db.one("SELECT * FROM users WHERE id = $1", ["tx3"])).toBeNull();
+    expect(await db.one("SELECT * FROM users WHERE id = $1", ["tx4"])).toBeNull();
+  });
+});
+
 // ── 迁移文件与迁移执行器 ─────────────────────────────────────────
 
 const MIGRATION_FILE = "0001_capability.sql";
@@ -1022,11 +1059,12 @@ const migrationSql = readFileSync(
 const learningSessionMigration = readFileSync(new URL("../../db/migrations/0002_learning_sessions.sql", import.meta.url), "utf8");
 const artifactMigration = readFileSync(new URL("../../db/migrations/0004_learning_artifacts.sql", import.meta.url), "utf8");
 const conversationMigration = readFileSync(new URL("../../db/migrations/0003_tutor_conversations.sql", import.meta.url), "utf8");
+const tombstoneMigration = readFileSync(new URL("../../db/migrations/0005_kb_tombstones.sql", import.meta.url), "utf8");
 
 const normalizeSql = (sql: string): string => sql.replace(/\s+/g, " ").trim().toLowerCase();
 
 describe(`${MIGRATION_FILE}`, () => {
-  const statements = splitSqlStatements(`${migrationSql}\n${learningSessionMigration}\n${conversationMigration}\n${artifactMigration}`);
+  const statements = splitSqlStatements(`${migrationSql}\n${learningSessionMigration}\n${conversationMigration}\n${artifactMigration}\n${tombstoneMigration}`);
 
   it("逐条覆盖 SCHEMA，且 CREATE EXTENSION 是单独的第一条", () => {
     const normalized = statements.map(normalizeSql);

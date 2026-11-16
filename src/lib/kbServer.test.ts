@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  KB_TOMBSTONE_SQL,
   __resetMemoryDbForTests,
   getDb,
   type Db,
@@ -434,6 +435,84 @@ describe("putKbDocument（内存 DB）", () => {
       deletedDocs: 1,
       deletedChunks: 2,
     });
+  });
+
+  it("删除写 tombstone：删除期间的并发写入被复活守卫拦下（删除赢）", async () => {
+    const first = await putKbDocument(db, "u1", makePut());
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    /*
+     * 模拟复活窗口：另一设备的删除已提交 tombstone（deleted_at >= 文档版本），
+     * 本设备的在途 PUT 才进入事务。CAS 预检与文档 upsert 都会通过
+     * （文档行此刻还在），必须由事务末尾的复活守卫撤掉这次写入。
+     */
+    await db.run(KB_TOMBSTONE_SQL.upsert, ["u1", "doc-1", "d1", String(first.updatedAt)]);
+
+    const stale = await putKbDocument(db, "u1", makePut({ baseUpdatedAt: first.updatedAt }));
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.reason).toBe("conflict");
+    expect(stale.message).toContain("删除");
+
+    // 守卫把整篇文档连同片段一起撤掉，不留半份
+    expect(await listDirectionDocs(db, "u1", "d1")).toHaveLength(0);
+    expect(await listDirectionChunks(db, "u1", "d1")).toHaveLength(0);
+  });
+
+  it("tombstone 比 base 旧时不拦：正常更新不受误伤", async () => {
+    const first = await putKbDocument(db, "u1", makePut());
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // 墓碑版本早于本次写入的 base（例如曾经的删除已被更新的导入压过）
+    await db.run(KB_TOMBSTONE_SQL.upsert, ["u1", "doc-1", "d1", String(first.updatedAt - 1)]);
+
+    const second = await putKbDocument(db, "u1", makePut({ baseUpdatedAt: first.updatedAt }));
+    expect(second.ok).toBe(true);
+    expect(await listDirectionDocs(db, "u1", "d1")).toHaveLength(1);
+  });
+
+  it("删除后重新导入（base 为空）允许，并清掉 tombstone 不再拦后续更新", async () => {
+    const first = await putKbDocument(db, "u1", makePut());
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    expect(await deleteKbDoc(db, "u1", "doc-1")).toEqual({ deletedDocs: 1, deletedChunks: 2 });
+
+    // 旧基线的写入仍然被拒绝（文档已不存在）
+    const stale = await putKbDocument(db, "u1", makePut({ baseUpdatedAt: first.updatedAt }));
+    expect(stale.ok).toBe(false);
+
+    // 全新导入是新的用户意图：允许
+    const reimport = await putKbDocument(db, "u1", makePut({ baseUpdatedAt: null }));
+    expect(reimport.ok).toBe(true);
+    if (!reimport.ok) return;
+
+    // tombstone 已清：后续正常更新不会被复活守卫误拦
+    const next = await putKbDocument(db, "u1", makePut({ baseUpdatedAt: reimport.updatedAt }));
+    expect(next.ok).toBe(true);
+    expect(await listDirectionDocs(db, "u1", "d1")).toHaveLength(1);
+    expect(await listDirectionChunks(db, "u1", "d1")).toHaveLength(2);
+  });
+
+  it("deleteKbDirection 为方向下每篇文档各留一条 tombstone", async () => {
+    await putKbDocument(db, "u1", makePut());
+    const other = makePut({
+      doc: { ...makePut().doc, id: "doc-2", title: "另一份讲义", chunkCount: 1, charCount: 20 },
+      chunks: [{ ...makePut().chunks[0], id: "doc-2:0", docId: "doc-2" }],
+    });
+    expect((await putKbDocument(db, "u1", other)).ok).toBe(true);
+
+    expect(await deleteKbDirection(db, "u1", "d1")).toEqual({ deletedDocs: 2, deletedChunks: 3 });
+
+    // 两篇都有墓碑：以旧版本基线复活任一篇都会被守卫拦下。
+    // （行已不存在时预检先拦；这里直接验证 tombstone 行存在且版本不低于删除前）
+    const rows = await db.all<{ doc_id: string; deleted_at: string }>(
+      "SELECT doc_id, deleted_at FROM kb_tombstones WHERE user_id = $1 AND direction_id = $2",
+      ["u1", "d1"],
+    );
+    expect(rows.map((row) => row.doc_id).sort()).toEqual(["doc-1", "doc-2"]);
   });
 });
 

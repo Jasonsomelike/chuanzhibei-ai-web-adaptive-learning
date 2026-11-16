@@ -34,6 +34,7 @@ import { CHAPTERS_STORAGE_KEY, chapterScope, chaptersOf, readChapterSelection, t
 import { summarizeCounterfactual } from "@/lib/planDiff";
 import { readManualPath, writeManualPath } from "@/lib/manualPath";
 import { readPathView, writePathView } from "@/lib/pathView";
+import { useMounted } from "@/lib/useClientSnapshot";
 
 /**
  * 路径页的四个能力，对应评分表里的「交互模式创新」：
@@ -139,20 +140,22 @@ export default function PathPage() {
   const chapters =
     chapterSelection.targetId === targetId ? chapterSelection.names : EMPTY_CHAPTERS;
 
-  // 切目标时重新读取该目标的章节选择；图谱里已不存在的章名直接丢弃
-  useEffect(() => {
-    if (!graph || !target) return;
+  // 切目标时重新读取该目标的章节选择；图谱里已不存在的章名直接丢弃。
+  // 渲染期 adjust-on-change：graph/target 只在客户端挂载后才出现，SSR 期间不读 window。
+  const [chapterSync, setChapterSync] = useState<{ readonly graph: NonNullable<typeof graph>; readonly targetId: string } | null>(null);
+  if (graph && target && (chapterSync === null || chapterSync.graph !== graph || chapterSync.targetId !== targetId)) {
+    setChapterSync({ graph, targetId });
     const params = new URLSearchParams(window.location.search);
     const requested = (params.get("targets") ?? "").split(",").filter(id => graph.concepts.some(c => c.id === id)).slice(0, 200);
     setWorkflowTargets(requested.length ? { targetId, ids: requested } : null);
     if (target.kind === "direction") {
       setChapterSelection({ targetId, names: [] });
-      return;
+    } else {
+      const known = new Set(chaptersOf(graph).map((c) => c.name));
+      const names = readChapterSelection(targetId).filter((name) => known.has(name));
+      setChapterSelection({ targetId, names });
     }
-    const known = new Set(chaptersOf(graph).map((c) => c.name));
-    const names = readChapterSelection(targetId).filter((name) => known.has(name));
-    setChapterSelection({ targetId, names });
-  }, [graph, target, targetId]);
+  }
 
   const updateChapters = useCallback(
     (names: readonly string[]) => {
@@ -188,16 +191,21 @@ export default function PathPage() {
    * applyManualOrder 自动丢弃、新装进来的点追加末尾，顺序仍然可解释。
    * 「恢复算法排序」会同时清掉存档（见 resetManual），否则刷新后旧顺序会自己回来。
    */
-  useEffect(() => {
+  const mounted = useMounted();
+  const [manualSync, setManualSync] = useState<string | null>(null);
+  if (mounted && manualSync !== targetId) {
+    setManualSync(targetId);
     setManualEdit(readManualPath(targetId));
-  }, [targetId]);
+  }
 
   /*
-   * 定位参数只在挂载时读一次：用 window.location.search 而不是 useSearchParams，
+   * 定位参数只在挂载后读一次：用 window.location.search 而不是 useSearchParams，
    * 与 useSubject 同口径，避免 Next 把页面推进 Suspense 边界。
+   * 渲染期 adjust-on-change：graph 只在客户端挂载后才出现，SSR 期间不读 window。
    */
-  useEffect(() => {
-    if (!graph) return;
+  const [viewSync, setViewSync] = useState<{ readonly graph: NonNullable<typeof graph>; readonly targetId: string } | null>(null);
+  if (graph && (viewSync === null || viewSync.graph !== graph || viewSync.targetId !== targetId)) {
+    setViewSync({ graph, targetId });
     const params = new URLSearchParams(window.location.search);
     const saved = readPathView(targetId);
     const fromUrl = Number(params.get("budget"));
@@ -209,7 +217,7 @@ export default function PathPage() {
       setWorkflowTargets(targets.length ? { targetId, ids: targets } : null);
     }
     setViewLoadedFor(targetId);
-  }, [graph, targetId]);
+  }
   useEffect(() => {
     if (viewLoadedFor !== targetId) return;
     writePathView(targetId, { budget, kcId: highlightKc, targets: workflowTargets?.targetId === targetId ? workflowTargets.ids : [] });
@@ -218,10 +226,13 @@ export default function PathPage() {
   /*
    * 对照预算只跟目标走：换章节时保留它，
    * 才能比较「同一对照预算下，章节范围变化让路径怎么变」。
+   * （渲染期 adjust-on-change）
    */
-  useEffect(() => {
+  const [compareFor, setCompareFor] = useState(targetId);
+  if (compareFor !== targetId) {
+    setCompareFor(targetId);
     setCompareBudget(null);
-  }, [targetId]);
+  }
 
   const plan: PlanResult | null = useMemo(() => {
     if (!progress || !graph) return null;

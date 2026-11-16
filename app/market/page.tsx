@@ -60,9 +60,13 @@ export default function MarketPage() {
     }
   }, []);
 
+  // 首次拉取推迟到宏任务：load 的同步前缀会 setState，直接在 effect 里调用触发级联渲染告警
   useEffect(() => {
-    void load("");
-    return () => request.current?.abort();
+    const timer = window.setTimeout(() => void load(""), 0);
+    return () => {
+      window.clearTimeout(timer);
+      request.current?.abort();
+    };
   }, [load]);
 
   const visible = subject

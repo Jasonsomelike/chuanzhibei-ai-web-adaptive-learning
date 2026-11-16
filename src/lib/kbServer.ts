@@ -2,14 +2,18 @@
  * 服务端知识库：行映射、上传校验、文档级 LWW 写入与向量分页。
  *
  * 与浏览器侧的 kbStore.ts 共用同一套行校验规则；这里不碰 IndexedDB，
- * 只通过 db.ts 的 Db 接口读写 kb_docs / kb_chunks。
+ * 只通过 db.ts 的 Db 接口读写 kb_docs / kb_chunks / kb_tombstones。
  *
- * 并发策略是「文档级 LWW + 前置 CAS」：客户端提交 baseUpdatedAt，
- * 与库中版本不一致就整单拒绝，先于任何写入返回，避免半份文档落库。
+ * 并发策略是「文档级 LWW + 前置 CAS + 整单事务 + 删除标记」：
+ * 客户端提交 baseUpdatedAt，与库中版本不一致就整单拒绝；
+ * 文档与片段的写入在同一个事务里，任一失败全部回滚，不留半份文档；
+ * 删除写 kb_tombstones，PUT 事务末尾的复活守卫让并发的删除永远赢，
+ * 已删除的文档不会被旧设备的在途上传复活。
  * 片段不做独立版本号：它们属于文档，随文档一起被替换。
  */
 
-import type { Db } from "@/lib/db";
+import type { Db, DbStatement } from "@/lib/db";
+import { KB_TOMBSTONE_SQL } from "@/lib/db";
 import type { KbChunkInput, KbDocInput, KbPut } from "@/lib/apiContracts";
 import { MAX_EMBEDDING_DIM } from "@/lib/apiContracts";
 import type { UploadChunk, UploadDoc, UploadKind } from "@/lib/knowledge";
@@ -409,10 +413,11 @@ function chunkParams(row: KbChunkRow): unknown[] {
 /**
  * 写入一份文档及其全部片段。
  *
- * 顺序固定：CAS 检查 → upsert doc → upsert chunks → 删除本次列表外的旧片段。
+ * 整单事务：CAS 预检（咨询性）→ tx[文档 upsert（条件 CAS）→ 全新导入清 tombstone
+ * → 片段 upsert → 删除本次列表外的旧片段 → 复活守卫]。
  * 向量不再在 PUT 里生成或补齐；512 维本地向量走 POST /api/kb/vectors。
- * CAS 在任何写操作之前，因此 409 时不会留下任何行；片段替换是「先 upsert 再删」，
- * 中途失败最多留下多余的旧片段，不会出现文档存在而片段全丢。
+ * 事务内任一语句失败全部回滚，不会出现「文档新、片段旧」的混合态；
+ * 复活守卫让并发删除（tombstone.deleted_at >= base）撤掉本次写入并返回 409。
  */
 export async function putKbDocument(
   db: Db,
@@ -472,31 +477,13 @@ export async function putKbDocument(
   };
 
   const docRow = docToRow(userId, doc, updatedAt);
-  const claimed = await db.run(
-    `INSERT INTO kb_docs (${DOC_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     ON CONFLICT (user_id, doc_id) DO UPDATE SET ${DOC_UPDATE}
-     WHERE kb_docs.updated_at = $14 AND $14 IS NOT NULL`,
-    [...docParams(docRow), existingRow?.updated_at ?? null],
-  );
-  if (claimed === 0) return { ok: false, reason: "conflict", message: "文档已在另一设备更新，本地修改已保留，请刷新后重试。" };
-
   const inputChunks = body.chunks.map(toUploadChunk);
   const chunks = inputChunks;
 
-  for (const chunk of chunks) {
-    const row = chunkToRow(userId, chunk, updatedAt);
-    await db.run(
-      `INSERT INTO kb_chunks (${CHUNK_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       ON CONFLICT (user_id, chunk_id) DO UPDATE SET ${CHUNK_UPDATE}`,
-      chunkParams(row),
-    );
-  }
-
   /*
-   * 删除本次列表外的旧片段：先 SELECT id 再逐个 DELETE。
+   * 找「本次没提交的旧片段」。这个 SELECT 在事务外，是咨询性的——
+   * 事务里真正决定成败的是文档 upsert 的 CAS 与末尾的复活守卫。
    * 不用一条 `DELETE ... WHERE chunk_id <> ALL`，因为内存实现只认固定删除形状；
-   * 参数顺序固定为 (user_id, chunk_id)，与 db.ts 的分支一一对应。
-   *
    * 必须在 JS 里再按 doc_id 过滤：内存实现只按 direction_id 过滤，
    * 同一方向的其它文档也会被返回；直接按 keep 删除会误删别的文档的片段。
    */
@@ -505,15 +492,67 @@ export async function putKbDocument(
     "SELECT chunk_id, doc_id FROM kb_chunks WHERE user_id = $1 AND doc_id = $2 ORDER BY chunk_id",
     [userId, doc.id],
   );
-  let deletedChunks = 0;
-  for (const row of existingIds) {
-    if (row.doc_id !== doc.id) continue;
-    if (keep.has(row.chunk_id)) continue;
-    deletedChunks += await db.run(
-      "DELETE FROM kb_chunks WHERE user_id = $1 AND chunk_id = $2",
-      [userId, row.chunk_id],
-    );
+  const staleIds = existingIds
+    .filter((row) => row.doc_id === doc.id && !keep.has(row.chunk_id))
+    .map((row) => row.chunk_id);
+
+  /*
+   * 整单事务。语句顺序固定：文档 upsert → （全新导入）清 tombstone → 片段 upsert
+   * → 删旧片段 → 复活守卫。复活守卫必须最后：它撤掉的是本事务刚写入的行，
+   * 片段随 kb_docs 的外键级联一起撤。
+   */
+  const statements: DbStatement[] = [
+    {
+      sql: `INSERT INTO kb_docs (${DOC_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       ON CONFLICT (user_id, doc_id) DO UPDATE SET ${DOC_UPDATE}
+       WHERE kb_docs.updated_at = $14 AND $14 IS NOT NULL`,
+      params: [...docParams(docRow), existingRow?.updated_at ?? null],
+    },
+  ];
+  if (body.baseUpdatedAt === null) {
+    // 全新导入是新的用户意图，压过旧 tombstone；有版本基的写入由复活守卫裁决
+    statements.push({ sql: KB_TOMBSTONE_SQL.deleteById, params: [userId, doc.id] });
   }
+  for (const chunk of chunks) {
+    const row = chunkToRow(userId, chunk, updatedAt);
+    statements.push({
+      sql: `INSERT INTO kb_chunks (${CHUNK_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT (user_id, chunk_id) DO UPDATE SET ${CHUNK_UPDATE}`,
+      params: chunkParams(row),
+    });
+  }
+  const staleFrom = statements.length;
+  for (const chunkId of staleIds) {
+    statements.push({
+      sql: "DELETE FROM kb_chunks WHERE user_id = $1 AND chunk_id = $2",
+      params: [userId, chunkId],
+    });
+  }
+  statements.push({
+    sql: KB_TOMBSTONE_SQL.undoIfTombstoned,
+    params: [
+      userId,
+      doc.id,
+      String(updatedAt),
+      body.baseUpdatedAt === null ? null : String(body.baseUpdatedAt),
+    ],
+  });
+
+  const counts = await db.tx(statements);
+  if (counts[0] === 0) {
+    return { ok: false, reason: "conflict", message: "文档已在另一设备更新，本地修改已保留，请刷新后重试。" };
+  }
+  const undone = counts[counts.length - 1] ?? 0;
+  if (undone > 0) {
+    return {
+      ok: false,
+      reason: "conflict",
+      message: "文档已被其它设备删除（删除优先），本地内容未覆盖服务端；请刷新后重试。",
+    };
+  }
+  const deletedChunks = counts
+    .slice(staleFrom, staleFrom + staleIds.length)
+    .reduce((sum, count) => sum + count, 0);
 
   return {
     ok: true,
@@ -632,37 +671,65 @@ export async function listDirectionVectors(
   };
 }
 
-/** 删除一篇文档及其片段，返回真实删除数。 */
+/**
+ * 删除一篇文档及其片段，返回真实删除数。
+ *
+ * 整单事务：先删片段再删文档（Postgres 的外键级联会先删片段，
+ * 反过来就永远数不到片段数），最后写 tombstone——版本压过被删文档的
+ * updated_at，让并发的在途上传被复活守卫拦下（删除赢）。
+ */
 export async function deleteKbDoc(
   db: Db,
   userId: string,
   docId: string,
 ): Promise<{ deletedDocs: number; deletedChunks: number }> {
-  // 先删片段再删文档：Postgres 的外键级联会先删片段，反过来就永远数不到片段数
-  const deletedChunks = await db.run(
-    "DELETE FROM kb_chunks WHERE user_id = $1 AND doc_id = $2",
+  const existing = await db.one<KbDocRow>(
+    "SELECT * FROM kb_docs WHERE user_id = $1 AND doc_id = $2",
     [userId, docId],
   );
-  const deletedDocs = await db.run("DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2", [
-    userId,
-    docId,
-  ]);
+  const statements: DbStatement[] = [
+    { sql: "DELETE FROM kb_chunks WHERE user_id = $1 AND doc_id = $2", params: [userId, docId] },
+    { sql: "DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2", params: [userId, docId] },
+  ];
+  if (existing !== null) {
+    const deletedAt = String(Math.max(Date.now(), rowUpdatedAt(existing) + 1));
+    statements.push({
+      sql: KB_TOMBSTONE_SQL.upsert,
+      params: [userId, docId, existing.direction_id, deletedAt],
+    });
+  }
+  const [deletedChunks = 0, deletedDocs = 0] = await db.tx(statements);
   return { deletedDocs, deletedChunks };
 }
 
-/** 删除一个方向下的全部文档与片段，返回真实删除数。 */
+/**
+ * 删除一个方向下的全部文档与片段，返回真实删除数。
+ * 与 deleteKbDoc 同事务同 tombstone 语义：方向下每篇文档各留一条删除标记。
+ */
 export async function deleteKbDirection(
   db: Db,
   userId: string,
   directionId: string,
 ): Promise<{ deletedDocs: number; deletedChunks: number }> {
-  const deletedChunks = await db.run(
-    "DELETE FROM kb_chunks WHERE user_id = $1 AND direction_id = $2",
+  const docs = await db.all<KbDocRow>(
+    "SELECT * FROM kb_docs WHERE user_id = $1 AND direction_id = $2",
     [userId, directionId],
   );
-  const deletedDocs = await db.run(
-    "DELETE FROM kb_docs WHERE user_id = $1 AND direction_id = $2",
-    [userId, directionId],
-  );
+  const now = Date.now();
+  const statements: DbStatement[] = [
+    {
+      sql: "DELETE FROM kb_chunks WHERE user_id = $1 AND direction_id = $2",
+      params: [userId, directionId],
+    },
+    {
+      sql: "DELETE FROM kb_docs WHERE user_id = $1 AND direction_id = $2",
+      params: [userId, directionId],
+    },
+    ...docs.map((row) => ({
+      sql: KB_TOMBSTONE_SQL.upsert,
+      params: [userId, row.doc_id, directionId, String(Math.max(now, rowUpdatedAt(row) + 1))],
+    })),
+  ];
+  const [deletedChunks = 0, deletedDocs = 0] = await db.tx(statements);
   return { deletedDocs, deletedChunks };
 }

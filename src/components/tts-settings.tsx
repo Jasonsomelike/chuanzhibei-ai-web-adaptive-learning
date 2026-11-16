@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useClientSnapshot, useMounted } from "@/lib/useClientSnapshot";
 import {
   DangerButton,
   FormGrid,
@@ -126,18 +127,16 @@ export function TtsSettings({
   readonly mode: CallMode;
   readonly loggedIn: boolean;
 }) {
-  const [config, setConfig] = useState<TtsConfig>(DEFAULT_TTS_CONFIG);
-  const [ready, setReady] = useState(false);
+  // localStorage 只能在挂载后读（useClientSnapshot：SSR/hydration 用默认值，之后换成存储值）；
+  // 用户编辑进 edited 覆盖层，避免改动被存储快照冲掉
+  const stored = useClientSnapshot(loadTtsConfig, DEFAULT_TTS_CONFIG);
+  const [edited, setEdited] = useState<TtsConfig | null>(null);
+  const config = edited ?? stored;
+  const ready = useMounted();
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [showKey, setShowKey] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
-
-  // localStorage 只能在挂载后读，否则服务端渲染与首次客户端渲染不一致
-  useEffect(() => {
-    setConfig(loadTtsConfig());
-    setReady(true);
-  }, []);
 
   useEffect(() => {
     const refresh = () => setVoices(listBrowserVoices());
@@ -150,7 +149,7 @@ export function TtsSettings({
 
   function update(patch: Partial<TtsConfig>) {
     const next: TtsConfig = { ...config, ...patch };
-    setConfig(next);
+    setEdited(next);
     saveTtsConfig(next);
     setNotice(null);
   }
@@ -204,7 +203,7 @@ export function TtsSettings({
 
   function clearAll() {
     clearTtsConfig();
-    setConfig({ ...DEFAULT_TTS_CONFIG });
+    setEdited({ ...DEFAULT_TTS_CONFIG });
     setPlaying(false);
     setNotice({
       tone: "good",

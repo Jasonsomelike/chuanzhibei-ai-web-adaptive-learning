@@ -23,6 +23,7 @@ import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import { useStaggerIn } from "@/components/motion";
 import { KnowledgeBasePanel, type KbCounts } from "@/components/knowledge-base-panel";
 import { useAuth } from "@/lib/useAuth";
+import { useClientSnapshot } from "@/lib/useClientSnapshot";
 import { useDirectionDraft } from "@/lib/useDirectionDraft";
 import {
   ensureAllItems,
@@ -72,14 +73,28 @@ function DirectionsWorkspace() {
   const [publishNow, setPublishNow] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  /*
+   * 深链只在客户端可读（useClientSnapshot）：#custom-courses 决定初始分区，
+   * ?create=1 在登录态就绪后展开创建面板，?kb=open 展开第一个方向的知识库。
+   */
+  const deepLink = useClientSnapshot(
+    () => ({
+      hash: window.location.hash === "#custom-courses",
+      create: new URLSearchParams(window.location.search).get("create") === "1",
+      kbOpen: new URLSearchParams(window.location.search).get("kb") === "open",
+    }),
+    { hash: false, create: false, kbOpen: false },
+  );
   /** 顶部两个页签：课程目录与自定义方向分视图展示，不再同页堆叠。 */
-  const [section, setSection] = useState<"catalog" | "custom">("catalog");
-  useEffect(() => {
-    if (window.location.hash === "#custom-courses") setSection("custom");
-  }, []);
-  useEffect(() => {
-    if (user && new URLSearchParams(window.location.search).get("create") === "1") { setSection("custom"); setCreateOpen(true); }
-  }, [user]);
+  const [sectionOverride, setSection] = useState<"catalog" | "custom" | null>(null);
+  const section = sectionOverride ?? (deepLink.hash ? "custom" : "catalog");
+  // 登录态就绪后消费 ?create=1（渲染期 adjust-on-change，只消费一次）
+  const [createHandled, setCreateHandled] = useState(false);
+  if (user && deepLink.create && !createHandled) {
+    setCreateHandled(true);
+    setSection("custom");
+    setCreateOpen(true);
+  }
   const switchSection = (next: "catalog" | "custom") => {
     setSection(next);
     requestAnimationFrame(() => window.scrollTo({ top: 0 }));
@@ -101,19 +116,19 @@ function DirectionsWorkspace() {
    */
   const [kbOpen, setKbOpen] = useState<Record<string, boolean>>({});
   const [kbCounts, setKbCounts] = useState<Record<string, KbCounts>>({});
-  const kbDeepLinkConsumed = useRef(false);
-
-  useEffect(() => {
-    if (kbDeepLinkConsumed.current) return;
-    if (new URLSearchParams(window.location.search).get("kb") !== "open") return;
-    if (mine.length === 0) return;
-    kbDeepLinkConsumed.current = true;
+  // ?kb=open 深链：还没有方向时保持未消费，列表加载完再展开（渲染期 adjust-on-change）
+  const [kbConsumed, setKbConsumed] = useState(false);
+  if (!kbConsumed && deepLink.kbOpen && mine.length > 0) {
+    setKbConsumed(true);
     setKbOpen({ [mine[0].id]: true });
-    // 清掉参数，刷新后不再自动展开
+  }
+  // 消费后清掉参数，刷新后不再自动展开（副作用留在 effect）
+  useEffect(() => {
+    if (!kbConsumed) return;
     const url = new URL(window.location.href);
     url.searchParams.delete("kb");
     window.history.replaceState(null, "", url.toString());
-  }, [mine]);
+  }, [kbConsumed]);
 
   /* 页面入场与「方向卡片到达」都走同一个一次性 stagger；reduced-motion 下不播。 */
   const mainRef = useRef<HTMLElement>(null);
@@ -152,8 +167,10 @@ function DirectionsWorkspace() {
     }
   }, [user]);
 
+  // 拉取推迟到宏任务：loadMine 的同步前缀会 setState，直接在 effect 里调用触发级联渲染告警
   useEffect(() => {
-    void loadMine();
+    const timer = window.setTimeout(() => void loadMine(), 0);
+    return () => window.clearTimeout(timer);
   }, [loadMine]);
 
   /** 拉每个方向的题目覆盖度。串行即可，方向数量是个位数。 */
@@ -175,7 +192,9 @@ function DirectionsWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (mine.length > 0) void loadCoverage(mine);
+    if (mine.length === 0) return;
+    const timer = window.setTimeout(() => void loadCoverage(mine), 0);
+    return () => window.clearTimeout(timer);
   }, [mine, loadCoverage]);
 
   const save = async () => {
