@@ -1,3 +1,4 @@
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
@@ -26,6 +27,8 @@ const schema = z.strictObject({
   retrievalMaxTokens: z.number().int().min(256).max(128000).optional(),
 });
 export async function POST(request: Request) {
+  const rateLimited = enforceRateLimit(request, "documents-retrieve", 30);
+  if (rateLimited !== null) return rateLimited;
   const origin = assertMutationOrigin(request);
   if (origin) return origin;
   const auth = await requireApiUser();

@@ -11,6 +11,7 @@
  * 账号同步的目的就是让用户换设备后拿回全部资料。
  */
 
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 
 import { apiErrorCodes, kbPut } from "@/lib/apiContracts";
@@ -104,6 +105,8 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const rateLimited = enforceRateLimit(request, "kb-write", 30);
+  if (rateLimited !== null) return rateLimited;
   const guard = await requireApiUser();
   if (!guard.ok) return guard.response;
 
@@ -155,6 +158,8 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const rateLimited = enforceRateLimit(request, "kb-write", 30);
+  if (rateLimited !== null) return rateLimited;
   const guard = await requireApiUser();
   if (!guard.ok) return guard.response;
 

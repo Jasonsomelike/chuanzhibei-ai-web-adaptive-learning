@@ -8,6 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetRateLimits } from "@/lib/rateLimit";
 import { randomUUID } from "node:crypto";
 import { appendConversationTurn, branchConversation, createConversation, getArchivedMessage, readConversationPage } from "./conversationStore";
 
@@ -180,6 +181,10 @@ function openAiToolCall(name: string, args: Record<string, unknown>, id = "call_
 function openAiText(text: string): unknown {
   return { choices: [{ finish_reason: "stop", message: { content: text } }] };
 }
+
+beforeEach(() => {
+  resetRateLimits();
+});
 
 describe("/api/agent：守卫", () => {
   it("未登录 401", async () => {

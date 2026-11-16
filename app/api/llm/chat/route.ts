@@ -15,6 +15,7 @@
  * - 流式响应的头只设三个：Content-Type / Cache-Control / X-Accel-Buffering。
  */
 
+import { enforceRateLimit } from "@/lib/rateLimit";
 import type { Readable } from "node:stream";
 import { contextBudget } from "@/lib/contextBudget";
 
@@ -167,6 +168,8 @@ function buildHeaders(config: LlmConfig): Record<string, string> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const rateLimited = enforceRateLimit(request, "llm-chat", 30);
+  if (rateLimited !== null) return rateLimited;
   const auth = await requireApiUser();
   if (!auth.ok) return auth.response;
 

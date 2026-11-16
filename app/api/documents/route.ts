@@ -1,3 +1,4 @@
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import {
@@ -20,6 +21,8 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 300;
 export async function POST(request: Request) {
+  const rateLimited = enforceRateLimit(request, "documents", 120);
+  if (rateLimited !== null) return rateLimited;
   const origin = assertMutationOrigin(request);
   if (origin) return origin;
   const auth = await requireApiUser();

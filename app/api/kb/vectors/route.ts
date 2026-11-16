@@ -13,6 +13,7 @@
  * 里通过 JOIN kb_chunks 完成；POST 的归属由 (user_id, chunk_id) 复合外键保证。
  */
 
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 
 import { apiErrorCodes } from "@/lib/apiContracts";
@@ -76,6 +77,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const rateLimited = enforceRateLimit(request, "kb-vectors", 240);
+  if (rateLimited !== null) return rateLimited;
   const guard = await requireApiUser();
   if (!guard.ok) return guard.response;
 

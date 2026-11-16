@@ -11,6 +11,7 @@
  * - 错误响应只有 { error, code }，不含密钥；上游正文在 serverSearch 内脱敏后截断。
  */
 
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -113,6 +114,8 @@ async function runSearch(
 }
 
 export async function POST(request: Request) {
+  const rateLimited = enforceRateLimit(request, "search", 30);
+  if (rateLimited !== null) return rateLimited;
   // 浏览器带 Origin 的跨站请求一律拒绝；服务端调用没有 Origin 时按同源放行。
   if (!sameOriginFromRequest(request)) {
     return failure(403, "forbidden", "请求来源不可信");

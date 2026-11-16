@@ -1,3 +1,4 @@
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { estimateLearningTime } from "@/lib/learningTimeServer";
 import { routeTeachingTask } from "@/lib/learningWorkflow";
 import { retrieveDocuments } from "@/lib/documentRetrieval";
@@ -367,6 +368,8 @@ function sseResponse(
 // ── 路由 ──────────────────────────────────────────────────────────
 
 export async function POST(request: Request): Promise<Response> {
+  const rateLimited = enforceRateLimit(request, "agent", 20);
+  if (rateLimited !== null) return rateLimited;
   const auth = await requireApiUser();
   if (!auth.ok) return auth.response;
 
