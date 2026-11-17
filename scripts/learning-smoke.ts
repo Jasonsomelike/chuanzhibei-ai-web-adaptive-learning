@@ -149,11 +149,14 @@ try {
   await visit("/path?subject=data-structures&budget=60");
   await page.locator(".react-flow__node").first().waitFor();
   await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
+  // The initial view keeps the current learning neighborhood readable. The
+  // explicit overview control must still reveal every prerequisite node.
+  await page.getByRole("button", { name: "查看完整图谱", exact: true }).click();
   await page.waitForFunction(() => {
     const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
     return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
   });
-  check(await page.locator(".react-flow__node").count() > 0 && await page.locator(".react-flow__edge-path").count() > 0, "图谱先修连线已绘制，初始视野无基础节点裁切");
+  check(await page.locator(".react-flow__node").count() > 0 && await page.locator(".react-flow__edge-path").count() > 0, "图谱先修连线已绘制，完整取景无节点裁切");
   check(await page.locator("[data-technical-details]").count()===0, "技术指纹移入设置，路径保持学习主界面简洁");
   check(await page.locator(".knowledge-sequence li button").count() === await page.locator("[data-flip-id]").count(), "图谱同屏清单展示实际步骤数");
   await page.locator("#path-step-editor > summary").click();
@@ -196,6 +199,7 @@ try {
     if (route === "/path") {
       await page.locator(".react-flow__node").first().waitFor();
       await page.locator(".react-flow__edge-path").first().waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "查看完整图谱", exact: true }).click();
       await page.waitForFunction(() => {
         const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
         return [...document.querySelectorAll(".react-flow__node")].every(el => { const box = el.getBoundingClientRect(); return box.left >= canvas.left - 1 && box.right <= canvas.right + 1 && box.top >= canvas.top - 1 && box.bottom <= canvas.bottom + 1; });
