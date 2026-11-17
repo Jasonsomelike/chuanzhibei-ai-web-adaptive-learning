@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Controls, Handle, MarkerType, Position, ReactFlow, getNodesBounds, getViewportForBounds, useUpdateNodeInternals, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
+import { BaseEdge, type Edge, type EdgeProps, Controls, Handle, MarkerType, Position, ReactFlow, getNodesBounds, getViewportForBounds, useUpdateNodeInternals, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
 import { ArrowRight, BookOpen, Check, Circle, CircleDot, Diamond, ListOrdered, Network, Search } from "lucide-react";
 import "@xyflow/react/dist/style.css";
 import { Hint } from "@/components/primitives/hint";
@@ -10,6 +10,7 @@ import { prefersReducedMotion } from "@/components/motion";
 import { useAppearance } from "@/lib/appearance";
 import { chaptersOf } from "@/lib/chapters";
 import { LEARNING_STATUS_LABELS, layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes, type LearningGraphNode } from "@/lib/learningGraph";
+import { learningNodeSize, routeLearningEdges, type GraphPoint } from "@/lib/learningGraphLayout";
 import type { KnowledgeGraph } from "@/lib/graph";
 import type { MasteryState } from "@/lib/mastery";
 import type { PathStep, PlanResult } from "@/lib/plan";
@@ -21,15 +22,21 @@ const Concept = memo(function Concept({ id, data, selected }: NodeProps<ConceptN
   const item = data.concept;
   const Symbol = item.status === "blocked" ? Diamond : item.status === "mastered" ? CircleDot : Circle;
   return <div data-new-step={data.added || undefined} className={`knowledge-node node-${item.status} ${selected ? "node-selected" : ""}`}>
-    <Handle id="left" type="target" position={Position.Left} isConnectable={false} style={{ left: 1, top: 28 }} />
-    <Handle id="top" type="target" position={Position.Top} isConnectable={false} style={{ left: 16, top: 12 }} />
-    <Symbol className="concept-anchor" size={30} strokeWidth={selected ? 2.8 : 2} />
-    <div className="concept-label"><span>{item.name}</span><small>{item.mean === null ? "尚未测评" : <>{Math.round(item.mean * 100)}%<span className="node-mastery-sd">±{Math.round((item.sd ?? 0) * 100)}</span> · {item.evidenceN} 条证据</>}{data.added ? " · 新增" : ""}</small></div>
-    <Handle id="right" type="source" position={Position.Right} isConnectable={false} style={{ left: 32, right: "auto", top: 28 }} />
-    <Handle id="bottom" type="source" position={Position.Bottom} isConnectable={false} style={{ left: 16, bottom: "auto", top: 43 }} />
+    <Handle id="left" type="target" position={Position.Left} isConnectable={false}  />
+    <Handle id="top" type="target" position={Position.Top} isConnectable={false}  />
+    <span className="concept-mark"><Symbol className="concept-anchor" size={30} strokeWidth={selected ? 2.8 : 2} />{item.order ? <span className="concept-order">{item.order}</span> : null}</span>
+    <div className="concept-label"><span title={item.name}>{item.name}</span><small>{item.mean === null ? (item.order ? "本次学习" : "") : <>{Math.round(item.mean * 100)}%<span className="node-mastery-sd">±{Math.round((item.sd ?? 0) * 100)}</span> · {item.evidenceN} 条证据</>}{data.added ? " · 新增" : ""}</small></div>
+    <Handle id="right" type="source" position={Position.Right} isConnectable={false}  />
+    <Handle id="bottom" type="source" position={Position.Bottom} isConnectable={false}  />
   </div>;
 });
 const nodeTypes = { concept: Concept };
+type PrerequisiteEdge = Edge<{ points: GraphPoint[] }>;
+function RoutedEdge({ id, data, style, markerEnd }: EdgeProps<PrerequisiteEdge>) {
+  const path = data?.points.map((point, i) => `${i ? "L" : "M"}${point.x},${point.y}`).join(" ") ?? "";
+  return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+}
+const edgeTypes = { prerequisite: RoutedEdge };
 
 /** 导出画布的固定尺寸：竖向章节列在 1600×1000 内足够放下一屏全科关系。 */
 const EXPORT_WIDTH = 1600;
@@ -71,41 +78,48 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
   const selected = models.find(item => item.id === selectedId) ?? models.find(item => item.order === 1) ?? models[0];
   const selectedNodeId = selected?.id;
   const related = useMemo(() => relatedLearningNodes(graph, steps, selectedNodeId), [graph, steps, selectedNodeId]);
+  const direction = compact ? "compact" : vertical ? "vertical" : "horizontal";
+  const nodeSize = learningNodeSize(direction);
   const visibleModels = useMemo(() => {
     const visible = models.filter(item => showAll || related.size === 0 || related.has(item.id));
-    const focused = compact && !showAll && selected ? visible.filter(item => item.id === selected.id || selected.prerequisites.includes(item.id) || item.prerequisites.includes(selected.id) || item.prerequisites.some(id => selected.prerequisites.includes(id))) : visible;
-    return layoutLearningNodes(focused, compact && !showAll ? "compact" : vertical ? "vertical" : "horizontal");
-  }, [models, showAll, related, vertical, compact, selected]);
+    return layoutLearningNodes(visible, direction);
+  }, [models, showAll, related, direction]);
   // Retain measurements: controlled React Flow nodes need handle bounds after a resize.
-  const nodes = useMemo<ConceptNode[]>(() => visibleModels.map(item => ({ id: item.id, type: "concept", position: item.position, initialWidth: compact ? 140 : 210, initialHeight: 76, measured: dimensions[item.id], data: { concept: item, added: added.has(item.id), vertical, compact }, selected: item.id === selectedNodeId, draggable: false, ariaLabel: `${item.name}，${LEARNING_STATUS_LABELS[item.status]}${added.has(item.id) ? "，新增安排" : ""}，${item.evidenceN ? `${item.evidenceN} 条作答证据` : "尚未测评"}` })), [visibleModels, dimensions, selectedNodeId, added, vertical, compact]);
+  const nodes = useMemo<ConceptNode[]>(() => visibleModels.map(item => ({ id: item.id, type: "concept", position: item.position, initialWidth: nodeSize.width, initialHeight: nodeSize.height, measured: dimensions[item.id], data: { concept: item, added: added.has(item.id), vertical: direction !== "horizontal", compact }, selected: item.id === selectedNodeId, draggable: false, ariaLabel: `${item.name}，${LEARNING_STATUS_LABELS[item.status]}${added.has(item.id) ? "，新增安排" : ""}，${item.evidenceN ? `${item.evidenceN} 条作答证据` : "尚未测评"}` })), [visibleModels, dimensions, selectedNodeId, added, direction, compact, nodeSize.width, nodeSize.height]);
   const stepSignature = steps.map(step => step.kcId).join(",");
   useEffect(() => {
     if (!flow || !canvas.current) return;
     let frame = 0;
+    let settle: ReturnType<typeof setTimeout>;
     const fit = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
       const duration = prefersReducedMotion() ? 0 : 220;
       if (canvas.current && canvas.current.clientWidth < 600 && !compact) {
         const node = flow.getNodes().find(item => item.selected) ?? flow.getNodes()[0];
         if (node) void flow.setCenter(node.position.x + 90, node.position.y + 38, { zoom: .9, duration });
-      } else void flow.fitView({ padding: .1, maxZoom: 1, duration });
+      } else {
+        const all = flow.getNodes();
+        const selected = all.find(node => node.selected);
+        const neighborhood = selected ? all.filter(node => node.id === selected.id || selected.data.concept.prerequisites.includes(node.id) || node.data.concept.prerequisites.includes(selected.id)) : all;
+        void flow.fitView({ nodes: showAll ? all : neighborhood, padding: .15, minZoom: showAll ? .15 : .65, maxZoom: 1, duration });
+      }
     }); };
-    const observer = new ResizeObserver(() => { setCompact((canvas.current?.clientWidth ?? 0) < 450); fit(); });
+    const observer = new ResizeObserver(() => { setCompact((canvas.current?.clientWidth ?? 0) < 450); clearTimeout(settle); settle = setTimeout(fit, 160); });
     observer.observe(canvas.current);
     fit();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+    return () => { clearTimeout(settle); cancelAnimationFrame(frame); observer.disconnect(); };
   }, [flow, showAll, stepSignature, layout, compact]);
+  const routes = useMemo(() => routeLearningEdges(visibleModels, direction), [visibleModels, direction]);
   const edges = useMemo(() => {
     const visible = new Set(visibleModels.map(item => item.id));
-    const positions = new Map(visibleModels.map(item => [item.id, item.position]));
     const blockedTargets = new Set(visibleModels.filter(item => item.status === "blocked").map(item => item.id));
     const strokeVar = { accent: "var(--accent)", warn: "var(--warn)", plain: "var(--ink-faint)" } as const;
     return graph.edges.filter(edge => visible.has(edge.before) && visible.has(edge.after)).map(edge => {
       const visual = learningEdgeVisual(edge.before, edge.after, { selectedId: selectedNodeId, showAll, isBlockedTarget: id => blockedTargets.has(id) });
       const color = strokeVar[visual.tone];
-      const downward = vertical || positions.get(edge.before)?.x === positions.get(edge.after)?.x;
-      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "default", markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
+      const downward = direction !== "horizontal";
+      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "prerequisite", data: { points: routes.get(`${edge.before}-${edge.after}`) ?? [] }, markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
     });
-  }, [graph, visibleModels, byId, vertical, selectedNodeId, showAll]);
+  }, [graph, visibleModels, byId, direction, selectedNodeId, showAll, routes]);
 
   /**
    * 导出当前画布为 PNG。
@@ -142,6 +156,11 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       setExporting(false);
     }
   }, [flow, visibleModels.length, exporting, targetName]);
+  const sequence = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const row = [...(sequence.current?.querySelectorAll<HTMLElement>("[data-kc]") ?? [])].find(el => el.dataset.kc === selectedNodeId);
+    if (row && sequence.current) { const parent = sequence.current; if (row.offsetTop < parent.scrollTop || row.offsetTop + row.offsetHeight > parent.scrollTop + parent.clientHeight) parent.scrollTo({ top: row.offsetTop - parent.clientHeight / 2, behavior: prefersReducedMotion() ? "instant" : "smooth" }); }
+  }, [selectedNodeId]);
   const focus = (value: string) => {
     onSelect(value);
     setSearchOpen(false);
@@ -156,7 +175,6 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
     if (!item) return;
     const frame = requestAnimationFrame(() => {
       if (!canvas.current) return;
-      if (compact && !showAll) { void flow.fitView({ padding: .1, maxZoom: 1, duration: prefersReducedMotion() ? 0 : 220 }); return; }
       const viewport = flow.getViewport();
       const x = item.position.x * viewport.zoom + viewport.x + 16;
       const y = item.position.y * viewport.zoom + viewport.y + 28;
@@ -189,7 +207,7 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
     </div>
     <aside className="knowledge-chapter-index" aria-label="课程目录"><h2>课程目录</h2>{chapterIndex.map(chapter => <button key={chapter.name} type="button" aria-current={selected?.chapter === chapter.name ? "true" : undefined} onClick={() => focus(chapter.kcIds[0])}>{chapter.name}</button>)}</aside>
     <div className="knowledge-canvas" ref={canvas} role="region" aria-label="可缩放的课程先修关系图">
-      <ReactFlow<ConceptNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlow} onNodeClick={(_event, node) => onSelect(node.id)} onNodesChange={onNodesChange} fitView fitViewOptions={{ padding: .1, maxZoom: 1 }} minZoom={.15} maxZoom={1.6} nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} deleteKeyCode={null} panOnScroll={false} zoomOnScroll={false} preventScrolling={false} attributionPosition="bottom-right" ariaLabelConfig={{ "controls.zoomIn.ariaLabel": "放大图谱", "controls.zoomOut.ariaLabel": "缩小图谱", "controls.fitView.ariaLabel": "查看完整图谱", "controls.interactive.ariaLabel": "切换图谱交互" }}>
+      <ReactFlow<ConceptNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={setFlow} onNodeClick={(_event, node) => onSelect(node.id)} onNodesChange={onNodesChange} fitView fitViewOptions={{ padding: .1, maxZoom: 1 }} minZoom={.15} maxZoom={1.6} nodesDraggable={false} nodesConnectable={false} edgesFocusable={false} deleteKeyCode={null} panOnScroll={false} zoomOnScroll={false} preventScrolling={false} attributionPosition="bottom-right" ariaLabelConfig={{ "controls.zoomIn.ariaLabel": "放大图谱", "controls.zoomOut.ariaLabel": "缩小图谱", "controls.fitView.ariaLabel": "查看完整图谱", "controls.interactive.ariaLabel": "切换图谱交互" }}>
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
@@ -197,8 +215,8 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       <button type="button" aria-pressed={mobileView === "map"} onClick={() => setMobileView("map")}><Network size={19} />图谱</button>
       <button type="button" aria-pressed={mobileView === "list"} onClick={() => setMobileView("list")}><ListOrdered size={19} />学习清单</button>
     </div>
-    <section className="knowledge-sequence" aria-label="本次学习顺序"><div className="knowledge-sequence-heading"><h2>本次学习顺序</h2><span>{steps.reduce((sum, step) => sum + step.estMinutes, 0)} 分钟</span></div>
-      {steps.length ? <ol>{steps.map((step, index) => <li key={step.kcId}><button type="button" aria-pressed={selectedNodeId === step.kcId} onClick={() => focus(step.kcId)}><span className="sequence-number">{index + 1}</span><span>{byId.get(step.kcId)?.name ?? step.kcId}{added.has(step.kcId) ? <small>新增安排</small> : null}</span><span className="sequence-time">{step.estMinutes} 分钟</span></button></li>)}</ol> : <p className="text-sm text-[var(--ink-soft)]">本次范围没有待学步骤。</p>}
+    <section ref={sequence} className="knowledge-sequence" aria-label="本次学习顺序"><div className="knowledge-sequence-heading"><h2>本次学习顺序</h2><span>{steps.reduce((sum, step) => sum + step.estMinutes, 0)} 分钟</span></div>
+      {steps.length ? <ol>{steps.map((step, index) => <li key={step.kcId} data-kc={step.kcId}><button type="button" aria-pressed={selectedNodeId === step.kcId} onClick={() => focus(step.kcId)}><span className="sequence-number">{index + 1}</span><span>{byId.get(step.kcId)?.name ?? step.kcId}{added.has(step.kcId) ? <small>新增安排</small> : null}</span><span className="sequence-time">{step.estMinutes} 分钟</span></button></li>)}</ol> : <p className="text-sm text-[var(--ink-soft)]">本次范围没有待学步骤。</p>}
       <Link href={studyHref} className="graph-start-learning">开始学习<ArrowRight size={18} /></Link>
     </section>
     <aside className="knowledge-desktop-inspector" aria-label="知识点详情">{selected ? <div className="knowledge-inspector">
