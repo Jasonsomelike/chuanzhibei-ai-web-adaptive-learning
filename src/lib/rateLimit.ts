@@ -7,14 +7,15 @@
  * 边界：serverless / 多实例部署时每个实例独立计数，公网部署仍应在
  * 平台或反向代理层配置分布式限流；同源检查不能替代频率限制。
  *
- * 键 = 桶名 + 客户端 IP（X-Forwarded-For 首跳 / X-Real-IP）。
+ * 键 = 桶名 + 可信代理提供的客户端 IP；直连部署不信任任意请求头。
  * 按账号限流要先解析会话（昂贵且各路由鉴权方式不同），本轮不做：
- * IP 粒度足以拦截脚本级滥用，单用户正常使用远低于阈值。
+ * 这只是单实例保护，不能替代平台层的分布式与账号限流。
  */
 
 const WINDOW_MS = 60_000;
 /** 超过这个条目数就顺手清掉过期窗口，防止 Map 无界增长。 */
 const PRUNE_THRESHOLD = 1000;
+const MAX_BUCKETS = 10_000;
 
 interface BucketEntry {
   count: number;
@@ -38,6 +39,10 @@ export function rateLimit(
 ): RateLimitResult {
   const entry = buckets.get(key);
   if (entry === undefined || now >= entry.resetAt) {
+    if (buckets.size >= MAX_BUCKETS) {
+      prune(now);
+      if (entry === undefined && buckets.size >= MAX_BUCKETS) return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil(windowMs / 1000)) };
+    }
     buckets.set(key, { count: 1, resetAt: now + windowMs });
     if (buckets.size > PRUNE_THRESHOLD) prune(now);
     return { ok: true, retryAfterSeconds: 0 };
@@ -59,14 +64,15 @@ function prune(now: number): void {
 }
 
 /** 取客户端 IP：优先代理头，本地开发统一记 unknown（共享一个桶，可接受）。 */
-export function clientIpOf(request: Request): string {
+export function clientIpOf(request: Request, trustProxy = process.env.VERCEL === "1" || process.env.ALP_TRUST_PROXY === "1"): string {
+  if (!trustProxy) return "unknown";
   const forwarded = request.headers.get("x-forwarded-for");
   if (forwarded !== null) {
     const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
+    if (first && first.length <= 64) return first;
   }
   const real = request.headers.get("x-real-ip")?.trim();
-  if (real) return real;
+  if (real && real.length <= 64) return real;
   return "unknown";
 }
 

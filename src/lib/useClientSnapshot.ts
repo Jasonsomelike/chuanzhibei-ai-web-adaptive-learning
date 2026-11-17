@@ -12,10 +12,10 @@
  * 的返回值重渲染一次——没有 effect，也没有手动 setState。
  *
  * getSnapshot 必须返回稳定引用（React 会反复调用并比较），所以读到的值缓存在
- * ref 里，每个组件实例最多读一次。
+ * 组件独立的 store 里，每个组件实例只在提交后的订阅阶段读一次。
  */
 
-import { useRef, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 /** 空订阅：快照只读一次，外部不会主动推送变化。 */
 function noopSubscribe(): () => void {
@@ -32,15 +32,22 @@ function noopSubscribe(): () => void {
  *   const config = edited ?? stored;
  */
 export function useClientSnapshot<T>(read: () => T, serverValue: T): T {
-  const cache = useRef<{ readonly value: T } | null>(null);
-  return useSyncExternalStore(
-    noopSubscribe,
-    () => {
-      if (cache.current === null) cache.current = { value: read() };
-      return cache.current.value;
-    },
-    () => serverValue,
-  );
+  // Subscribe runs after commit. Reading in getSnapshot/render can capture the
+  // previous URL while Next is preparing a client navigation, then cache it forever.
+  const [store] = useState(() => {
+    let cached = serverValue;
+    let initialized = false;
+    return {
+      subscribe(notify: () => void) {
+        if (!initialized) { cached = read(); initialized = true; }
+        notify();
+        return () => {};
+      },
+      snapshot: () => cached,
+      server: () => serverValue,
+    };
+  });
+  return useSyncExternalStore(store.subscribe, store.snapshot, store.server);
 }
 
 /** 组件是否已完成 hydration。用于「挂载后再展示/再允许交互」的 ready 标记。 */

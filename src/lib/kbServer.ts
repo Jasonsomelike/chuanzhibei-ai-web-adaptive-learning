@@ -13,7 +13,7 @@
  */
 
 import type { Db, DbStatement } from "@/lib/db";
-import { KB_TOMBSTONE_SQL } from "@/lib/db";
+import { DbWriteConflict, KB_TOMBSTONE_SQL } from "@/lib/db";
 import type { KbChunkInput, KbDocInput, KbPut } from "@/lib/apiContracts";
 import { MAX_EMBEDDING_DIM } from "@/lib/apiContracts";
 import type { UploadChunk, UploadDoc, UploadKind } from "@/lib/knowledge";
@@ -507,6 +507,7 @@ export async function putKbDocument(
        ON CONFLICT (user_id, doc_id) DO UPDATE SET ${DOC_UPDATE}
        WHERE kb_docs.updated_at = $14 AND $14 IS NOT NULL`,
       params: [...docParams(docRow), existingRow?.updated_at ?? null],
+      expectedRows: 1,
     },
   ];
   if (body.baseUpdatedAt === null) {
@@ -538,7 +539,12 @@ export async function putKbDocument(
     ],
   });
 
-  const counts = await db.tx(statements);
+  let counts: number[];
+  try { counts = await db.tx(statements); }
+  catch (error) {
+    if (error instanceof DbWriteConflict) return { ok: false, reason: "conflict", message: "文档已在另一设备更新，本地修改已保留，请刷新后重试。" };
+    throw error;
+  }
   if (counts[0] === 0) {
     return { ok: false, reason: "conflict", message: "文档已在另一设备更新，本地修改已保留，请刷新后重试。" };
   }

@@ -21,6 +21,21 @@ import { DOCUMENT_PUBLISH_SQL } from "@/lib/documentSql";
 export interface DbStatement {
   readonly sql: string;
   readonly params?: unknown[];
+  /** Abort the whole transaction when a compare-and-swap does not claim its row. */
+  readonly expectedRows?: number;
+}
+
+export class DbWriteConflict extends Error {
+  constructor() { super("Concurrent write conflict"); this.name = "DbWriteConflict"; }
+}
+
+/** A runtime SQL assertion, inside the transaction, never a post-commit check. */
+export function guardedStatement(stmt: DbStatement): string {
+  if (stmt.expectedRows === undefined) return stmt.sql;
+  if (!Number.isSafeInteger(stmt.expectedRows) || stmt.expectedRows < 0) throw new Error("Invalid row expectation");
+  return `WITH changed AS (${stmt.sql} RETURNING 1)
+    SELECT count(*)::int AS affected,
+      1 / CASE WHEN count(*) = ${stmt.expectedRows} THEN 1 ELSE 0 END AS guard FROM changed`;
 }
 
 /** 一个可执行查询的最小接口，让内存实现与 Postgres 实现共用上层代码。 */
@@ -206,16 +221,19 @@ function createPostgresDb(url: string): Db {
        * neon HTTP 的非交互事务：整批语句一次提交，任一失败全部回滚。
        * 事务内沿用 fullResults: true，逐个取 rowCount，与 run() 同口径。
        */
-      const results = await sql.transaction((txn) =>
-        statements.map((stmt) => txn.query(stmt.sql, stmt.params ?? [])),
-      );
-      return (results as unknown as FullResult[]).map((result) =>
-        typeof result.rowCount === "number"
-          ? result.rowCount
-          : Array.isArray(result.rows)
-            ? result.rows.length
-            : 0,
-      );
+      try {
+        const results = await sql.transaction((txn) =>
+          statements.map((stmt) => txn.query(guardedStatement(stmt), stmt.params ?? [])),
+        );
+        return (results as unknown as FullResult[]).map((result, index) =>
+          statements[index].expectedRows !== undefined
+            ? Number((result.rows?.[0] as { affected: number }).affected)
+            : result.rowCount ?? result.rows?.length ?? 0,
+        );
+      } catch (error) {
+        if (statements.some(s => s.expectedRows !== undefined) && (error as { code?: string }).code === "22012") throw new DbWriteConflict();
+        throw error;
+      }
     },
   };
 }
@@ -401,13 +419,13 @@ function createMemoryDb(): Db {
     }
   };
 
-  return {
+  const memory = {
     /*
      * 事务：先快照全部表再顺序执行；任一语句抛错就整体还原。
      * 覆盖的是 createMemoryDb 自己持有的表；conversationArchive / artifacts
      * 有独立存储，当前没有事务调用方写它们，真有时再纳入快照。
      */
-    async tx(statements) {
+    tx(statements: readonly DbStatement[]) {
       const tables = [
         users, sessions, progress, learningSessions, directions, directionItems,
         userSecrets, kbDocs, kbChunks, kbTombstones, memories, kbChunkVectors, mcpServers,
@@ -416,7 +434,9 @@ function createMemoryDb(): Db {
       try {
         const counts: number[] = [];
         for (const stmt of statements) {
-          counts.push(await this.run(stmt.sql, stmt.params ?? []));
+          const count = this.run(stmt.sql, stmt.params ?? []);
+          if (stmt.expectedRows !== undefined && count !== stmt.expectedRows) throw new DbWriteConflict();
+          counts.push(count);
         }
         return counts;
       } catch (err) {
@@ -428,7 +448,7 @@ function createMemoryDb(): Db {
       }
     },
 
-    async run(text, params = []) {
+    run(text: string, params: unknown[] = []) {
       const q = norm(text);
       const archiveResult = conversationArchive.run(text, params);
       if (archiveResult !== undefined) return archiveResult;
@@ -850,7 +870,7 @@ function createMemoryDb(): Db {
       return 0;
     },
 
-    async all<T>(text: string, params: unknown[] = []) {
+    all<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
       const archiveRows = conversationArchive.all(text, params);
       if (archiveRows !== undefined) return archiveRows as T[];
@@ -1073,7 +1093,7 @@ function createMemoryDb(): Db {
       return [];
     },
 
-    async one<T>(text: string, params: unknown[] = []) {
+    one<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
       const archiveRows = conversationArchive.all(text, params);
       if (archiveRows !== undefined) return (archiveRows[0] ?? null) as T | null;
@@ -1150,6 +1170,14 @@ function createMemoryDb(): Db {
 
       return null;
     },
+  };
+  // Mutations and snapshots run synchronously to completion. Async callers cannot
+  // interleave another write halfway through a transaction or its rollback.
+  return {
+    run: async (q, p) => memory.run(q, p),
+    all: async <T>(q: string, p?: unknown[]) => memory.all<T>(q, p),
+    one: async <T>(q: string, p?: unknown[]) => memory.one<T>(q, p),
+    tx: async statements => memory.tx(statements),
   };
 }
 

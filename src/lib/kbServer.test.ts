@@ -304,9 +304,16 @@ describe("putKbDocument（内存 DB）", () => {
   it("相同版本的并发更新只有一位写入成功", async () => {
     const first = await putKbDocument(db, "u1", makePut());
     if (!first.ok) throw new Error("seed failed");
-    const results = await Promise.all([1, 2].map(() => putKbDocument(db, "u1", makePut({ baseUpdatedAt: first.updatedAt }))));
+    const payloads = [1, 2].map(n => makePut({ baseUpdatedAt: first.updatedAt,
+      doc: { ...makePut().doc, title: `版本 ${n}` },
+      chunks: makePut().chunks.map(c => ({ ...c, text: `版本 ${n} 的片段` })),
+    }));
+    const results = await Promise.all(payloads.map(body => putKbDocument(db, "u1", body)));
     expect(results.filter((result) => result.ok)).toHaveLength(1);
     expect(results.filter((result) => !result.ok && result.reason === "conflict")).toHaveLength(1);
+    const winner = results.findIndex(r => r.ok);
+    expect((await listDirectionDocs(db, "u1", "d1"))[0].title).toBe(payloads[winner].doc.title);
+    expect((await listDirectionChunks(db, "u1", "d1")).map(c => c.text)).toEqual(payloads[winner].chunks.map(c => c.text));
   });
 
   it("baseUpdatedAt 过期时 409 且一行都不写", async () => {

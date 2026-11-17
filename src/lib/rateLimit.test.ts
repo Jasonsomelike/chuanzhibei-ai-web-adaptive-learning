@@ -56,10 +56,11 @@ describe("enforceRateLimit 路由守卫", () => {
   });
 
   it("clientIpOf 取 X-Forwarded-For 首跳，缺省为 unknown", () => {
-    expect(clientIpOf(requestWithIp("198.51.100.9"))).toBe("198.51.100.9");
+    expect(clientIpOf(requestWithIp("198.51.100.9"), true)).toBe("198.51.100.9");
+    expect(clientIpOf(requestWithIp("198.51.100.9"), false)).toBe("unknown");
     expect(clientIpOf(new Request("http://localhost/x"))).toBe("unknown");
     expect(
-      clientIpOf(new Request("http://localhost/x", { headers: { "x-real-ip": "192.0.2.5" } })),
+      clientIpOf(new Request("http://localhost/x", { headers: { "x-real-ip": "192.0.2.5" } }), true),
     ).toBe("192.0.2.5");
   });
 });
