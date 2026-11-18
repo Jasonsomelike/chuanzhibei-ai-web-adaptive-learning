@@ -14,7 +14,7 @@ import { CalibrationCard } from "@/components/calibration-card";
 import { MemoryReview } from "@/components/memory-review";
 import { MaterialReader } from "@/components/material-reader";
 import { useSubject } from "@/lib/subject";
-import { useDirectionDraft } from "@/lib/useDirectionDraft";
+import { DirectionStudio } from "@/components/direction-studio";
 import {
   ensureItems,
   fetchItems,
@@ -1949,184 +1949,20 @@ function NewDirectionPanel({
   onCancel: () => void;
   onSaved: (id: string, name: string, graph: LearningTarget["graph"]) => void;
 }) {
-  const draftState = useDirectionDraft();
-  const [publish, setPublish] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const { user } = useAuth();
-
-  const handleSave = async () => {
-    setSaveError(null);
-    const id = await draftState.save({ isPublic: publish });
-    if (!id) {
-      setSaveError(draftState.error ?? "保存失败");
-      return;
-    }
-    // 保存成功后拉回完整图谱，交给上层切换目标
-    const res = await fetch(`/api/directions?id=${encodeURIComponent(id)}`, {
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      setSaveError("方向已保存，但加载失败。请刷新页面后从「我的方向」里选择。");
-      return;
-    }
-    const data = (await res.json()) as {
-      id: string;
-      title: string;
-      graph: LearningTarget["graph"];
-    };
-    onSaved(data.id, data.title, data.graph);
-  };
-
-  return (
-    <Card className="mb-5">
-      <SectionTitle
-        hint={
-          draftState.provider
-            ? `将使用 ${draftState.provider.label} · ${draftState.provider.model} 生成`
-            : "未配置模型，将从现有学科中挑选相关知识点"
-        }
-      >
-        新建方向
-      </SectionTitle>
-
-      {!user ? (
-        <p className="text-sm text-[var(--ink-soft)]">
-          自定义方向需要账号才能保存（这样换设备也不会丢）。
-          <Link href="/login" className="ml-1 underline">
-            去登录
-          </Link>
-        </p>
-      ) : (
-        <>
-          <label className="block">
-            <span className="block text-sm font-medium">你想学什么</span>
-            <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
-              越具体越好。例如「我想搞懂数据库索引为什么用 B+ 树」
-            </span>
-            <textarea
-              value={draftState.description}
-              onChange={(e) => draftState.setDescription(e.target.value)}
-              rows={3}
-              maxLength={500}
-              className="mt-1.5 w-full resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
-              placeholder="例如：我想系统学一遍树结构，从基本概念到平衡树"
-            />
-          </label>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void draftState.generate()}
-              disabled={draftState.generating || draftState.description.trim() === ""}
-              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {draftState.generating ? "生成中…" : "生成"}
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
-            >
-              取消
-            </button>
-          </div>
-
-          {draftState.error ? (
-            <div className="mt-3 rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-3 text-sm">
-              <p className="text-[var(--bad)]">{draftState.error}</p>
-              {draftState.issues.length > 0 ? (
-                <ul className="mt-1.5 space-y-0.5 text-xs text-[var(--ink-soft)]">
-                  {draftState.issues.map((i) => (
-                    <li key={i}>· {i}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
-
-          {draftState.draft ? (
-            <div className="mt-4 border-t border-[var(--line)] pt-4">
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <Pill tone={draftState.source === "llm" ? "good" : "warn"}>
-                  {draftState.source === "llm" ? "模型生成" : "从现有学科挑选"}
-                </Pill>
-                <span className="text-xs text-[var(--ink-faint)]">
-                  {draftState.draft.concepts.length} 个知识点 ·{" "}
-                  {draftState.draft.edges.length} 条先修关系
-                </span>
-              </div>
-
-              <label className="mt-3 block">
-                <span className="block text-sm font-medium">方向名（可修改）</span>
-                <input
-                  type="text"
-                  value={draftState.titleDraft}
-                  onChange={(e) => draftState.setTitleDraft(e.target.value)}
-                  maxLength={60}
-                  className="mt-1 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
-                  placeholder={draftState.draft.title}
-                />
-                <span className="mt-1 flex items-center justify-between text-xs text-[var(--ink-faint)]">
-                  <span>{draftState.titleDraft.trim().length}/60 字</span>
-                  <button
-                    type="button"
-                    onClick={() => draftState.setTitleDraft(draftState.draft?.title ?? "")}
-                    className="underline"
-                  >
-                    恢复建议名
-                  </button>
-                </span>
-              </label>
-              <p className="mt-1 text-sm text-[var(--ink-soft)]">
-                {draftState.draft.description}
-              </p>
-
-              <ol className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
-                {draftState.draft.concepts.map((c, i) => (
-                  <li key={c.id} className="flex gap-2 text-sm">
-                    <span className="tabular shrink-0 text-[var(--ink-faint)]">{i + 1}.</span>
-                    <span className="min-w-0">
-                      <span className="font-medium">{c.name}</span>
-                      {c.summary ? (
-                        <span className="ml-1.5 text-[var(--ink-soft)]">— {c.summary}</span>
-                      ) : null}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-
-              <label className="mt-4 flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={publish}
-                  onChange={(e) => setPublish(e.target.checked)}
-                  className="mt-1"
-                />
-                <span>公开到方向市场</span>
-              </label>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleSave()}
-                  disabled={draftState.saving}
-                  className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
-                >
-                  {draftState.saving ? "保存中…" : "保存并开始诊断"}
-                </button>
-                <button
-                  type="button"
-                  onClick={draftState.reset}
-                  className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
-                >
-                  重新生成
-                </button>
-              </div>
-              {saveError ? <p className="mt-2 text-sm text-[var(--bad)]">{saveError}</p> : null}
-            </div>
-          ) : null}
-        </>
-      )}
-    </Card>
-  );
+  const [error, setError] = useState("");
+  async function openSaved(id: string) {
+    try {
+      const response = await fetch(`/api/directions?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+      if (!response.ok) throw new Error();
+      const data = await response.json();
+      onSaved(id, data.title, data.graph);
+    } catch { setError("方向已保存，请从「我的方向」里选择。"); }
+  }
+  return <Card className="mb-5"><div className="direction-inline-heading"><h2>新建方向</h2>
+    <button type="button" onClick={onCancel}>关闭</button></div>
+    {user ? <DirectionStudio key={user.id} owner={user.id} onSaved={id => void openSaved(id)} /> :
+      <Link href="/login?next=%2Fdirections%3Fcreate%3D1">登录并创建方向</Link>}
+    {error && <p role="alert">{error}</p>}
+  </Card>;
 }

@@ -41,7 +41,7 @@ export async function parseDocumentPages(
   if (!/\.pdf$/iu.test(name)) {
     const { text } = decodeTextFile(bytes);
     return {
-      blocks: /\.md$/iu.test(name)
+      blocks: /\.(md|markdown)$/iu.test(name)
         ? markdownBlocks(text, name)
         : [{ text, section: name }],
       next: 1,

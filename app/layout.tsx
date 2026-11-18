@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { AppShell } from "@/components/app-shell";
 import { THEMES } from "@/lib/themes";
+import "@/components/direction-studio.css";
 import "./globals.css";
 import "./editorial.css";
 

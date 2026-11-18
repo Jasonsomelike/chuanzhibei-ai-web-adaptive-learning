@@ -152,11 +152,7 @@ export function KnowledgeBasePanel({
             知识库{hasAccount ? "（已开启账号同步）" : "（仅本浏览器）"}
           </p>
           <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
-            {hasAccount
-              ? "上传资料写入本机 IndexedDB 并同步到账号：换设备登录后可继续使用；远端失败时仍保留本机副本并给出告警。"
-              : "上传资料只存在本浏览器的 IndexedDB：不上传到服务器，不随方向公开、复制或换设备同步，方向市场里的副本默认是空库。"}
-            只保存抽取后的文本与片段，不保存原始文件；本版本不做 OCR。
-            引用抬头按实际来源显示，例如 [讲义·《文件名》·上传资料·第3页]（md / txt 没有页码时不带页码）。
+            {hasAccount ? "资料随账号保存，导师可检索原文并标注出处。" : "资料仅保存在当前浏览器。"}
           </p>
         </div>
         <span className="tabular shrink-0 text-xs text-[var(--ink-soft)]">
@@ -166,13 +162,9 @@ export function KnowledgeBasePanel({
         </span>
       </div>
 
-      <p className="tabular mt-1 text-xs text-[var(--ink-faint)]">
-        容量：{capacity.usedChunks}/{capacity.maxChunks} 段 ·{" "}
-        {formatNumber(capacity.usedChars)}/{formatNumber(capacity.maxChars)} 字；剩余{" "}
-        {capacity.remainingChunks} 段 · {formatNumber(capacity.remainingChars)} 字。装不下时整份文件会被拒绝，
-        不会只导入一半。
-      </p>
-
+      <details className="knowledge-import-limits"><summary>存储用量</summary>
+        已用 {capacity.usedChunks} / {formatNumber(capacity.maxChunks)} 段，{formatNumber(capacity.usedChars)} / {formatNumber(capacity.maxChars)} 字。
+      </details>
       {syncWarning !== null ? (
         <p role="status" className="mt-2 rounded-lg border border-[var(--warn)] bg-[var(--warn-soft)] p-2 text-xs text-[var(--warn)]">
           {syncWarning}

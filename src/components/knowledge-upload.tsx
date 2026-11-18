@@ -1,5 +1,6 @@
 "use client";
 import { markdownBlocks,plainBlocks } from "@/lib/documentText";
+import type { DocumentReference } from "@/lib/documentContracts";
 import { uploadDocument } from "@/lib/documentClient";
 import { updateDocKcIds } from "@/lib/kbStore";
 
@@ -212,18 +213,20 @@ export function KnowledgeUpload({
   directionId,
   concepts,
   userId,
-  onImported,
+  onImported, draftKey, onBusyChange, disabled = false,
 }: {
   directionId: string;
   concepts: readonly { id: string; name: string }[];
   /** 有账号时写入「本地 + 账号」复合存储；为空表示只存本浏览器。 */
   userId?: string | null;
   /** 导入成功后调用；面板据此重新读取 docs / chunks。 */
-  onImported: () => void;
+  onImported: (document?: DocumentReference) => void;
+  draftKey?: string;
+  onBusyChange?: (busy: boolean) => void;
+  disabled?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [kind, setKind] = useState<UploadKind | null>(null);
   const [selectedKcs, setSelectedKcs] = useState<readonly string[]>([]);
   const [stage, setStage] = useState<UploadStage>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -231,32 +234,17 @@ export function KnowledgeUpload({
   const [encodingNote, setEncodingNote] = useState<string | null>(null);
 
   const busy = stage !== "idle" && stage !== "done";
-  const fileProblem = file === null ? null : uploadFileError(kind, file.size);
-
-  const pickFile = (picked: File | null): void => {
-    setError(null);
-    setMessage(null);
-    setEncodingNote(null);
-    setStage("idle");
-    setFile(picked);
-    if (picked === null) {
-      setKind(null);
-      return;
-    }
-    const detected = detectUploadKind(picked.name);
-    setKind(detected);
-    const fileError = uploadFileError(detected, picked.size);
-    if (fileError !== null) setError(fileError);
-  };
-
   const toggleKc = (id: string): void => {
     setSelectedKcs((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
     );
   };
 
-  const start = async (): Promise<void> => {
-    if (file === null || busy) return;
+  const start = async (file: File): Promise<void> => {
+    if (busy || disabled) return;
+    setFile(file);
+    setMessage(null);
+    setStage("idle");
 
     const detected = detectUploadKind(file.name);
     const fileError = uploadFileError(detected, file.size);
@@ -269,16 +257,20 @@ export function KnowledgeUpload({
     setMessage(null);
     setEncodingNote(null);
     setStage("reading");
+    onBusyChange?.(true);
 
     try {
       if(userId){
-        const storage=getKbStorageForUser(userId);
-        if(!storage)throw new Error("当前浏览器无法加载知识库。");
+
         setStage("parsing");
-        const doc=await uploadDocument(file,directionId,setMessage);
-        if(selectedKcs.length){const binding=await updateDocKcIds(storage,doc.id,selectedKcs);if(!binding.ok)throw new Error(binding.error);}
+        const doc=await uploadDocument(file,directionId,setMessage,undefined,draftKey);
+        if (selectedKcs.length) {
+          const storage = getKbStorageForUser(userId);
+          const binding = storage && await updateDocKcIds(storage, doc.id, selectedKcs);
+          if (!binding?.ok) setError("文件已入库，知识点绑定失败。可在资料列表重新绑定。");
+        }
         setMessage(`已保存「${doc.name}」· ${doc.chunkCount} 个片段${doc.ocrPages?` · ${doc.ocrPages} 页 OCR`:""}，重复文件复用索引。`);
-        setStage("done");onImported();return;
+        setStage("done"); setFile(null); setSelectedKcs([]); onImported(doc); return;
       }
       if (detected === "pdf") setStage("parsing");
       const outcome = await parseUpload(file, detected);
@@ -359,60 +351,48 @@ export function KnowledgeUpload({
       setMessage(`已导入《${file.name}》：${parts.join(" · ")}。${where}`);
       setStage("done");
       setFile(null);
-      setKind(null);
       setSelectedKcs([]);
       if (inputRef.current !== null) inputRef.current.value = "";
       onImported();
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      setError(`导入失败：${reason}。未写入任何内容。`);
+      setError(`导入失败：${reason}`);
       setStage("idle");
+    } finally {
+      onBusyChange?.(false);
     }
   };
 
   const hasAccount = userId !== undefined && userId !== null && userId.trim() !== "";
   const percent = stage === "idle" ? 0 : STAGE_PERCENT[stage];
   const stageLabel =
-    stage === "idle"
+    stage === "parsing" && hasAccount ? "正在索引资料…" : stage === "idle"
       ? ""
       : stage === "writing" && hasAccount
         ? "写入知识库（本机 + 账号）…"
         : STAGE_LABEL[stage];
 
   return (
-    <div className="mt-4 rounded-lg border border-[var(--line-strong)] p-3">
-      <p className="text-sm font-medium">上传资料到本方向知识库</p>
-      <p className="mt-0.5 text-xs text-[var(--ink-faint)]">
-        Markdown（.md）、纯文本（.txt）与带文本层的 PDF；单份 ≤{formatBytes(MAX_FILE_BYTES)}、
-        ≤{MAX_FILE_CHARS.toLocaleString("zh-CN")} 字，PDF ≤{MAX_PDF_PAGES} 页。
-        登录后由服务端解析、去重并保存检索片段，扫描 PDF 自动尝试中英 OCR。匿名模式仅在本浏览器解析文字层；扫描件请登录后导入。
-        {hasAccount ? "登录状态下会同时写入账号，换设备可继续使用。" : ""}
-      </p>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <input
-          ref={inputRef}
-          type="file"
+    <div className="knowledge-import">
+      <div className="knowledge-import-row">
+        <div><strong>导入学习资料</strong><p>PDF、Markdown 或 TXT · 每份最多 {formatBytes(MAX_FILE_BYTES)}</p></div>
+        <input ref={inputRef} type="file" hidden aria-label="选择学习资料"
           accept=".md,.markdown,.txt,.pdf,text/markdown,text/plain,application/pdf"
-          onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
-          disabled={busy}
-          className="min-w-0 text-xs"
-        />
-        <button
-          type="button"
-          onClick={() => void start()}
-          disabled={file === null || busy || kind === null || fileProblem !== null}
-          className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-        >
+          onChange={event => {
+            const picked = event.currentTarget.files?.[0];
+            event.currentTarget.value = "";
+            if (picked) void start(picked);
+          }} />
+        <button type="button" className="direction-primary" disabled={busy || disabled} onClick={() => inputRef.current?.click()}>
           {busy ? "导入中…" : "导入"}
         </button>
-        {file !== null && kind !== null ? (
-          <span className="min-w-0 max-w-full wrap-anywhere text-xs text-[var(--ink-soft)]">
-            {file.name} · {formatBytes(file.size)} · {kind.toUpperCase()}
-          </span>
-        ) : null}
       </div>
-
+      {file && error && !busy && !uploadFileError(detectUploadKind(file.name), file.size) &&
+        <button type="button" className="underline" disabled={disabled} onClick={() => void start(file)}>重试导入 {file.name}</button>}
+      <details className="knowledge-import-limits"><summary>文件要求</summary>
+        正文最多 {MAX_FILE_CHARS.toLocaleString("zh-CN")} 字，PDF 最多 {MAX_PDF_PAGES} 页。
+        {hasAccount ? "扫描页自动尝试中英文 OCR，成功后保存到账号知识库。" : "本机可提取 PDF 文字层；导入扫描件请先登录。"}
+      </details>
       {busy ? (
         <div className="mt-2">
           <div

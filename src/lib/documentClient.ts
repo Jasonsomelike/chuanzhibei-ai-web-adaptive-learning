@@ -24,6 +24,7 @@ export async function uploadDocument(
   targetId: string,
   onProgress: (message: string) => void,
   signal?: AbortSignal,
+  draftKey?: string,
 ): Promise<DocumentReference> {
   const bytes = await file.arrayBuffer();
   const hash = await crypto.subtle.digest("SHA-256", bytes);
@@ -31,7 +32,7 @@ export async function uploadDocument(
     .map((v) => v.toString(16).padStart(2, "0"))
     .join("");
   let job = await call(
-    { action: "create", targetId, name: file.name, size: file.size, sha256 },
+    { action: "create", targetId, draftKey, name: file.name, size: file.size, sha256 },
     signal,
   );
   for (

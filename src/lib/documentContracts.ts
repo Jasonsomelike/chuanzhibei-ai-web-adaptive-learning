@@ -14,6 +14,7 @@ export type DocumentReference = z.infer<typeof documentReference>;
 export const documentRequest = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("create"),
+    draftKey: z.string().uuid().optional(),
     targetId: z.string().min(1).max(100),
     name: z.string().min(1).max(250),
     size: z.number().int().positive().max(MAX_FILE_BYTES),

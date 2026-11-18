@@ -552,6 +552,7 @@ function createMemoryDb(): Db {
       if (q.startsWith("insert into directions")) {
         const [id, user_id, title, subject_id, description, graph_json, is_public, created_at, updated_at] =
           params as string[];
+        if (q.includes("on conflict (id) do nothing") && directions.has(id)) return 0;
         directions.set(id, {
           id,
           user_id,

@@ -16,7 +16,7 @@ import {
 } from "@/lib/documentStore";
 import {
   LearningContextError,
-  loadLearningCourse,
+  checkDocumentTarget,
 } from "@/lib/learningContext";
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   try {
     let result;
     if (body.action === "create") {
-      await loadLearningCourse(db, auth.user.id, body.targetId);
+      await checkDocumentTarget(db, auth.user.id, body.targetId, body.draftKey);
       result = await createDocumentImport(db, auth.user.id, body);
     } else if (body.action === "part")
       result = await putDocumentPart(

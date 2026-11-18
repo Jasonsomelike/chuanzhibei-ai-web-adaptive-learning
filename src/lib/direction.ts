@@ -41,7 +41,7 @@ export interface CustomDirection {
 export interface DirectionDraft {
   readonly title: string;
   readonly description: string;
-  readonly concepts: readonly { id: string; name: string; summary: string }[];
+  readonly concepts: readonly { id: string; name: string; summary: string; chapter?: string }[];
   readonly edges: readonly { before: string; after: string }[];
 }
 
@@ -165,7 +165,7 @@ export function draftToDirection(
     id: c.id,
     name: c.name,
     summary: c.summary,
-    chapter: "自定义",
+    chapter: c.chapter || "自定义",
   }));
 
   const edges: PrerequisiteEdge[] = draft.edges.map((e) => ({
@@ -290,6 +290,7 @@ export function composeFromExisting(description: string): DirectionDraft | null 
         id: idMap.get(x.concept.id)!,
         name: x.concept.name,
         summary: x.concept.summary,
+        chapter: x.concept.chapter,
       })),
     edges,
   };
@@ -365,7 +366,7 @@ export function coerceDraft(raw: unknown): DirectionDraft | null {
   if (typeof o.title !== "string" || typeof o.description !== "string") return null;
   if (!Array.isArray(o.concepts) || !Array.isArray(o.edges)) return null;
 
-  const concepts: { id: string; name: string; summary: string }[] = [];
+  const concepts: { id: string; name: string; summary: string; chapter?: string }[] = [];
   for (const c of o.concepts) {
     if (typeof c !== "object" || c === null) continue;
     const cc = c as Record<string, unknown>;
@@ -373,6 +374,7 @@ export function coerceDraft(raw: unknown): DirectionDraft | null {
     concepts.push({
       id: cc.id,
       name: cc.name,
+      ...(typeof cc.chapter === "string" && cc.chapter.trim() ? { chapter: cc.chapter.trim().slice(0, 60) } : {}),
       summary: typeof cc.summary === "string" ? cc.summary : "",
     });
   }

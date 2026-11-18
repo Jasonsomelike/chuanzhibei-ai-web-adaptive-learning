@@ -1,3 +1,4 @@
+import { directionWorkspaceId } from "./directionWorkspaceId";
 import { ruleTimeEstimates, type LearningTimeResult } from "./learningTime";
 /** 登录学习上下文：身份、课程及判分依据均从服务端解析，模型不能提供掌握度。 */
 import { SUBJECTS, DEFAULT_SUBJECT_ID, type Subject } from "@/data/subjects";
@@ -18,6 +19,12 @@ import { buildMaterialContext, defaultSelectionFor } from "@/lib/materials";
 
 export class LearningContextError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
+}
+
+export async function checkDocumentTarget(db: Db, owner: string, target: string, draftKey?: string) {
+  if (!draftKey) { await loadLearningCourse(db, owner, target); return; }
+  if (target !== await directionWorkspaceId(owner, draftKey))
+    throw new LearningContextError(403, "这份草稿不属于当前账号。");
 }
 
 export interface LearningCourse extends Subject {

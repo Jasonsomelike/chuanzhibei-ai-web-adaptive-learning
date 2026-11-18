@@ -77,7 +77,7 @@ export async function createDocumentImport(
   user: string,
   input: { targetId: string; name: string; size: number; sha256: string },
 ) {
-  if (!/\.(pdf|md|txt)$/iu.test(input.name))
+  if (!/\.(pdf|md|markdown|txt)$/iu.test(input.name))
     throw new DocumentError(400, "支持 PDF、Markdown 和 TXT 文件。");
   const id = idFor(input.targetId, input.sha256);
   const existing = await readArtifact<ImportJob>(db, user, ns, id);
@@ -268,7 +268,7 @@ export async function processDocumentImport(
         fileName: job.name,
         kind: /\.pdf$/iu.test(job.name)
           ? "pdf"
-          : /\.md$/iu.test(job.name)
+          : /\.(md|markdown)$/iu.test(job.name)
             ? "md"
             : "txt",
         size: job.size,

@@ -1,3 +1,5 @@
+import { directionWorkspaceId } from "@/lib/directionWorkspaceId";
+import { z } from "zod";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
@@ -155,6 +157,7 @@ export async function GET(request: Request) {
 }
 
 interface CreateBody {
+  draftKey?: unknown;
   /** 用户自然语言描述。 */
   description?: unknown;
   /** 可选：直接提交一份已生成的草稿（前端预览后确认）。 */
@@ -281,7 +284,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const id = crypto.randomUUID();
+  const key = z.string().uuid().optional().safeParse(body.draftKey);
+  if (!key.success) return NextResponse.json({ error: "草稿编号无效" }, { status: 400 });
+  const id = key.data ? await directionWorkspaceId(user.id, key.data) : crypto.randomUUID();
   const isPublic = body.isPublic === true;
   const direction = draftToDirection(draft, {
     id,
@@ -293,7 +298,7 @@ export async function POST(request: Request) {
 
   await db.run(
     `INSERT INTO directions (id, user_id, title, subject_id, description, graph_json, is_public, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO NOTHING`,
     [
       id,
       user.id,

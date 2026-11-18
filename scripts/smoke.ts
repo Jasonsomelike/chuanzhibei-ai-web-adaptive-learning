@@ -440,35 +440,20 @@ try {
   );
 
   // ── 9. 自定义方向页 ──
-  await page.goto(`${BASE}/directions`, { waitUntil: "networkidle" });
-  await page.waitForSelector("textarea", { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(600);
-  const dirText = await page.locator("body").innerText();
-  record(
-    "方向页需要登录且已登录可创建",
-    dirText.includes("新建方向") || dirText.includes("你想学什么"),
-    dirText.includes("新建方向") ? "显示创建表单" : "显示其他内容",
-  );
-
-  // 用规则拼装生成一个方向（不依赖模型）
-  const textarea = page.locator("textarea");
-  if ((await textarea.count()) > 0) {
+  await page.goto(`${BASE}/directions?create=1`, { waitUntil: "networkidle" });
+  const textarea = page.locator("#course-create textarea");
+  record("方向页需要登录且已登录可创建", await textarea.isVisible(), "规划工作台");
+  if (await textarea.isVisible()) {
     await textarea.fill("我想系统学一遍树结构");
-    await page.getByRole("button", { name: "生成方向" }).click();
-    await page
-      .waitForFunction(
-        () => /从现有学科挑选|模型生成/.test(document.body.innerText),
-        { timeout: 25000 },
-      )
-      .catch(() => {});
-    await page.waitForTimeout(500);
-
-    const draftText = await page.locator("body").innerText();
-    const hasDraft = draftText.includes("从现有学科挑选") || draftText.includes("模型生成");
+    await page.getByRole("button", { name: "发送给导师" }).click();
+    await page.getByRole("log", {name:"方向规划对话"}).waitFor();
+    await page.getByRole("button", { name: "生成学习方案与图谱" }).click();
+    await page.getByLabel("方向名", {exact:true}).waitFor();
+    const hasDraft = await page.locator(".direction-map").isVisible();
     record("生成方向草稿并预览", hasDraft, hasDraft ? "已显示预览" : "无预览");
 
     if (hasDraft) {
-      await page.getByRole("checkbox").check();
+      await page.getByRole("checkbox", {name:"公开到方向市场"}).check();
       await page.getByRole("button", { name: "保存这个方向" }).click();
       await page.waitForTimeout(3000);
       const savedText = await page.locator("body").innerText();

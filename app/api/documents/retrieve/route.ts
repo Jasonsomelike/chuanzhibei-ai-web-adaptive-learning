@@ -12,11 +12,12 @@ import { retrieveDocuments } from "@/lib/documentRetrieval";
 import { DocumentError } from "@/lib/documentReferences";
 import {
   LearningContextError,
-  loadLearningCourse,
+  checkDocumentTarget,
 } from "@/lib/learningContext";
 import { loadLlmConfigForUser, isLlmConfigError } from "@/lib/upstream";
 export const runtime = "nodejs";
 const schema = z.strictObject({
+  draftKey: z.string().uuid().optional(),
   providerMode: z.enum(["local", "server"]).default("server"),
   targetId: z.string().min(1).max(100),
   query: z.string().min(1).max(16000),
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
   const b = parsed.data;
   const db = await getDb();
   try {
-    await loadLearningCourse(db, auth.user.id, b.targetId);
+    await checkDocumentTarget(db, auth.user.id, b.targetId, b.draftKey);
     let config = b;
     try {
       if (b.providerMode === "server")
