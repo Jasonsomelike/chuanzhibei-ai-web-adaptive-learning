@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { CredentialForm, newRecoveryProof, RecoveryFields } from "@/components/account-security";
@@ -10,8 +9,7 @@ import { useSwapIn } from "@/components/motion";
 import { useAuth } from "@/lib/useAuth";
 
 export default function LoginPage() {
-  const router = useRouter();
-  const { login, register } = useAuth();
+  const { login, register, user } = useAuth();
   const [mode, setMode] = useState<"login" | "register" | "recover">("login");
   const [proof, setProof] = useState<RecoveryProof | null>(null);
   const [notice, setNotice] = useState("");
@@ -48,7 +46,8 @@ export default function LoginPage() {
         if (url.origin === window.location.origin && url.pathname !== "/login")
           destination = url.pathname + url.search + url.hash;
       }
-      router.replace(destination);
+      // Request the destination with the new session cookie, even if it was prefetched as a guest.
+      window.location.replace(destination);
     } catch (failure) {
       setError(
         failure instanceof Error ? failure.message : "登录失败，请重试。",
@@ -68,9 +67,9 @@ export default function LoginPage() {
           <li>保留完整导师会话</li>
           <li>管理自定义学习方向</li>
         </ul>
-        <Link href="/">
+        <Link href={user ? "/" : "/guide"}>
           <ArrowLeft size={20} />
-          返回学习概览
+          {user ? "返回学习概览" : "查看使用指南"}
         </Link>
       </section>
       <section

@@ -1,8 +1,12 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth";
 import { LearningDashboard } from "@/components/learning-dashboard";
 import { ArrowRight, BookOpen, CircleHelp, GraduationCap } from "lucide-react";
 
-export default function HomePage() {
+export default async function HomePage() {
+  if (!(await getCurrentUser())) redirect("/login");
+
   return <main id="main" className="home-workspace mx-auto pb-8">
     <LearningDashboard />
     <div className="home-secondary-links">
