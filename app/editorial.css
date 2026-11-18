@@ -498,7 +498,7 @@ button, a { touch-action: manipulation; }
 .conversation-pending button, .conversation-save-error button { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); text-decoration: underline; min-height: 36px; margin-right: 16px; }
 .conversation-earlier { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; font-size: 13px; color: var(--accent); margin: 0 auto 22px; }
 .tutor-editorial .tutor-composer { margin: 0 0 20px; padding: 14px 18px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--surface); box-shadow: none; flex-shrink: 0; max-height: 46dvh; overflow-y: auto; }
-.tutor-editorial .tutor-composer textarea { border: 0; background: transparent; padding-left: 0; min-height: 76px; max-height: 150px; font-size: 15px; box-shadow: none; }
+.tutor-editorial .tutor-composer textarea { border: 0; background: transparent; padding-left: 0; min-height: 104px; max-height: 220px; font-size: 15px; box-shadow: none; }
 .tutor-editorial .tutor-composer textarea:focus-visible { outline-offset: 0; }
 .tutor-editorial .tutor-composer .segmented { width: fit-content; max-width: 100%; background: transparent; gap: 6px; }
 .tutor-editorial .tutor-composer .segmented button { font-size: 12px; padding: 6px 10px; min-height: 34px; border-radius: 18px; }
@@ -1072,7 +1072,7 @@ button, a { touch-action: manipulation; }
 .tutor-stage { container-type:inline-size; }
 .tutor-compose-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .tutor-compose-actions > button, .tutor-web-switch { flex-shrink:0; white-space:nowrap; }
-.tutor-compose-actions > button:last-child { margin-left:auto; min-width:58px; }
+.tutor-compose-actions > button:last-child { min-width:58px; }
 .tutor-search-status { display:flex; flex-wrap:wrap; gap:6px 10px; font-size:11px; line-height:1.6; color:var(--ink-soft); }
 .tutor-compose-shortcut { white-space:nowrap; }
 @container (max-width:680px) { .tutor-compose-shortcut { display:none; } }
