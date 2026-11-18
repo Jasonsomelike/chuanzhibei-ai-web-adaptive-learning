@@ -160,11 +160,12 @@ describe("searchDeepSeek", () => {
 
   it("响应头到了但正文一直不结束时也会超时", async () => {
     // 模拟「连上了、发了头、再也不发正文」；计时器必须覆盖 res.text()。
-    const impl = (async () =>
+    const { impl } = fetchReturning(() =>
       new Response(new ReadableStream({ start() {} }), {
         status: 200,
         headers: { "content-type": "application/json" },
-      })) as typeof fetch;
+      }),
+    );
 
     await expect(
       searchDeepSeek("k", "q", 3, { fetchImpl: impl, timeoutMs: 5 }),
