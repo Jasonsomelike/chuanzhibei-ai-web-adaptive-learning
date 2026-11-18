@@ -41,6 +41,7 @@
   ],
   "exclude": [
     "node_modules",
+    "out",
     "bench",
     "scripts/smoke.ts",
     "scripts/auth-smoke.ts",
