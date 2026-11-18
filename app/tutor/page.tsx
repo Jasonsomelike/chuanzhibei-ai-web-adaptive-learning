@@ -14,7 +14,7 @@ import { detectUploadKind } from "@/components/knowledge-upload";
 import { MAX_FILE_BYTES } from "@/lib/knowledge";
 import { AppDialog } from "@/components/primitives/dialog";
 import { AutoTextarea } from "@/components/auto-textarea";
-import { MobileQuestionOptions, HelpLevelChoices } from "@/components/tutor-question-options";
+import { MobileQuestionOptions, HelpLevelChoices, HelpLevelExplainer } from "@/components/tutor-question-options";
 import { TutorWorkspace } from "@/components/tutor-workspace";
 import { ConversationSidebar } from "@/components/conversation-sidebar";
 import { archiveContent, type ArchivedMessage } from "@/lib/conversationContracts";
@@ -2650,7 +2650,8 @@ export default function TutorPage() {
         </div>
 
         <div className="tutor-composer" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
-        <div className="tutor-desktop-options mb-3"><HelpLevelChoices level={helpLevel} onChange={setHelpLevel} disabled={busy} /></div>
+        <div className="tutor-desktop-options mb-3"><HelpLevelChoices level={helpLevel} onChange={setHelpLevel} disabled={busy} />
+          <HelpLevelExplainer level={helpLevel} /></div>
         {/* 状态行：附件 / 听写 / 联网 / 语音错误，只在有内容时出现 */}
         {pendingDocuments.length?<ul className="mb-2 flex flex-wrap gap-2" aria-label="待发送文档">{pendingDocuments.map(doc=><li key={doc.id} className="max-w-full break-all rounded border border-[var(--line)] px-2 py-1 text-xs">📄 {doc.name}<button type="button" aria-label={`移除附件 ${doc.name}`} className="ml-2" onClick={()=>setDocumentDraft({scope:documentScope,items:pendingDocuments.filter(d=>d.id!==doc.id)})}>×</button></li>)}</ul>:null}
         {documentBusy?<p role="status" className="mb-2 text-xs">文档处理中，完成后即可提问。重复文件会复用索引。</p>:null}
@@ -2686,7 +2687,7 @@ export default function TutorPage() {
           </label>
           <AutoTextarea
             id="q"
-            rows={1}
+            rows={3}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             maxLength={4000}
@@ -2761,7 +2762,8 @@ export default function TutorPage() {
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${webOn ? "translate-x-4" : "translate-x-0.5"}`} />
             </button>
           </span>
-          <span className="tutor-compose-shortcut ml-auto text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
+          <span aria-hidden="true" className="ml-auto" />
+          <span className="tutor-compose-shortcut text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
             {busy ? (
               <button
                 type="button"
