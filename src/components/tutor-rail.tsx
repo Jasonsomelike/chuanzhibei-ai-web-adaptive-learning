@@ -62,6 +62,6 @@ export function TutorRail({ children, course, sourceRequest = 0, sourcePanel }: 
     </div>)}
   </div>;
   return <>
-    <div className="tutor-material-trigger"><AppDialog open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { if (focusComposer.current) { event.preventDefault(); focusComposer.current = false; document.getElementById("q")?.focus(); } }} drawer title="课程学习材料" description={course} toolbar={toolbar} trigger={<button type="button" className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--accent)]"><Icon name="book" size={18} /><span>教材与引用</span></button>}>{open ? contents : null}</AppDialog></div>
+    <div className="tutor-material-trigger"><AppDialog open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { if (focusComposer.current) { event.preventDefault(); focusComposer.current = false; document.getElementById("q")?.focus(); } }} drawer title="课程学习材料" description={course} toolbar={toolbar} trigger={<button type="button" aria-label="教材与引用" className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--accent)]"><Icon name="book" size={18} /><span>教材与引用</span><b aria-hidden="true" className="tutor-material-short">教材</b></button>}>{open ? contents : null}</AppDialog></div>
   </>;
 }

@@ -14,6 +14,7 @@ import { detectUploadKind } from "@/components/knowledge-upload";
 import { MAX_FILE_BYTES } from "@/lib/knowledge";
 import { AppDialog } from "@/components/primitives/dialog";
 import { AutoTextarea } from "@/components/auto-textarea";
+import { MobileQuestionOptions, HelpLevelChoices } from "@/components/tutor-question-options";
 import { TutorWorkspace } from "@/components/tutor-workspace";
 import { ConversationSidebar } from "@/components/conversation-sidebar";
 import { archiveContent, type ArchivedMessage } from "@/lib/conversationContracts";
@@ -2174,7 +2175,7 @@ export default function TutorPage() {
         <TutorWorkspace sidebar={<ConversationSidebar items={history.conversations} activeId={history.active?.id} mode={history.mode} query={history.query} loading={history.listLoading || history.loading && !history.active} more={!!history.cursor} storage={history.storage} disabled={busy}
           onMode={history.setMode} onQuery={history.setQuery} onOpen={item => void history.open(item).catch(failure => setError(messageOf(failure)))} onNew={() => void history.newDraft().catch(failure => setError(messageOf(failure)))} onUpdate={history.update} onMore={() => void history.refresh(true)} onLegacy={user ? () => setLegacyOpen(true) : undefined} />}>
         <div className="tutor-stage">
-        <header className="tutor-conversation-heading"><div><h2>{history.active?.title ?? "一起把问题想明白"}</h2><p>课程：{history.active?.targetName ?? target.name}</p></div></header>
+        <header className="tutor-conversation-heading"><div><h2>{history.active?.title ?? <><span className="tutor-desktop-title">一起把问题想明白</span><span className="tutor-mobile-title">课程导师</span></>}</h2><p>课程：{history.active?.targetName ?? target.name}</p></div></header>
         {history.active?.parentId ? <div className="conversation-origin"><GitBranch size={17} /><span>从一轮问答新建的分支</span><button type="button" disabled={busy} onClick={() => void history.open({ id:history.active!.parentId! }).catch(failure => setError(messageOf(failure)))}>查看来源</button></div> : null}
         {!history.writable && history.active ? <div className="conversation-readonly" role="status">{history.active.deletedAt ? "此会话已移入回收站。" : history.active.archived ? "此会话已归档。" : "此会话对应的课程暂不可用，历史内容仍保留。"} <button type="button" disabled={busy} onClick={() => void history.update(history.active!,{ trash:false,archived:false }).catch(() => undefined)}>恢复会话</button></div> : null}
         <TutorRail key={ownerId ?? "anonymous"} course={target.name} sourceRequest={sourceFocus?.request} sourcePanel={sourceFocus ? <section data-citation-source tabIndex={-1} aria-label="回答引用原文" className="mb-6 border-b border-[var(--accent)] pb-5">
@@ -2649,9 +2650,7 @@ export default function TutorPage() {
         </div>
 
         <div className="tutor-composer" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
-        <fieldset className="mb-3"><legend className="sr-only">希望学伴怎样帮你？</legend><div className="segmented max-w-sm">
-          {([ ["hint", "1 · 给我提示"], ["steps", "2 · 引导步骤"], ["explain", "3 · 完整讲解"] ] as const).map(([level, label]) => <button type="button" key={level} disabled={busy} aria-pressed={helpLevel === level} onClick={() => setHelpLevel(level)}>{label}</button>)}
-        </div></fieldset>
+        <div className="tutor-desktop-options mb-3"><HelpLevelChoices level={helpLevel} onChange={setHelpLevel} disabled={busy} /></div>
         {/* 状态行：附件 / 听写 / 联网 / 语音错误，只在有内容时出现 */}
         {pendingDocuments.length?<ul className="mb-2 flex flex-wrap gap-2" aria-label="待发送文档">{pendingDocuments.map(doc=><li key={doc.id} className="max-w-full break-all rounded border border-[var(--line)] px-2 py-1 text-xs">📄 {doc.name}<button type="button" aria-label={`移除附件 ${doc.name}`} className="ml-2" onClick={()=>setDocumentDraft({scope:documentScope,items:pendingDocuments.filter(d=>d.id!==doc.id)})}>×</button></li>)}</ul>:null}
         {documentBusy?<p role="status" className="mb-2 text-xs">文档处理中，完成后即可提问。重复文件会复用索引。</p>:null}
@@ -2713,6 +2712,7 @@ export default function TutorPage() {
           />
           {/* 左下角：📎 附件 / 🎤 语音 / 🌐 联网；右下角：快捷键提示 + 发送 */}
           <div className="tutor-compose-actions">
+          <MobileQuestionOptions level={helpLevel} onChange={setHelpLevel} disabled={busy} webOn={webOn} toggleWeb={() => setWebOn(value => !value)} provider={webProviderLabel(searchProvider.provider)} />
           <input
             ref={attachInputRef}
             type="file"
@@ -2736,6 +2736,7 @@ export default function TutorPage() {
             onClick={() => void toggleSpeech()}
             disabled={busy || !speechSupport?.ok}
             aria-pressed={listening}
+            aria-label={listening ? "结束语音输入" : "语音输入"}
             title={speechSupport !== null && speechSupport.ok ? "语音只填空，不自动发送" : speechSupport?.message ?? "语音输入"}
             className={
               listening
@@ -2784,7 +2785,7 @@ export default function TutorPage() {
             <Link href="/settings?panel=search" className="underline" title="联网搜索设置：供应商、默认开与关、测试">搜索设置</Link>
           </div>
         </form>
-        <div className="tutor-save-status" role="status">{history.saveState === "error" ? <><span>有内容尚未保存</span><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></> : history.saveState === "saving" ? "正在保存会话…" : <><Check size={15} />{history.active ? "会话已保存" : "新会话"}</>}</div>
+        <div className="tutor-save-status" data-idle-draft={!history.active && !["saving", "error"].includes(history.saveState) || undefined} role="status">{history.saveState === "error" ? <><span>有内容尚未保存</span><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></> : history.saveState === "saving" ? "正在保存会话…" : <><Check size={15} />{history.active ? "会话已保存" : "新会话"}</>}</div>
         {history.error ? <div className="conversation-save-error" role="alert"><p>{history.error}</p><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></div> : null}
         </div>
         </section>

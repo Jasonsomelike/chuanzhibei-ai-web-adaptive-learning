@@ -18,6 +18,32 @@ export function TutorWorkspace({ sidebar, children }: { sidebar: ReactNode; chil
   const [wide, setWide] = useState(false);
   const stored = useClientSnapshot(readWidth, DEFAULT_WIDTH);
   const preferred = useRef<number | null>(null);
+  // Mobile browsers can shrink only the visual viewport for the keyboard.
+  // Measure the visible space below this workspace relative to the same origin.
+  useEffect(() => {
+    const root = element.current;
+    const viewport = window.visualViewport;
+    if (!root || !viewport) return;
+    const resize = () => {
+      const keyboard = innerWidth <= 768 && document.activeElement?.id === "q" &&
+        Math.abs(viewport.scale - 1) < .01 && innerHeight - viewport.height > 100;
+      if (keyboard) {
+        const height = viewport.offsetTop + viewport.height - root.getBoundingClientRect().top;
+        root.style.setProperty("--tutor-keyboard-height", `${Math.max(0, height)}px`);
+      } else root.style.removeProperty("--tutor-keyboard-height");
+      root.toggleAttribute("data-keyboard", keyboard);
+    };
+    viewport.addEventListener("resize", resize);
+    viewport.addEventListener("scroll", resize);
+    document.addEventListener("focusin", resize);
+    document.addEventListener("focusout", resize);
+    return () => {
+      viewport.removeEventListener("resize", resize);
+      viewport.removeEventListener("scroll", resize);
+      document.removeEventListener("focusin", resize);
+      document.removeEventListener("focusout", resize);
+    };
+  }, []);
   useEffect(() => {
     if (!element.current) return;
     const measure = () => setWide(window.innerWidth >= 1024 && (element.current?.clientWidth ?? 0) >= 860);
@@ -31,7 +57,7 @@ export function TutorWorkspace({ sidebar, children }: { sidebar: ReactNode; chil
     preferred.current = Math.max(240, Math.min(480, width));
     try { localStorage.setItem(WIDTH_KEY, String(preferred.current)); } catch { /* Resizing works even when storage is unavailable. */ }
   };
-  return <Group elementRef={element} className="tutor-workspace tutor-resizable" data-split={wide ? "wide" : "drawer"} orientation="horizontal" disabled={!wide} style={{ height: "var(--tutor-workspace-height)", minHeight: 0 }}
+  return <Group elementRef={element} className="tutor-workspace tutor-resizable" data-split={wide ? "wide" : "drawer"} orientation="horizontal" disabled={!wide} style={{ height: "var(--tutor-keyboard-height, var(--tutor-workspace-height))", minHeight: 0 }}
     onLayoutChanged={(layout, meta) => {
       if (!wide || !meta.isUserInteraction || !element.current) return;
       // The imperative ref still describes the previous render inside this callback.

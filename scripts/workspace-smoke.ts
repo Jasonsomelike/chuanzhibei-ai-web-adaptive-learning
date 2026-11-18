@@ -144,17 +144,47 @@ try {
     check(await page.locator("#q").inputValue() === "多行问题\n".repeat(12), `${w}px 切换布局保持未发送输入`);
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${w}px 导师无横向溢出`);
     if (w === 390) {
+      await page.getByRole("button", { name: /^提问选项/ }).click();
+      const options = page.getByRole("dialog", { name: "提问选项" });
+      await options.getByRole("button", { name: "2 · 引导步骤" }).click();
+      await options.getByRole("switch", { name: "联网查找资料" }).check();
+      await options.getByRole("button", { name: "完成" }).click();
+      check(await page.getByRole("button", { name: "提问选项：引导步骤，已联网" }).isVisible() &&
+        await page.locator("#q").inputValue() === "多行问题\n".repeat(12), "手机讲解方式与联网设置生效并保留草稿");
       const geometry = await page.evaluate(() => {
         const send = [...document.querySelectorAll("button")].find(el => el.textContent?.trim() === "发送")!.getBoundingClientRect();
         const nav = document.querySelector(".mobile-learning-nav")!.getBoundingClientRect();
         return { sendBottom: send.bottom, navTop: nav.top, navHeight: nav.height };
       });
       check(geometry.sendBottom <= geometry.navTop && geometry.navHeight < 80, `手机发送按钮在导航上方，六个入口单行排列：${JSON.stringify(geometry)}`);
+      await page.locator("#q").focus();
+      const keyboardFits = await page.evaluate(() => {
+        const viewport = visualViewport!;
+        try {
+          Object.defineProperty(viewport, "height", { configurable: true, value: 510 });
+          viewport.dispatchEvent(new Event("resize"));
+          return document.querySelector(".tutor-composer")!.getBoundingClientRect().bottom <= 510 &&
+            document.querySelector(".mobile-learning-nav")!.getBoundingClientRect().height === 0;
+        } finally {
+          Reflect.deleteProperty(viewport, "height");
+          viewport.dispatchEvent(new Event("resize"));
+        }
+      });
+      check(keyboardFits && await page.locator(".mobile-learning-nav").isVisible(), "模拟软键盘弹出时输入区保持可见，收起后恢复导航");
     }
   }
   await page.screenshot({ path: join(output, "tutor-mobile.png") });
+  await page.setViewportSize({ width: 667, height: 375 });
+  await page.locator("#q").fill("");
+  const phoneLandscape = await page.evaluate(() => ({
+    navWidth: document.querySelector(".mobile-learning-nav")!.getBoundingClientRect().width,
+    messageHeight: document.querySelector(".tutor-messages")!.getBoundingClientRect().height,
+    composerBottom: document.querySelector(".tutor-composer")!.getBoundingClientRect().bottom,
+  }));
+  check(phoneLandscape.navWidth < 80 && phoneLandscape.messageHeight > 120 && phoneLandscape.composerBottom <= 375, "矮横屏导航侧置，对话与输入可同时使用");
   await page.setViewportSize({ width: 1480, height: 1000 });
   await page.locator('.tutor-resizable[data-split="wide"]').waitFor();
+  check(await page.getByRole("button", { name: "2 · 引导步骤" }).getAttribute("aria-pressed") === "true", "回到桌面沿用手机选择的讲解方式");
   check(Math.abs(await width() - 292) < 2, "回到桌面恢复偏好，窄屏不覆盖保存值");
   check(errors.length === 0, `无浏览器运行异常：${errors.join("; ")}`);
   console.log(`${checks} 项通过；截图：${output}`);

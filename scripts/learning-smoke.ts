@@ -91,6 +91,7 @@ try {
 
   // UI upgrade: real course/evidence data, accessible overlays and stable list identity.
   await visit("/");
+  await page.locator('.daily-dashboard[aria-busy="false"]').waitFor();
   const savedBeforePreview = await page.evaluate(() => localStorage.getItem("alp.learner.v2"));
   check(await page.getByRole("link", { name: "继续学习", exact: true }).isVisible(), "已有作答的首页优先继续学习");
   check((await page.locator("main").innerText()).includes("最近作答："), "首页展示真实最近作答");
@@ -136,7 +137,8 @@ try {
   await page.getByRole("button", { name: "教材与引用", exact: true }).click();
   await page.getByRole("dialog", { name: "课程学习材料", exact: true }).waitFor();
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.textContent?.trim() === "教材与引用");
+  await page.getByRole("dialog", { name: "课程学习材料", exact: true }).waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "教材与引用");
   check(await page.getByRole("button", { name: "教材与引用", exact: true }).evaluate(el => el === document.activeElement), "Escape 关闭抽屉并恢复触发按钮焦点");
   await visit("/path?subject=data-structures");
   await page.getByRole("button", { name: "教材章节 · 整科", exact: true }).click();
