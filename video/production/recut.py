@@ -25,7 +25,7 @@ STORY = json.loads((HERE / "recut.json").read_text("utf8"))
 FPS = 60
 TEMPO = 1.12
 RATE = 24000
-STEM = "chuanzhibei-complete-1080p60"
+STEM = "chuanzhibei-animated-1080p60"
 FF = os.environ.get("FFMPEG_PATH", "ffmpeg")
 PROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
 FONT = ImageFont.truetype(
@@ -187,11 +187,13 @@ def subtitle_track(key, rows, jump, seconds):
 
     for a, b, text in rows:
         # A narrow, softly rounded backing follows each phrase on light or dark footage.
+        x = 535 if key == "phone" else 960
         y = 980
         if key == "phone":
             y = 994
         if key in {"diagnose", "feedback", "nodes", "appearance"}:
             y = 84
+        position = rf"\pos({x},{y})"
         w = math.ceil(FONT.getlength(text) / 2) + 26
         h = 32
         r = 13
@@ -205,16 +207,16 @@ def subtitle_track(key, rows, jump, seconds):
             0,
             a,
             b,
-            r"{\an7\pos(960,"
-            + str(y)
-            + r")\bord0\shad0\1c&H19251E&\1a&H35&\p1}"
+            r"{\an7"
+            + position
+            + r"\bord0\shad0\1c&H19251E&\1a&H35&\p1}"
             + path,
         )
-        show(1, a, b, r"{\an5\pos(960," + str(y) + r")\b1\fs46\bord0\shad0}" + text)
+        show(1, a, b, r"{\an5" + position + r"\b1\fs46\bord0\shad0}" + text)
     if jump is not None:
         show(1, jump + 0.05, min(seconds, jump + 2.1), "已跳过模型等待", "Label")
-    if key == "tutor_source":
-        show(1, 0.15, 2, "已跳过模型等待", "Label")
+    if key == "tutor_question":
+        show(1, 6.05, 8.0, "已跳过模型等待", "Label")
     if key == "end":
         show(
             0,
@@ -258,6 +260,22 @@ def duration(file):
     )
 
 
+def frame_explanations(cues, start, end):
+    """Give each readable close-up a return and a dwell on the full viewport."""
+    wide = {"x": 0.5, "y": 0.5, "z": 1}
+    visible = [cue for cue in cues if start <= cue["t"] < end]
+    framed = []
+    for i, cue in enumerate(visible):
+        onset = max(start + 0.35, cue["t"])
+        until = visible[i + 1]["t"] if i + 1 < len(visible) else end
+        if cue["z"] <= 1 or until - onset < 3.1:
+            # Keep quick successive clicks together in a stable full-page view.
+            continue
+        framed.append({**cue, "t": onset})
+        framed.append({**wide, "t": until - min(2.1, (until - onset) * 0.43)})
+    return framed
+
+
 def camera(cues, index):
     # Interpolate the top-left of the crop separately from scale, stopping at frame edges.
     moves = [(0.0, 0.0, 0.0, 1.0)]
@@ -280,6 +298,8 @@ def camera(cues, index):
 def edit_segment(row):
     key, seconds = row[:2]
     pieces = {
+        "open": [("intro", 17), ("open", 2)],
+        "tutor_question": [("tutor_question", 6), ("tutor_conclusion", 8)],
         "turn1": [("turn1", 7), ("turn1_result", 10)],
         "turn2": [("turn2", 7), ("turn2_result", 10)],
         "build": [("build", 6), ("build_result", 13)],
@@ -310,6 +330,7 @@ def edit_segment(row):
         w, h = active["width"], active["height"]
         # Chromium emits CSS-viewport-sized screencast frames. Discard any recorder padding.
         chain = f"[{i}:v]crop={w}:{h}:0:0,setsar=1"
+        start = {2: 5, 4: 10}.get(i, 0) if key == "appearance" else 0
         if name == "phone":
             chain += ",scale=-2:1032:flags=lanczos,pad=1920:1080:1130:24:color=0xf4f1e9"
         else:
@@ -325,10 +346,11 @@ def edit_segment(row):
                 cues[-1] = {**cues[-1], "x": 0.24}
             if name in {"turn1_result", "turn2_result"}:
                 cues = [{"t": 0.3, "x": 0.32, "y": 0.45, "z": 1.55}]
-            if name == "tutor_source":
-                cues[-1] = {**cues[-1], "x": 0.88, "y": 0.30, "z": 1.88}
             if name == "estimate":
                 cues[-1] = {**cues[-1], "x": 0.27, "z": 1.85}
+            # The question footage runs at 1.5x. Keyframes here use source time.
+            shown = 9 if name == "tutor_question" else length
+            cues = frame_explanations(cues, start, start + shown)
             if cues:
                 chain += (
                     f",zoompan=z='{camera(cues, 3)}':x='iw*({camera(cues, 1)})':y='ih*({camera(cues, 2)})'"
@@ -337,9 +359,11 @@ def edit_segment(row):
             else:
                 chain += ",scale=1920:1080:flags=lanczos"
         dur = duration(file)
-        if dur < length - 0.04:
+        if name == "tutor_question":
+            # Include the actual send click at 8.6 s before cutting to the saved reply.
+            chain += ",trim=duration=9,setpts=PTS/1.5,fps=60"
+        elif dur < length - 0.04:
             chain += f",setpts={length / dur:.8f}*PTS,fps=60"
-        start = {2: 5, 4: 10}.get(i, 0) if key == "appearance" else 0
         chain += f",trim=start_frame={start * FPS}:end_frame={(start + length) * FPS},setpts=N/(60*TB),setsar=1,format=yuv420p[v{i}]"
         filters.append(chain)
     current = "v0"

@@ -63,7 +63,36 @@ const content = {
   },
 };
 try {
-  for (const [key, s] of Object.entries(content)) {
+  await page.goto(new URL("./intro.html", import.meta.url).href);
+  await page.evaluate(() => document.fonts.ready);
+  await take(page, "intro", 17, async ({ at }) => {
+    await page.evaluate(() => document.body.classList.add("play"));
+    await at(4.85);
+    await page.evaluate(() => {
+      document.body.dataset.act = "2";
+    });
+    for (const [i, t] of [5.1, 6.3, 7.7].entries()) {
+      await at(t);
+      await page
+        .locator("#r" + (i + 1))
+        .evaluate((el) => el.classList.add("on"));
+    }
+    await at(9.5);
+    await page.evaluate(() => {
+      document.body.dataset.act = "3";
+    });
+    for (const [i, t] of [9.8, 11.4, 13.15, 14.55].entries()) {
+      await at(t);
+      await page.evaluate((i) => {
+        document.querySelector("#f" + (i + 1)).classList.add("on");
+        document.querySelector("#feature-line").style.strokeDashoffset =
+          1 - i / 3;
+      }, i);
+    }
+  });
+  for (const [key, s] of Object.entries(
+    process.argv[2] === "intro" ? {} : content,
+  )) {
     await page.setContent(
       '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>' +
         css +

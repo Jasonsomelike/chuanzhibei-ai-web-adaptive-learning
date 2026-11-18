@@ -502,34 +502,81 @@ async function studio() {
     wide();
   });
 }
-async function readback() {
+// Frame the actual answer paragraphs inside the independently scrolling message log.
+async function placeAnswer(paragraph) {
+  await paragraph.evaluate((el) => {
+    const log = el.closest('[role="log"]');
+    log.scrollTop +=
+      el.getBoundingClientRect().top - log.getBoundingClientRect().top - 30;
+  });
+  await pause(140);
+  const visible = await paragraph.evaluate((el) => {
+    const log = el.closest('[role="log"]').getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    return box.top >= log.top - 1 && box.bottom <= log.bottom + 1;
+  });
+  if (!visible) throw Error("回答段落没有完整进入消息视口");
+}
+async function tutorReadback() {
+  await p.setViewportSize({ width: 1920, height: 1080 });
   await go("/tutor?subject=data-structures&kc=c09");
   await p
     .locator('.conversation-row button[title*="为什么两个栈"]')
     .first()
     .click();
-  const cite = p
-    .locator('button[title*="引用原文"],button[aria-label*="的引用原文"]')
-    .last();
-  await cite.waitFor();
-  await record("tutor_source", 19, async ({ at, click, focus }) => {
-    const body = p.locator('[aria-label="辅导消息"] article').last();
-    if (await body.isVisible()) await focus(body, 1.22);
-    await at(7);
-    await click(cite, 1.48);
+  const answer = p.locator(".tutor-answer-body").last();
+  const paragraph = (label) =>
+    answer.locator(":scope > p").filter({ hasText: label }).first();
+  const conclusion = paragraph(/^结论/);
+  const explanation = paragraph(/^解释/);
+  const example = paragraph(/^例子/);
+  await conclusion.waitFor();
+  await placeAnswer(conclusion);
+  await record("tutor_conclusion", 8, async ({ focus }) => {
+    await focus(conclusion, 2.15);
+  });
+  await placeAnswer(explanation);
+  await record("tutor_source", 19, async ({ at, focus, click }) => {
+    await focus(explanation, 2.1);
+    await at(4);
+    await placeAnswer(example);
+    await focus(example, 2.1);
+    await at(8);
+    await placeAnswer(explanation);
+    const cite = explanation.getByRole("button").first();
+    await focus(explanation, 2.1);
+    await cite.hover();
+    await at(10.6);
+    await click(cite, 1.75);
     const source = p.locator("[data-citation-source]");
     await source.waitFor();
-    await at(11);
-    await focus(source.getByRole("heading").first(), 1.75);
+    await focus(source.getByRole("heading").first(), 2.25);
   });
-  await p.setViewportSize({ width: 688, height: 1488 });
+  // Use the actual responsive viewport. CSS zoom on a wider page moves fixed drawers offscreen.
+  await p.setViewportSize({ width: 430, height: 860 });
   await go("/tutor?subject=data-structures&kc=c09");
-  await btn("教材与引用").waitFor();
+  const materials = btn("教材与引用");
+  await materials.waitFor();
+  await conclusion.waitFor();
+  await placeAnswer(conclusion);
   await record("phone", 8, async ({ at, click }) => {
-    await at(1);
-    await click(btn("教材与引用"), 1);
-    await p.getByRole("dialog", { name: "课程学习材料" }).waitFor();
+    await at(0.8);
+    await click(materials, 1);
+    const drawer = p.getByRole("dialog", { name: "课程学习材料" });
+    await drawer.waitFor();
+    await pause(400);
+    const box = await drawer.boundingBox();
+    if (!box || box.x < -1 || box.x + box.width > 431)
+      throw Error("手机教材超出录制宽度");
+    const ask = drawer.locator("[data-material-ask]").first();
+    await at(4.8);
+    await click(ask, 1);
+    await drawer.waitFor({ state: "hidden" });
+    await p.waitForFunction(() => document.querySelector("#q")?.value.trim());
   });
+}
+async function readback() {
+  await tutorReadback();
   await bank();
 }
 async function bank() {
@@ -575,6 +622,7 @@ try {
       tutor,
       studio,
       readback,
+      tutorReadback,
       bank,
     }[part]();
   }
