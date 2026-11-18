@@ -25,7 +25,7 @@ STORY = json.loads((HERE / "recut.json").read_text("utf8"))
 FPS = 60
 TEMPO = 1.12
 RATE = 24000
-STEM = "chuanzhibei-animated-1080p60"
+STEM = "chuanzhibei-direction-graph-1080p60"
 FF = os.environ.get("FFMPEG_PATH", "ffmpeg")
 PROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
 FONT = ImageFont.truetype(
@@ -303,6 +303,7 @@ def edit_segment(row):
         "turn1": [("turn1", 7), ("turn1_result", 10)],
         "turn2": [("turn2", 7), ("turn2_result", 10)],
         "build": [("build", 6), ("build_result", 13)],
+        "directionGraph": [("directionGraph", 12), ("directionOverview", 2)],
         "appearance": [
             ("appearance", 3),
             ("chapterGraph", 2),
@@ -362,6 +363,9 @@ def edit_segment(row):
         if name == "tutor_question":
             # Include the actual send click at 8.6 s before cutting to the saved reply.
             chain += ",trim=duration=9,setpts=PTS/1.5,fps=60"
+        elif name == "validation":
+            # Preserve the endpoint and cycle checks within the shorter explanation.
+            chain += ",trim=duration=18,setpts=PTS/3,fps=60"
         elif dur < length - 0.04:
             chain += f",setpts={length / dur:.8f}*PTS,fps=60"
         chain += f",trim=start_frame={start * FPS}:end_frame={(start + length) * FPS},setpts=N/(60*TB),setsar=1,format=yuv420p[v{i}]"

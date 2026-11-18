@@ -575,6 +575,98 @@ async function tutorReadback() {
     await p.waitForFunction(() => document.querySelector("#q")?.value.trim());
   });
 }
+async function directionGraph() {
+  await p.setViewportSize({ width: 1920, height: 1080 });
+  await go("/directions#custom-courses");
+  const title = "双栈队列与均摊分析 · 六周练习";
+  const saved = p
+    .locator('[data-motion="direction"]')
+    .filter({
+      has: p.getByRole("heading", { name: title, exact: true }),
+    })
+    .first();
+  const link = saved.getByRole("link", { name: "查看路径" });
+  await link.click();
+  await p.waitForURL(
+    (url) => url.pathname === "/path" && url.searchParams.has("direction"),
+  );
+  const all = btn("全科关系");
+  await all.click();
+  const canvas = p.locator(".knowledge-canvas");
+  const nodes = canvas.locator(".react-flow__node");
+  const edges = canvas.locator(".react-flow__edge");
+  await p.waitForFunction(
+    () => document.querySelectorAll(".react-flow__node").length === 12,
+  );
+  const concept = "均摊代价解释";
+  const target = nodes.filter({ hasText: concept });
+  const incoming = await edges.evaluateAll((els) =>
+    els.map((el) => el.getAttribute("aria-label")),
+  );
+  for (const prerequisite of ["总成本与序列统计", "每元素最多倒一次"]) {
+    if (
+      !incoming.some((label) =>
+        label?.includes(prerequisite + " 是 " + concept + " 的先修知识"),
+      )
+    ) {
+      throw Error("录制的方向缺少先修关系：" + prerequisite);
+    }
+  }
+  if (incoming.length !== 15) throw Error("先修边数量与口播不符");
+  const fit = btn("查看完整图谱");
+  async function overview() {
+    await canvas.evaluate((el) =>
+      el.scrollIntoView({ block: "center", behavior: "instant" }),
+    );
+    await fit.click();
+    await pause(350);
+    const fits = () =>
+      nodes.evaluateAll((els) => {
+        const box = els[0].closest(".react-flow").getBoundingClientRect();
+        return (
+          els.length === 12 &&
+          els.every((el) => {
+            const r = el.getBoundingClientRect();
+            return (
+              r.left >= box.left &&
+              r.right <= box.right &&
+              r.top >= box.top &&
+              r.bottom <= box.bottom
+            );
+          })
+        );
+      });
+    if (!(await fits())) {
+      await btn("当前路径").click();
+      await all.click();
+      await pause(600);
+    }
+    if (!(await fits())) throw Error("十二个节点未完整进入图谱画布");
+    await p.mouse.move(1340, 660, { steps: 5 });
+  }
+  await overview();
+  // Keep a verified full-graph shot for the cut back from the inspector.
+  await record("directionOverview", 2, async ({ at }) => {
+    await at(2);
+  });
+  await record("directionGraph", 12, async ({ at, click, focus }) => {
+    await at(3.6);
+    await click(target, 1.3);
+    const detail = p.locator(".knowledge-inspector-main");
+    await detail.getByRole("heading", { name: concept, exact: true }).waitFor();
+    const prereqs = detail.locator(".concept-prerequisites");
+    await prereqs.getByText("每元素最多倒一次", { exact: true }).waitFor();
+    await pause(450);
+    await focus(target, 2);
+    await at(7.8);
+    await detail.evaluate((el) =>
+      el.scrollIntoView({ block: "center", behavior: "smooth" }),
+    );
+    await pause(450);
+    await focus(prereqs.getByText("总成本与序列统计", { exact: true }), 1.85);
+  });
+}
+
 async function readback() {
   await tutorReadback();
   await bank();
@@ -623,6 +715,7 @@ try {
       studio,
       readback,
       tutorReadback,
+      directionGraph,
       bank,
     }[part]();
   }
