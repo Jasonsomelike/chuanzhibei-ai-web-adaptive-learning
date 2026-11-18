@@ -6,7 +6,7 @@
 
 先修图决定能不能学 · Beta 后验决定先学哪个 · 时间预算决定这次学到哪
 
-[在线演示](https://chuanzhibei-adaptive-learning.vercel.app) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [UI V3 改造与截图](docs/ui-v3-verification.md) · [已知限制](docs/limits.md)
+[在线演示](https://chuanzhi.jasonsome.cn/) · [省赛演示视频](https://www.bilibili.com/video/BV1Z7s16RE2Z/) · [架构与算法](docs/architecture.md) · [RAG 与存储](docs/rag.md) · [验证记录](docs/verification.md) · [UI V3 改造与截图](docs/ui-v3-verification.md) · [已知限制](docs/limits.md)
 
 ![tests](https://img.shields.io/badge/tests-2064%20passed-brightgreen)
 ![kg:validate](https://img.shields.io/badge/kg%3Avalidate-0%20error-brightgreen)
@@ -23,8 +23,8 @@
 
 ## 评审入口
 
-- **演示地址**：<https://chuanzhibei-adaptive-learning.vercel.app>
-- **评审账号**：待提交负责人填写（本仓库不预置账号与口令；评审期以报名系统提交的账号为准）
+- **演示地址**：<https://chuanzhi.jasonsome.cn/>
+- **评审账号**：请使用报名系统随作品提交的评审账号登录。
 - **5 分钟验证**：登录 → `/settings` 保存模型配置（server 模式需部署方先配好 `ALP_SECRET_KEY`）→ `/diagnose` 做 8 题 → `/path` 看双指纹与预算对照 → `/tutor` 问一个教材内问题看引用核对
 
 ## 这是什么

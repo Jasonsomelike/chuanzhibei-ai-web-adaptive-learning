@@ -91,3 +91,11 @@ public/models/
 # 本地编码工具指令不属于项目交付内容
 [Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
 [Aa][Gg][Ee][Nn][Tt].[Mm][Dd]
+
+# 本地竞赛材料制作与对话导出
+/video/
+/research/session-export/
+/docs/submission/演示视频拍法.md
+/scripts/build-submission-doc*.py
+/scripts/export-submission-pdf.py
+/scripts/check-submission-spacing.py
