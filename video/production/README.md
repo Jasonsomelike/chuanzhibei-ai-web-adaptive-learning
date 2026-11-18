@@ -2,18 +2,20 @@
 
 ## 60 fps 实录剪辑版
 
-新版母片与同名 SRT 位于 `video/out/recut/chuanzhibei-live-1080p60.*`，时长 5 分 51 秒。网页镜头取自指定站点的 Chromium 连续录屏。原始 WebM 与对应的镜头时间、鼠标焦点分别保存在 `live/` 和 `live-hd/`。剪辑时先裁掉录制器填充区，再做移动取景。三段独立动画分别说明先修排程、带出处的检索、先修图谱校验。旁白按 1.12 倍保留音高处理，字幕随实测音频重新分句定时。
+新版母片与同名 SRT 位于 `video/out/recut/chuanzhibei-complete-1080p60.*`，时长 6 分 15 秒。网页镜头取自指定站点的 Chromium 连续录屏。原始 WebM 与对应的镜头时间、鼠标焦点分别保存在 `live/` 和 `live-hd/`。剪辑时先裁掉录制器填充区，再做移动取景。三段独立动画分别说明先修排程、带出处的检索、先修图谱校验。旁白按 1.12 倍保留音高处理，字幕随实测音频重新分句定时。
 
 | 时间 | 内容 |
 | --- | --- |
 | 0:00–0:32 | 在登录页介绍项目，使用评委账号进入工作台 |
-| 0:32–1:27 | 完成出栈顺序诊断，结合反馈讲解作答证据 |
-| 1:27–2:44 | 点击顺序表、栈、队列，比较两档预算，读一项用时估算 |
-| 2:44–3:48 | 向导师提问，核对引用原文，打开手机教材，讲解 BM25 检索 |
-| 3:48–5:18 | 导入讲义，讨论两轮，联网生成方向并解释先修环路校验 |
-| 5:18–5:51 | 展开本轮来源，保存方案，核对知识库和演示地址 |
+| 0:32–1:27 | 完成出栈顺序诊断，从错题本筛选同一道题、查看解析并打开重做，再说明作答证据 |
+| 1:27–2:40 | 点击顺序表、栈、队列，切到当前路径比较两档预算，核对顺序表的模型估算 |
+| 2:40–3:43 | 向导师提问，核对引用原文，打开手机教材，讲解 BM25 检索 |
+| 3:43–5:25 | 导入讲义，讨论两轮，联网生成方向、校验先修关系并保存 |
+| 5:25–5:40 | 从地图＋橄榄切到章节＋暖砂、导览＋深蓝，逐一展示学习地图，再恢复地图＋橄榄 |
+| 5:40–6:03 | 展示模型供应商、联网搜索，以及资料与口径中的口径基源和教材优先级 |
+| 6:03–6:15 | 回到已保存方案，展示演示地址 |
 
-逐段时长和新口播在 [recut.json](./recut.json)，沿用的台词按相同镜头名读取 [storyboard.json](./storyboard.json)。本轮实录中，30 分钟预算排入 4 步，60 分钟预算排入 6 步、预计 52 分钟。生成的私有方向「双栈队列与均摊分析 · 六周练习」含 12 个节点、15 条边。
+逐段时长和新口播在 [recut.json](./recut.json)，沿用的台词按相同镜头名读取 [storyboard.json](./storyboard.json)。本轮实录中，同一份作答记录下，30 分钟排入 2 步、预计 22 分钟；60 分钟排入 3 步、预计 47 分钟。「顺序表」从预算暂缓变为第 3 步。页面复用 DeepSeek 的模型估算，顺序表新学 25 分钟、复习 10 分钟。生成的私有方向「双栈队列与均摊分析 · 六周练习」含 12 个节点、15 条边。
 
 复现需要下文列出的凭据、FFmpeg、Chromium，以及 Python 的 NumPy 和 Pillow。完整重录会在演示账号产生作答和新的学习方向。仅重新剪辑时可以直接使用已录素材，从 `recut.py audio` 开始。
 
@@ -23,7 +25,11 @@ node video/production/record60.mjs tutor
 node video/production/record60.mjs studio
 $env:NATIVE_DETAIL = "1"
 node video/production/record60.mjs login
-node video/production/record60.mjs graph
+node video/production/record60.mjs nodes
+node video/production/record60.mjs budgets
+node video/production/record60.mjs mistakes
+node video/production/record60.mjs settings
+node video/production/record60.mjs appearanceGraphs
 node video/production/record60.mjs readback
 node video/production/explain.mjs
 python -X utf8 video/production/recut.py voices

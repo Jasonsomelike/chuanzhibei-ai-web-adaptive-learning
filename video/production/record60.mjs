@@ -124,57 +124,226 @@ async function graph() {
     await focus(detail.locator(".concept-prerequisites"), 1.55);
   });
   if (process.argv[2] === "nodes") return;
-  const chapter = p.locator(".path-chapter-trigger"),
-    budget = p.getByLabel("本次学习预算", { exact: true }),
-    summary = p.locator("[data-path-summary]");
-  await record("budget30", 17, async ({ at, click, focus }) => {
-    await click(chapter, 1.32);
+  await budgets();
+}
+async function budgets() {
+  if (process.argv[2] === "budgets") {
+    await go("/path?subject=data-structures&budget=30");
+    await btn("全科关系").click();
+  }
+  const canvas = p.locator(".knowledge-canvas");
+  const toggle = btn("当前路径");
+  const budget = p.getByLabel("本次学习预算", { exact: true });
+  const chapter = p.locator(".path-chapter-trigger");
+  const nodes = canvas.locator(".react-flow__node");
+  const sequence = p.locator(".knowledge-sequence li");
+  const graphView = async () => {
+    await canvas.evaluate((el) =>
+      el.scrollIntoView({ block: "center", behavior: "instant" }),
+    );
+    await btn("查看完整图谱").click();
+    await pause(550);
+  };
+  async function snapshot() {
+    if ((await toggle.getAttribute("aria-pressed")) !== "true")
+      throw Error("当前路径未选中");
+    return {
+      graph: await nodes.evaluateAll((els) =>
+        els.map((el) => [el.dataset.id, el.getAttribute("aria-label")]),
+      ),
+      plan: await sequence.allInnerTexts(),
+      ids: await sequence.evaluateAll((els) => els.map((el) => el.dataset.kc)),
+      total: await p.locator(".knowledge-sequence-heading span").innerText(),
+    };
+  }
+  await record("path30", 17, async ({ at, click, focus, wide }) => {
+    await click(chapter, 1.15);
     const choice = p
       .getByRole("dialog")
       .getByText(/第\s*3\s*章\s*栈与队列/)
       .first();
-    await at(3);
-    await click(choice, 1.65);
-    await at(5);
+    await click(choice, 1.42);
     await p.keyboard.press("Escape");
-    await at(7.8);
-    await focus(budget, 1.55);
+    await at(4);
+    await click(toggle, 1.35);
+    await at(7);
+    await focus(budget, 1.35);
     await budget.hover();
-    await pause(500);
     await budget.selectOption("30");
-    await at(12);
-    await focus(summary, 1.6);
+    await at(9.5);
+    wide();
+    await graphView();
+    await focus(canvas, 1.12);
   });
-  console.log("30", await summary.innerText());
-  await record("budget60", 21, async ({ at, focus, click }) => {
-    await focus(summary, 1.52);
-    await at(7.6);
-    await click(budget, 1.55);
+  const before = await snapshot();
+  await record("path60", 21, async ({ at, click, focus, wide }) => {
+    await focus(canvas, 1.12);
+    await at(4.5);
+    await click(budget, 1.3);
     await p.keyboard.press("Escape");
     await budget.selectOption("60");
-    await pause(900);
-    await focus(summary, 1.55);
-    await at(13);
-    const list = p.locator(".knowledge-canvas").locator("..");
-    const stack = p.getByRole("button", { name: /栈的应用/ }).last();
-    if (await stack.isVisible()) await focus(stack, 1.65);
-    else await focus(list, 1.2);
+    await pause(350);
+    wide();
+    await graphView();
+    await focus(canvas, 1.12);
+    const state = await snapshot();
+    const newId = state.ids.find((id) => !before.ids.includes(id));
+    if (!newId) throw Error("预算没有增加学习步骤");
+    const added = canvas.locator(`.react-flow__node[data-id="${newId}"]`);
+    await at(12.5);
+    await focus(added, 1.44);
+    await added.hover();
+    await at(17);
+    await focus(p.locator(".knowledge-sequence li").last(), 1.38);
   });
-  console.log("60", await summary.innerText());
-  await record("estimate", 18, async ({ at, click, focus }) => {
+  const after = await snapshot();
+  console.log("30/60 路径实测", JSON.stringify({ before, after }));
+  if (
+    JSON.stringify(before.graph) === JSON.stringify(after.graph) ||
+    before.plan.length === after.plan.length
+  )
+    throw Error("画布和清单必须真实反映预算变化");
+  await record("timeBasis", 18, async ({ at, click, focus }) => {
     const how = p.getByText("用时如何估算", { exact: true });
-    await at(0.6);
-    await click(how, 1.5);
+    await click(how, 1.45);
     const row = how
       .locator("..")
-      .getByText("栈", { exact: true })
+      .getByText("顺序表", { exact: true })
       .first()
       .locator("..");
-    await at(3.5);
-    await focus(row, 1.85);
-    console.log("估算", await row.innerText());
+    await at(4);
+    await focus(row.locator("strong"), 1.8);
+    console.log(
+      "估算来源",
+      await how.locator("../..").getByRole("status").innerText(),
+      "顺序表",
+      await row.innerText(),
+    );
   });
 }
+
+async function mistakes() {
+  await go("/mistakes?subject=data-structures");
+  const filter = p.getByLabel("按知识点筛选错题");
+  await filter.waitFor();
+  await record("mistakes", 13, async ({ at, click, focus }) => {
+    await focus(p.getByRole("heading", { name: "错题本", exact: true }), 1.25);
+    await at(1.6);
+    await click(filter, 1.2);
+    await p.keyboard.press("Escape");
+    await filter.selectOption("c09");
+    const item = p
+      .locator("li")
+      .filter({ has: p.getByRole("checkbox", { name: /入栈序列.*不可能/ }) })
+      .first();
+    await focus(item.getByRole("checkbox").locator(".."), 1.32);
+    await at(5.3);
+    await click(item.getByRole("button", { name: "显示答案与解析" }), 1.38);
+    await at(8);
+    await focus(item.getByText(/若 3 先出栈|若3先出栈/).first(), 1.38);
+    await at(10.8);
+    await click(item.getByRole("link", { name: "重做这道题" }), 1.25);
+    await p.waitForURL("**/diagnose?**");
+  });
+}
+
+async function appearanceGraphs() {
+  for (const [layout, theme, takeName] of [
+    ["章节", "暖砂", "chapterGraph"],
+    ["导览", "深蓝", "overviewGraph"],
+    ["地图", "橄榄", "oliveGraph"],
+  ]) {
+    await go("/settings?panel=appearance");
+    const layoutButton = p
+      .getByRole("group", { name: "工作台布局" })
+      .getByRole("button", { name: new RegExp(layout) });
+    const themeButton = p
+      .getByRole("group", { name: "配色主题" })
+      .getByRole("button", { name: theme, exact: true });
+    await layoutButton.click();
+    await themeButton.click();
+    if (
+      (await layoutButton.getAttribute("aria-pressed")) !== "true" ||
+      (await themeButton.getAttribute("aria-pressed")) !== "true"
+    )
+      throw Error("组合选择失败");
+    await go("/path?subject=data-structures&budget=60");
+    const canvas = p.locator(".knowledge-canvas");
+    await canvas.locator(".react-flow__node").first().waitFor();
+    await canvas.evaluate((el) =>
+      el.scrollIntoView({ block: "center", behavior: "instant" }),
+    );
+    await p.getByRole("button", { name: "查看完整图谱" }).click();
+    await pause(500);
+    await record(takeName, 3, async () => {
+      await p.mouse.move(32, 95, { steps: 18 });
+    });
+  }
+}
+async function settings() {
+  await go("/settings?panel=appearance");
+  const layouts = p.getByRole("group", { name: "工作台布局" });
+  const colors = p.getByRole("group", { name: "配色主题" });
+  await layouts.waitFor();
+  const layout = (name) =>
+    layouts.getByRole("button", { name: new RegExp(name) });
+  const color = (name) => colors.getByRole("button", { name, exact: true });
+  async function verifyPair(l, t) {
+    if (
+      (await layout(l).getAttribute("aria-pressed")) !== "true" ||
+      (await color(t).getAttribute("aria-pressed")) !== "true"
+    )
+      throw Error("外观组合未生效：" + l + " / " + t);
+    console.log("实录外观", l, t);
+  }
+  await verifyPair("地图", "橄榄");
+  await record("appearance", 15, async ({ at, click, wide }) => {
+    await at(0.6);
+    await click(layout("章节"), 1.07);
+    await click(color("暖砂"), 1.1);
+    await verifyPair("章节", "暖砂");
+    wide();
+    await at(5.1);
+    await click(layout("导览"), 1.07);
+    await click(color("深蓝"), 1.1);
+    await verifyPair("导览", "深蓝");
+    wide();
+    await at(10.5);
+    await click(layout("地图"), 1.07);
+    await click(color("橄榄"), 1.1);
+    await verifyPair("地图", "橄榄");
+    wide();
+  });
+  await record("modelTools", 10, async ({ at, click, focus }) => {
+    await click(btn("模型与工具"), 1.12);
+    await at(2);
+    await click(p.getByRole("tab", { name: "模型供应商" }), 1.18);
+    await at(5.8);
+    await click(p.getByRole("tab", { name: "联网搜索" }), 1.18);
+    await focus(
+      p
+        .getByRole("tabpanel", { name: "联网搜索" })
+        .getByRole("heading")
+        .first(),
+      1.3,
+    );
+  });
+  await record("basis", 13, async ({ at, click, focus }) => {
+    await click(btn("资料与口径"), 1.13);
+    const basis = p.getByText("口径基源", { exact: true });
+    await focus(basis, 1.42);
+    await at(4);
+    await click(
+      p
+        .locator('input[name="material-basis"][value="materials"]')
+        .locator(".."),
+      1.25,
+    );
+    await at(8);
+    await focus(p.getByText("内置资料包来源", { exact: true }), 1.38);
+  });
+}
+
 async function tutor() {
   await go("/tutor?subject=data-structures&kc=c09");
   const field = p.locator("#q");
@@ -395,7 +564,19 @@ try {
       data: { action: "login", email, password },
     });
     if (!response.ok()) throw Error("演示登录失败 " + response.status());
-    await { tour, graph, nodes: graph, tutor, studio, readback, bank }[part]();
+    await {
+      tour,
+      graph,
+      nodes: graph,
+      budgets,
+      mistakes,
+      settings,
+      appearanceGraphs,
+      tutor,
+      studio,
+      readback,
+      bank,
+    }[part]();
   }
 } catch (e) {
   console.error(e.message.slice(0, 2000));

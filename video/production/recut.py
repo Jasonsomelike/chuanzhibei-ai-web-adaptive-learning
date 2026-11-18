@@ -25,7 +25,7 @@ STORY = json.loads((HERE / "recut.json").read_text("utf8"))
 FPS = 60
 TEMPO = 1.12
 RATE = 24000
-STEM = "chuanzhibei-live-1080p60"
+STEM = "chuanzhibei-complete-1080p60"
 FF = os.environ.get("FFMPEG_PATH", "ffmpeg")
 PROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
 FONT = ImageFont.truetype(
@@ -190,7 +190,7 @@ def subtitle_track(key, rows, jump, seconds):
         y = 980
         if key == "phone":
             y = 994
-        if key in {"diagnose", "feedback", "nodes"}:
+        if key in {"diagnose", "feedback", "nodes", "appearance"}:
             y = 84
         w = math.ceil(FONT.getlength(text) / 2) + 26
         h = 32
@@ -283,6 +283,14 @@ def edit_segment(row):
         "turn1": [("turn1", 7), ("turn1_result", 10)],
         "turn2": [("turn2", 7), ("turn2_result", 10)],
         "build": [("build", 6), ("build_result", 13)],
+        "appearance": [
+            ("appearance", 3),
+            ("chapterGraph", 2),
+            ("appearance", 3),
+            ("overviewGraph", 2),
+            ("appearance", 3),
+            ("oliveGraph", 2),
+        ],
     }.get(key, [(key, seconds)])
     if key == "save" and (OUT / "live-hd/bank.json").exists():
         pieces = [("save", 11), ("bank", 6)]
@@ -306,6 +314,12 @@ def edit_segment(row):
             chain += ",scale=-2:1032:flags=lanczos,pad=1920:1080:1130:24:color=0xf4f1e9"
         else:
             cues = meta["cues"]
+            if name in {"path30", "path60"}:
+                # Keep the canvas and its adjacent plan in the same frame at both budgets.
+                cues = [{**c, "z": 1} if c["z"] == 1.12 else c for c in cues]
+            if name == "mistakes":
+                # The stem and explanation are left-aligned inside full-width rows.
+                cues = [{**c, "x": 0.26} if 0.45 < c["x"] < 0.60 else c for c in cues]
             if name == "nodes":
                 # The prerequisite row spans the page; its label sits under the heading on the left.
                 cues[-1] = {**cues[-1], "x": 0.24}
@@ -325,7 +339,8 @@ def edit_segment(row):
         dur = duration(file)
         if dur < length - 0.04:
             chain += f",setpts={length / dur:.8f}*PTS,fps=60"
-        chain += f",trim=end_frame={length * FPS},setpts=N/(60*TB),setsar=1,format=yuv420p[v{i}]"
+        start = {2: 5, 4: 10}.get(i, 0) if key == "appearance" else 0
+        chain += f",trim=start_frame={start * FPS}:end_frame={(start + length) * FPS},setpts=N/(60*TB),setsar=1,format=yuv420p[v{i}]"
         filters.append(chain)
     current = "v0"
     if len(pieces) > 1:
