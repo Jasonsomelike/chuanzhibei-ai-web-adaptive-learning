@@ -49,12 +49,17 @@ export async function planDirection(input: {
   }
   if (input.web) {
     input.progress("正在查找公开资料…");
-    let query = goal.slice(0, 100);
+    let query = goal.replace(/[\w.+-]+@[\w.-]+|https?:\/\/\S+|\d{7,}/gu, " ").trim().slice(0, 100);
     if (provider) {
-      const result = await callChat(provider, { purpose: "direction", signal, maxTokens: 160,
-        system: "根据学习目标拟一个简短的公开教材检索词，仅输出主题关键词。省略姓名、邮箱、个人经历和账号信息。",
-        user: JSON.stringify({ goal, refinement: recent }) });
-      query = result.text.trim().slice(0, 120);
+      try {
+        const result = await callChat(provider, { purpose: "direction", signal, maxTokens: Math.min(1536, budget.response),
+          system: "根据学习目标拟一个简短的公开教材检索词，仅输出主题关键词。省略姓名、邮箱、个人经历和账号信息。",
+          user: JSON.stringify({ goal, refinement: recent }) });
+        query = result.text.trim().slice(0, 120) || query;
+      } catch {
+        signal.throwIfAborted();
+        notices.push("检索词生成未完成，已改用学习目标查询。");
+      }
     }
     let searchConfig = loadSearchConfig();
     let explicitSearch = false;

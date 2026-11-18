@@ -10,7 +10,7 @@ import { composeFromExisting } from "./direction";
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("direction planning", () => {
-  it("uses the discussion, selected excerpts, web results and previous graph when revising", async () => {
+  it.each(["stop", "length"])("uses the discussion and sources when the search-word model finishes with %s", async finish => {
     vi.spyOn(modes, "loadCallMode").mockReturnValue("local");
     vi.spyOn(providers, "loadProvider").mockReturnValue({ label: "回归模型", kind: "openai-compatible",
       baseUrl: "https://model.example.test/v1", model: "planning-test", apiKey: "unit-test" });
@@ -29,13 +29,13 @@ describe("direction planning", () => {
       const text = body.messages.at(-1).content;
       calls.push(text);
       const content = calls.length === 1 ? "队列 算法 课程" : JSON.stringify(next);
-      return Response.json({ choices: [{ message: { content }, finish_reason: "stop" }] });
+      return Response.json({ choices: [{ message: { content }, finish_reason: calls.length === 1 ? finish : "stop" }] });
     }));
     const turns: PlanTurn[] = [{ role: "user", text: "我想学习数据结构" }, { role: "assistant", text: "你有多少时间？" },
       { role: "user", text: "两周，优先队列" }];
     const result = await planDirection({ turns, previous, build: true, web: true, docIds: ["document-a"],
       targetId: "draft-id", draftKey: "scope-key", signal: new AbortController().signal, progress() {} });
-    expect(lookup.mock.calls[0][0]).toBe("队列 算法 课程");
+    expect(lookup.mock.calls[0][0]).toBe(finish === "length" ? turns[0].text : "队列 算法 课程");
     expect(calls[0]).not.toContain("双栈模拟");
     for (const fragment of ["优先队列", "双栈模拟", "滑动窗口", previous.title, "你有多少时间"])
       expect(calls[1]).toContain(fragment);
