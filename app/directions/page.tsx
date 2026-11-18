@@ -1,15 +1,30 @@
 "use client";
 
+/**
+ * 我的自定义方向。
+ *
+ * 创建流程：
+ *   1. 用户描述想学什么
+ *   2. 配了模型 → 浏览器直连生成；没配 → 服务端用规则从现有学科拼装
+ *   3. 预览生成的知识点与先修关系，用户确认后才落库
+ *   4. 可选公开到方向市场
+ *
+ * 第 3 步是刻意的：模型生成的东西不能不经确认就变成用户的课程。
+ *
+ * 生成/保存逻辑与诊断页共用 useDirectionDraft，不各写一份——
+ * 两份实现必然出现「这里能生成、那里生成不了」的错位。
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Plus, ArrowUpRight } from "lucide-react";
 import { CourseCatalog } from "@/components/course-catalog";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import { useStaggerIn } from "@/components/motion";
-import { KnowledgeBasePanel, type KbCounts } from "@/components/knowledge-base-panel";
+import { KnowledgeBasePanel } from "@/components/knowledge-base-panel";
 import { useAuth } from "@/lib/useAuth";
 import { useClientSnapshot } from "@/lib/useClientSnapshot";
-import { DirectionStudio } from "@/components/direction-studio";
+import { useDirectionDraft } from "@/lib/useDirectionDraft";
 import {
   ensureAllItems,
   fetchItems,
@@ -22,9 +37,9 @@ import { useMaterialPack } from "@/lib/materialStore";
 import { getKbStorageForUser, loadDirectionKb } from "@/lib/kbStore";
 import { uploadsToPack } from "@/lib/knowledge";
 import type { MaterialPack } from "@/lib/materials";
-import { loadProvider, type ProviderConfig } from "@/lib/provider";
+import type { ProviderConfig } from "@/lib/provider";
 import type { KnowledgeGraph } from "@/lib/graph";
-
+import { MAX_TITLE_LENGTH, validateTitle, type DirectionDraft } from "@/lib/direction";
 
 interface DirectionSummary {
   id: string;
@@ -33,7 +48,7 @@ interface DirectionSummary {
   isPublic: boolean;
   updatedAt: string;
   graph?: {
-    concepts: { id: string; name: string; summary: string; chapter?: string }[];
+    concepts: { id: string; name: string; summary: string }[];
     edges: { before: string; after: string }[];
   };
 }
@@ -51,11 +66,11 @@ export default function DirectionsPage() {
 
 function DirectionsWorkspace() {
   const { user, loading } = useAuth();
-  const provider = useClientSnapshot(loadProvider, null);
+  const draftState = useDirectionDraft();
 
   const [mine, setMine] = useState<DirectionSummary[]>([]);
   const [fetching, setFetching] = useState(false);
-
+  const [publishNow, setPublishNow] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   /*
@@ -72,8 +87,7 @@ function DirectionsWorkspace() {
   );
   /** 顶部两个页签：课程目录与自定义方向分视图展示，不再同页堆叠。 */
   const [sectionOverride, setSection] = useState<"catalog" | "custom" | null>(null);
-  const [kbDeepLinked, setKbDeepLinked] = useState(false);
-  const section = sectionOverride ?? (deepLink.hash || deepLink.kbOpen || kbDeepLinked ? "custom" : "catalog");
+  const section = sectionOverride ?? (deepLink.hash ? "custom" : "catalog");
   // 登录态就绪后消费 ?create=1（渲染期 adjust-on-change，只消费一次）
   const [createHandled, setCreateHandled] = useState(false);
   if (user && deepLink.create && !createHandled) {
@@ -101,12 +115,10 @@ function DirectionsWorkspace() {
    * 还没有方向时这个标记保持到列表加载完再消费一次。
    */
   const [kbOpen, setKbOpen] = useState<Record<string, boolean>>({});
-  const [kbCounts, setKbCounts] = useState<Record<string, KbCounts>>({});
   // ?kb=open 深链：还没有方向时保持未消费，列表加载完再展开（渲染期 adjust-on-change）
   const [kbConsumed, setKbConsumed] = useState(false);
   if (!kbConsumed && deepLink.kbOpen && mine.length > 0) {
     setKbConsumed(true);
-    setKbDeepLinked(true);
     setKbOpen({ [mine[0].id]: true });
   }
   // 消费后清掉参数，刷新后不再自动展开（副作用留在 effect）
@@ -121,15 +133,15 @@ function DirectionsWorkspace() {
   const mainRef = useRef<HTMLElement>(null);
   useStaggerIn(mainRef);
 
-  const handleKbCounts = useCallback((id: string, counts: KbCounts) => {
-    setKbCounts((prev) => {
-      const current = prev[id];
-      if (current && current.docs === counts.docs && current.chunks === counts.chunks) {
-        return prev;
-      }
-      return { ...prev, [id]: counts };
-    });
-  }, []);
+
+  /*
+   * 字数与校验都按 trim 后的值：与服务端 validateTitle / validateDraft 的口径一致，
+   * 否则「输入 60 个空格 + 一个字」会在本地显示合规、保存时才被 422。
+   */
+  const titleLength = draftState.titleDraft.trim().length;
+  const titleIssue = draftState.draft
+    ? (validateTitle(draftState.titleDraft)[0] ?? null)
+    : null;
 
   const loadMine = useCallback(async () => {
     if (!user) return;
@@ -175,11 +187,13 @@ function DirectionsWorkspace() {
     return () => window.clearTimeout(timer);
   }, [mine, loadCoverage]);
 
-  const onDirectionSaved = (id: string) => {
-    setSaveMessage("方向已保存，可以查看路径或开始诊断。");
-    setCreateOpen(false);
-    setKbOpen(prev => ({ ...prev, [id]: true }));
-    void loadMine();
+  const save = async () => {
+    setSaveMessage(null);
+    const id = await draftState.save({ isPublic: publishNow });
+    if (!id) return;
+    setSaveMessage("已保存。可以去诊断页为它出题。");
+    setPublishNow(false);
+    await loadMine();
   };
 
   const togglePublic = async (id: string, next: boolean) => {
@@ -252,15 +266,195 @@ function DirectionsWorkspace() {
 
         {/* ── 创建 ── */}
         <details id="course-create" className="course-create" open={createOpen} onToggle={event => setCreateOpen(event.currentTarget.open)}>
-          <summary><Plus size={18} />{createOpen ? "收起规划工作台" : "打开规划工作台"}</summary>
-          {createOpen && <DirectionStudio owner={user.id} onSaved={onDirectionSaved} />}
+          <summary><Plus size={18} />创建学习方向</summary>
+          <div className="course-create-body">
+          <SectionTitle
+            hint={
+              draftState.provider
+                ? `将使用 ${draftState.provider.label} · ${draftState.provider.model} 生成`
+                : "未配置模型，将从现有学科中挑选相关知识点"
+            }
+          >
+            新建方向
+          </SectionTitle>
+
+          <Card motion="create">
+            <label className="block">
+              <span className="block text-sm font-medium">你想学什么</span>
+              <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
+                越具体越好。例如「我想搞懂数据库索引为什么用 B+ 树」
+              </span>
+              <textarea
+                value={draftState.description}
+                onChange={(e) => draftState.setDescription(e.target.value)}
+                rows={3}
+                maxLength={500}
+                className="mt-1.5 w-full resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm"
+                placeholder="例如：我想系统学一遍树结构，从基本概念到平衡树"
+              />
+            </label>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void draftState.generate()}
+                disabled={draftState.generating || draftState.description.trim() === ""}
+                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {draftState.generating ? "生成中…" : "生成方向"}
+              </button>
+              {!draftState.provider ? (
+                <span className="text-xs text-[var(--ink-faint)]">
+                  <Link href="/settings" className="underline">
+                    配置模型
+                  </Link>{" "}
+                  后可用任意主题
+                </span>
+              ) : null}
+            </div>
+
+            {draftState.error ? (
+              <div className="mt-3 rounded-lg border border-[var(--bad)] bg-[var(--bad-soft)] p-3 text-sm">
+                <p className="text-[var(--bad)]">{draftState.error}</p>
+                {draftState.issues.length > 0 ? (
+                  <ul className="mt-1.5 space-y-0.5 text-xs text-[var(--ink-soft)]">
+                    {draftState.issues.map((i) => (
+                      <li key={i}>· {i}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {saveMessage ? (
+              <p className="mt-3 rounded-lg border border-[var(--good)] bg-[var(--good-soft)] p-3 text-sm text-[var(--good)]">
+                {saveMessage}
+              </p>
+            ) : null}
+
+            {/* ── 预览 ── */}
+            {draftState.draft ? (
+              <div className="mt-4 border-t border-[var(--line)] pt-4">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Pill tone={draftState.source === "llm" ? "good" : "warn"}>
+                    {draftState.source === "llm" ? "模型生成" : "从现有学科挑选"}
+                  </Pill>
+                  <span className="text-xs text-[var(--ink-faint)]">
+                    {draftState.draft.concepts.length} 个知识点 ·{" "}
+                    {draftState.draft.edges.length} 条先修关系
+                  </span>
+                </div>
+
+                <label className="mt-2 block">
+                  <span className="text-sm font-medium">方向名</span>
+                  <span className="ml-2 text-xs text-[var(--ink-faint)]">
+                    保存时使用；最多 {MAX_TITLE_LENGTH} 字
+                  </span>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <input
+                      value={draftState.titleDraft}
+                      onChange={(e) => draftState.setTitleDraft(e.target.value)}
+                      maxLength={MAX_TITLE_LENGTH}
+                      placeholder={draftState.draft.title}
+                      aria-label="方向名"
+                      className="min-w-0 flex-1 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm font-medium"
+                    />
+                    <span className="tabular shrink-0 text-xs text-[var(--ink-faint)]">
+                      {titleLength}/{MAX_TITLE_LENGTH}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => draftState.setTitleDraft(draftState.draft!.title)}
+                      disabled={draftState.titleDraft === draftState.draft.title}
+                      className="shrink-0 rounded-lg border border-[var(--line-strong)] px-2.5 py-1 text-xs disabled:opacity-40"
+                    >
+                      恢复建议名
+                    </button>
+                  </div>
+                  <span className="mt-1 block text-xs text-[var(--ink-faint)]">
+                    建议名：{draftState.draft.title}。改名只影响这个方向，知识点不变。
+                  </span>
+                  {titleIssue !== null ? (
+                    <span className="mt-1 block text-xs text-[var(--bad)]">{titleIssue}</span>
+                  ) : null}
+                </label>
+                <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                  {draftState.draft.description}
+                </p>
+
+                <ol className="mt-3 space-y-1.5">
+                  {draftState.draft.concepts.map((c, i) => (
+                    <li key={c.id} className="flex gap-2 text-sm">
+                      <span className="tabular shrink-0 text-[var(--ink-faint)]">{i + 1}.</span>
+                      <span className="min-w-0">
+                        <span className="font-medium">{c.name}</span>
+                        {c.summary ? (
+                          <span className="ml-1.5 text-[var(--ink-soft)]">— {c.summary}</span>
+                        ) : null}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+
+                {draftState.draft.edges.length > 0 ? (
+                  <details className="mt-3 text-sm">
+                    <summary className="cursor-pointer text-[var(--ink-soft)]">
+                      查看 {draftState.draft.edges.length} 条先修关系
+                    </summary>
+                    <ul className="mt-2 space-y-0.5 text-xs text-[var(--ink-soft)]">
+                      {draftState.draft.edges.map((e, i) => (
+                        <li key={i}>
+                          · {nameOf(draftState.draft!, e.before)} → {nameOf(draftState.draft!, e.after)}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
+
+                <label className="mt-4 flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={publishNow}
+                    onChange={(e) => setPublishNow(e.target.checked)}
+                    className="mt-1"
+                  />
+                  <span>
+                    公开到方向市场
+                    <span className="mt-0.5 block text-xs text-[var(--ink-faint)]">
+                      其他人能看到并选用这个方向。不勾选则只有你自己可见，之后可随时改。
+                    </span>
+                  </span>
+                </label>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void save()}
+                    disabled={draftState.saving}
+                    className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] disabled:opacity-40"
+                  >
+                    {draftState.saving ? "保存中…" : "保存这个方向"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={draftState.reset}
+                    className="rounded-lg border border-[var(--line-strong)] px-4 py-2 text-sm"
+                  >
+                    重新生成
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </Card>
+          </div>
         </details>
 
-        {saveMessage && <p role="status" className="direction-saved">{saveMessage}</p>}
+        {/* ── 我的方向 ── */}
         <section>
-          <SectionTitle hint={fetching ? "加载中…" : `共 ${mine.length} 个`}>
-            已创建的方向
-          </SectionTitle>
+          <div className="mb-4 flex items-baseline justify-between gap-3">
+            <h2 className="text-lg font-semibold tracking-tight">已创建的方向</h2>
+            <span className="shrink-0 text-xs text-[var(--ink-faint)]">{fetching ? "加载中…" : `共 ${mine.length} 个`}</span>
+          </div>
 
           {mine.length === 0 && !fetching ? (
             <Card motion="empty">
@@ -293,7 +487,7 @@ function DirectionsWorkspace() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="saved-direction-title">{d.title}</h3>
+                          <span className="font-medium">{d.title}</span>
                           <Pill tone={d.isPublic ? "good" : "neutral"}>
                             {d.isPublic ? "已公开" : "私有"}
                           </Pill>
@@ -313,34 +507,19 @@ function DirectionsWorkspace() {
                         <div className="mt-2 flex flex-wrap gap-2">
                           <Link
                             href={`/diagnose?direction=${encodeURIComponent(d.id)}`}
-                            className="rounded-lg bg-[var(--accent)] px-3 py-1 text-xs font-medium text-[var(--on-accent)]"
+                            className="inline-flex items-center justify-center rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]"
                           >
                             开始诊断
                           </Link>
                           <Link
                             href={`/path?direction=${encodeURIComponent(d.id)}`}
-                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--line)]"
                           >
                             查看路径
                           </Link>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setKbOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))
-                            }
-                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
-                          >
-                            {kbOpen[d.id] ? "收起知识库" : "知识库"}
-                            {kbCounts[d.id]
-                              ? ` ${kbCounts[d.id].docs} 份 · ${kbCounts[d.id].chunks} 段`
-                              : ""}
-                          </button>
-                        </div>
-
-                        <details className="direction-item-tools"><summary>管理题目</summary><div>
                           <GenerateAllButton
                             direction={d}
-                            provider={provider}
+                            provider={draftState.provider}
                             userId={user?.id ?? null}
                             onError={(message) =>
                               setGenAllError((prev) => ({ ...prev, [d.id]: message ?? "" }))
@@ -349,12 +528,30 @@ function DirectionsWorkspace() {
                           />
                           <button
                             type="button"
-                            onClick={() => setManualFor(manualFor === d.id ? null : d.id)}
-                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
+                            onClick={() => {
+                              const next = manualFor === d.id ? null : d.id;
+                              setManualFor(next);
+                              if (next !== null) {
+                                setKbOpen((prev) => (prev[d.id] ? { ...prev, [d.id]: false } : prev));
+                              }
+                            }}
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--line)]"
                           >
                             手动录题
                           </button>
-                        </div></details>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const willOpen = !kbOpen[d.id];
+                              setKbOpen((prev) => ({ ...prev, [d.id]: willOpen }));
+                              if (willOpen) setManualFor((prev) => (prev === d.id ? null : prev));
+                            }}
+                            className="inline-flex items-center justify-center rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--line)]"
+                          >
+                            {kbOpen[d.id] ? "收起知识库" : "知识库"}
+                          </button>
+                        </div>
+
                         {genAllError[d.id] ? (
                           <p className="mt-2 text-xs text-[var(--bad)]">{genAllError[d.id]}</p>
                         ) : null}
@@ -379,20 +576,23 @@ function DirectionsWorkspace() {
                     </div>
 
                     {kbOpen[d.id] ? (
-                      <KnowledgeBasePanel
-                        directionId={d.id}
-                        concepts={d.graph?.concepts ?? []}
-                        userId={user?.id ?? null}
-                        onCounts={(counts) => handleKbCounts(d.id, counts)}
-                      />
+                      <div className="mt-4">
+                        <KnowledgeBasePanel
+                          directionId={d.id}
+                          concepts={d.graph?.concepts ?? []}
+                          userId={user?.id ?? null}
+                        />
+                      </div>
                     ) : null}
 
                     {manualFor === d.id && d.graph ? (
-                      <ManualItemForm
-                        directionId={d.id}
-                        concepts={d.graph.concepts}
-                        onSaved={() => void loadCoverage(mine)}
-                      />
+                      <div className="mt-4">
+                        <ManualItemForm
+                          directionId={d.id}
+                          concepts={d.graph.concepts}
+                          onSaved={() => void loadCoverage(mine)}
+                        />
+                      </div>
                     ) : null}
                     </Card>
                   </div>
@@ -407,6 +607,9 @@ function DirectionsWorkspace() {
   );
 }
 
+function nameOf(draft: DirectionDraft, id: string): string {
+  return draft.concepts.find((c) => c.id === id)?.name ?? id;
+}
 
 const TRACE_STATUS_LABEL: Record<ItemTraceStep["status"], string> = {
   ok: "通过",
@@ -480,7 +683,7 @@ function GenerateAllButton({
     if (!direction.graph) return null;
     return {
       version: `custom-${direction.id}`,
-      concepts: direction.graph.concepts.map((c) => ({ ...c, chapter: c.chapter || "自定义" })),
+      concepts: direction.graph.concepts.map((c) => ({ ...c, chapter: "自定义" })),
       edges: direction.graph.edges,
     };
   }, [direction]);
@@ -596,7 +799,7 @@ function GenerateAllButton({
         type="button"
         onClick={() => void start()}
         disabled={!graph || progress !== null}
-        className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs disabled:opacity-40"
+        className="inline-flex items-center justify-center rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--line)] disabled:opacity-40"
       >
         {progress
           ? `生成中 ${progress.done}/${progress.total}${progress.name ? ` · ${progress.name}` : ""}`
