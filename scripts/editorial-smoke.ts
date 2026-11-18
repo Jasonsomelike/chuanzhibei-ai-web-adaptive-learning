@@ -47,6 +47,31 @@ try {
   await page.getByRole("region", { name: "本次学习顺序", exact: true }).getByRole("button", { name: /3 顺序表/ }).click();
   await page.waitForFunction(() => document.querySelector('.react-flow__node[data-id="c05"]')?.classList.contains("selected"));
   await go("/settings?panel=appearance");
+  for (const height of [900, 600]) {
+    await page.setViewportSize({ width: 1440, height });
+    const rail = await page.locator(".shell-sidebar").evaluate(sidebar => {
+      const items = [...sidebar.querySelectorAll(".shell-navigation a, .shell-sidebar-utilities > *")];
+      const first = items[0].getBoundingClientRect();
+      const axis = first.left + first.width / 2;
+      const account = items.at(-1)!.getBoundingClientRect();
+      return {
+        aligned: items.length === 8 && items.every(item => {
+          const label = [...item.querySelectorAll("span")].find(span => span.getClientRects().length);
+          return label && [item, item.querySelector("svg")!, label].every(el => {
+            const box = el.getBoundingClientRect();
+            return Math.abs(box.left + box.width / 2 - axis) < 1;
+          });
+        }),
+        accountVisible: account.bottom <= innerHeight && account.height >= 44,
+      };
+    });
+    check(rail.aligned && rail.accountVisible, `地图侧栏 ${height}px 高时八个入口图文居中，账号按钮完整可见`);
+  }
+  await page.getByRole("button", { name: "账号与帮助" }).click();
+  await page.getByRole("dialog", { name: "账号与帮助" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1487, height: 1058 });
+  await page.screenshot({ path: join(output, "atlas-appearance.png") });
   await chooseLayout("导览", "paper");
   await page.getByRole("button", { name: "深蓝", exact: true }).click(); await rootIs("theme", "indigo");
   check(await page.locator("html").getAttribute("data-layout") === "paper", "换配色不会改变导览布局");

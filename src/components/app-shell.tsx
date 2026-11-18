@@ -27,8 +27,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Link href="/" className="shell-brand" aria-label="自适应学习路径首页"><BrandMark size={36} /><span>自适应学习路径</span></Link>
       <NavLinks />
       <div className="shell-sidebar-utilities">
-        <Link href="/settings?panel=appearance" aria-current={pathname === "/settings" ? "page" : undefined}><Settings size={23} /><span>设置</span></Link>
-        <button type="button" onClick={() => setAccountOpen(true)} aria-label={user ? `账号：${user.displayName}` : "账号与帮助"}><UserRound size={22} /><span>{user?.displayName ?? "账号"}</span></button>
+        <Link className="shell-rail-item" href="/settings?panel=appearance" aria-label="设置" aria-current={pathname === "/settings" ? "page" : undefined}><Settings size={22} aria-hidden="true" /><span>设置</span></Link>
+        <button className="shell-rail-item" type="button" onClick={() => setAccountOpen(true)} aria-haspopup="dialog" aria-expanded={accountOpen} aria-label={user ? `账号：${user.displayName}` : "账号与帮助"}><UserRound size={22} aria-hidden="true" /><span>{user?.displayName ?? "账号"}</span></button>
       </div>
     </aside>
     <header className="shell-header">

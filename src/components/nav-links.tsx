@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BookOpen, ClipboardCheck, GraduationCap, House, Network, NotebookPen } from "lucide-react";
 
-export const NAV_LINK_CLASS = "shell-nav-link inline-flex min-h-11 items-center touch-target";
+export const NAV_LINK_CLASS = "shell-rail-item shell-nav-link min-h-11 touch-target";
 const LINKS = [
   { href: "/", label: "学习概览", short: "概览", icon: House },
   { href: "/path", label: "知识图谱", short: "图谱", icon: Network },

@@ -1188,10 +1188,10 @@ export default function SettingsPage() {
                     </button>)}
                   </div>
                 </SettingsGroup>
-                <SettingsGroup title="配色主题" hint="配色独立于布局；每套主题均提供浅色与深色。">
+                <SettingsGroup title="配色主题" hint="每套配色都有浅色和深色两种模式。">
                   <div className="theme-preferences" role="group" aria-label="配色主题">
                     {THEMES.map(item => <button key={item.id} type="button" aria-pressed={theme === item.id} onClick={() => setTheme(item.id)} title={item.note}>
-                      <span className="theme-swatch" data-theme={item.id} data-mode={resolvedMode}><span /><span /><span /></span>
+                      <span aria-hidden="true" className="theme-swatch" data-theme={item.id} data-mode={resolvedMode}><span /><span /><span /></span>
                       <span className="preference-label"><span className="preference-radio" />{item.name}</span>
                     </button>)}
                   </div>
