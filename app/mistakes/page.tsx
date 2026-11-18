@@ -320,7 +320,7 @@ export default function MistakesPage() {
                         </p>
                       </div>
                       {kcQuestionIds.length > 0 ? (
-                        <div className="flex shrink-0 flex-wrap items-center gap-2">
+                        <div className="action-row shrink-0">
                           <button
                             type="button"
                             onClick={() => exportQuestions(kcQuestionIds, kcName(row.kcId))}
@@ -365,7 +365,7 @@ export default function MistakesPage() {
                 </label>
               </div>
 
-              <div className="mt-3 flex flex-wrap items-center gap-2">
+              <div className="action-row mt-3">
                 <button
                   type="button"
                   onClick={() => exportQuestions([...selectedIds])}
@@ -439,7 +439,7 @@ export default function MistakesPage() {
                             </span>
                           </span>
                         </label>
-                        <div className="flex shrink-0 flex-wrap items-center gap-2">
+                        <div className="action-row shrink-0">
                           <Link
                             href={redoHref([question.id], "单题重做")}
                             className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)]"

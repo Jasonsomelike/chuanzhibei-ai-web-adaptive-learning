@@ -58,6 +58,7 @@ export interface UpstreamMessage {
 }
 
 export interface UpstreamChatRequest {
+  readonly modelDefaultOutput?: boolean;
   readonly messages: readonly UpstreamMessage[];
   readonly temperature?: number;
   readonly maxTokens?: number;
@@ -168,6 +169,7 @@ export function buildUpstreamChatBody(
       // 基底只用来复用思考/工具规则，messages 随后会被完整 dialogue 替换。
       user: contentTextOf(lastUser?.content ?? fallback?.content ?? ""),
       maxTokens: request.maxTokens,
+      modelDefaultOutput: request.modelDefaultOutput,
       temperature: request.temperature,
       jsonMode: request.jsonMode === true,
       ...(request.tools !== undefined ? { tools: request.tools } : {}),

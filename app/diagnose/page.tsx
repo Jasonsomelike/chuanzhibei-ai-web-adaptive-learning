@@ -1236,7 +1236,7 @@ export default function DiagnosePage() {
             <p className="mt-1 text-sm text-[var(--ink-soft)]">
               没有题目就不做诊断，但路径规划不依赖题目——图谱在创建方向时已经生成并校验过。
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2 action-row">
               <Link
                 href="/settings"
                 className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--on-accent)]"
@@ -1270,7 +1270,7 @@ export default function DiagnosePage() {
             <p className="mt-2 text-xs text-[var(--ink-faint)]">
               题目生成失败不阻塞路径：图谱已存在，路径仍可规划。
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2 action-row">
               <Link
                 href={directionId ? `/path?direction=${directionId}` : "/path"}
                 className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--on-accent)]"
@@ -1381,7 +1381,7 @@ export default function DiagnosePage() {
                 或手动补题，也可以先只规划路径。
               </p>
             ) : null}
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2 action-row">
               {/*
                 无模型时「再生成一批」只会把状态再设回 no-model，是静默空操作。
                 这种情况下换成「去配置模型」的直达链接，避免用户点了没反应。
@@ -1643,7 +1643,7 @@ export default function DiagnosePage() {
                   {current.practiceOnly ? "（本题仅练习，掌握度未变）" : ""}
                 </p>
                 </div>
-                <div className="mt-5 flex flex-wrap items-center gap-3">
+                <div className="mt-5 flex flex-wrap items-center gap-3 action-row">
                 <button
                   type="button"
                   onClick={next}
@@ -1721,7 +1721,7 @@ export default function DiagnosePage() {
                 })}
               </div>
             )}
-            <div className="mt-5 flex flex-wrap gap-3">
+            <div className="mt-5 flex flex-wrap gap-3 action-row">
               <Link
                 href={directionId ? `/path?direction=${directionId}` : "/path"}
                 className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"

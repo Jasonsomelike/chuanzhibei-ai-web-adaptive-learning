@@ -1,3 +1,4 @@
+import { anthropicOutputCapacity, modelInfoUrl } from "@/lib/modelOutput";
 /**
  * POST /api/llm/chat —— 服务端代发对话（OpenAI 兼容 / Anthropic）。
  *
@@ -217,6 +218,17 @@ export async function POST(request: Request): Promise<Response> {
     extraHeaders: config.options.extraHeaders,
   };
   const headers = buildHeaders(config);
+  const useModel = body.purpose === "direction" && body.maxTokens === undefined;
+  let requestedTokens = body.maxTokens;
+  if (useModel && config.api === "anthropic") {
+    try {
+      const metadata = await assertUpstreamAllowed(modelInfoUrl(config.options.baseUrl, config.options.model));
+      const response = await guardedRequest(metadata, { method: "GET", headers, timeoutMs: NON_STREAM_TIMEOUT_MS, signal: request.signal });
+      requestedTokens = anthropicOutputCapacity(response.status === 200 ? JSON.parse(response.body.toString("utf8")) : null, config.options.responseReserveTokens);
+    } catch {
+      return jsonError(502, apiErrorCodes.providerError, "Anthropic Messages 需要模型输出容量。请检查模型信息接口或在模型设置中填写该模型的输出容量。");
+    }
+  }
   const requestBody = JSON.stringify(
     buildUpstreamChatBody(
       config.api,
@@ -224,7 +236,8 @@ export async function POST(request: Request): Promise<Response> {
       {
         messages: body.messages,
         temperature: body.temperature,
-        maxTokens: body.purpose&&body.purpose!=="tutor"?body.maxTokens:Math.min(body.maxTokens??600,contextBudget(config.options).response),
+        modelDefaultOutput: useModel,
+        maxTokens: body.purpose&&body.purpose!=="tutor"?requestedTokens:Math.min(body.maxTokens??600,contextBudget(config.options).response),
         stream: body.stream,
         jsonMode: body.jsonMode,
       },

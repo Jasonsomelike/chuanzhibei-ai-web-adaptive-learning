@@ -26,6 +26,8 @@ describe("direction planning", () => {
         expect(body.draftKey).toBe("scope-key");
         return Response.json({ hits: [{ chunk: { id: "a:0", title: "本班讲义", text: "用双栈模拟队列", pageFrom: 8 } }] });
       }
+      expect(body).not.toHaveProperty("max_tokens");
+      expect(body).not.toHaveProperty("max_completion_tokens");
       const text = body.messages.at(-1).content;
       calls.push(text);
       const content = calls.length === 1 ? "队列 算法 课程" : JSON.stringify(next);
@@ -43,23 +45,6 @@ describe("direction planning", () => {
     expect(result.turn.sources?.[0].label).toContain("第8页");
     expect(result.references?.[previous.concepts[0].id]).toEqual([1, 2]);
     expect(result.model).toBe("planning-test");
-  });
-
-  it("retries a truncated discussion within the remaining model window", async () => {
-    vi.spyOn(modes, "loadCallMode").mockReturnValue("local");
-    vi.spyOn(providers, "loadProvider").mockReturnValue({ label: "回归", kind: "openai-compatible",
-      baseUrl: "https://model.example.test/v1", model: "planning-test", apiKey: "unit-test" });
-    const budgets: number[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
-      budgets.push(JSON.parse(String(options.body)).max_tokens);
-      return Response.json({ choices: [{ message: { content: "每周可以投入几小时？" }, finish_reason: budgets.length === 1 ? "length" : "stop" }] });
-    }));
-    const reply = await planDirection({ turns: [{ role: "user", text: "学习算法" }], previous: null, build: false, web: false,
-      docIds: [], targetId: "draft", draftKey: "key", signal: new AbortController().signal, progress() {} });
-    expect(budgets).toHaveLength(2);
-    expect(budgets[1]).toBeGreaterThan(budgets[0]);
-    expect(budgets[1]).toBeLessThan(8192);
-    expect(reply.turn.text).toContain("几小时");
   });
 
   it("permits a draft index only for the account and workspace that reserved it", async () => {

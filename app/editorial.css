@@ -1141,3 +1141,14 @@ button, a { touch-action: manipulation; }
 .security-disclosure { border-bottom: 1px solid var(--line); }
 .security-disclosure > button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: space-between; color: var(--accent); }
 .login-form-column input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; vertical-align: middle; accent-color: var(--accent); }
+
+/* Give navigation links and native buttons the same text box and hit area. */
+.action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.action-row > :is(a, button) {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4em;
+  min-height: 44px; padding: 8px 14px; box-sizing: border-box;
+  font-family: inherit; font-size: 14px; line-height: 1.4; text-align: center;
+}
+.direction-actions > :is(a, button) { min-width: 6.5em; border: 1px solid var(--line-strong); border-radius: 8px; }
+.direction-actions > a:first-child { border-color: var(--accent); }
+.direction-actions > :is(a, button):hover, .direction-actions > button[aria-expanded="true"] { outline: 1px solid var(--accent); outline-offset: -1px; }

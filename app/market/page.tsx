@@ -224,7 +224,7 @@ export default function MarketPage() {
                   ? "可以换个关键词，或清除筛选查看全部方向。"
                   : "你可以先学习内置课程，或创建自己的学习方向。"}
               </p>
-              <div className="market-empty-actions">
+              <div className="market-empty-actions action-row">
                 <Link href="/directions" className="is-primary">
                   查看课程目录
                 </Link>
@@ -251,7 +251,7 @@ export default function MarketPage() {
                       · 更新于 {item.updatedAt.slice(0, 10)}
                     </small>
                   </div>
-                  <div className="market-result-actions">
+                  <div className="market-result-actions action-row">
                     <Link
                       href={"/path?direction=" + encodeURIComponent(item.id)}
                     >

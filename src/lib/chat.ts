@@ -1,3 +1,4 @@
+import { anthropicOutputCapacity, modelInfoUrl } from "./modelOutput";
 /**
  * 模型调用的统一客户端。
  *
@@ -258,16 +259,24 @@ interface PreparedChatBody {
   readonly thinkingFields: boolean;
 }
 
-function prepareChatBody(
+async function prepareChatBody(
   provider: ProviderConfig,
   req: ChatRequest,
   strength: ThinkingStrength,
   stream: boolean,
-): PreparedChatBody {
+): Promise<PreparedChatBody> {
   if (isServerProvider(provider)) {
     return { body: buildServerChatBody(provider, req, stream), thinkingFields: false };
   }
-  const built = buildChatBody(provider.kind, provider, req, strength);
+  const useModel = req.purpose === "direction" && req.maxTokens === undefined;
+  let maxTokens = req.maxTokens;
+  if (useModel && provider.kind === "anthropic") {
+    const response = await fetch(modelInfoUrl(provider.baseUrl, provider.model), {
+      headers: buildProviderHeaders(provider), signal: req.signal, redirect: "error",
+    });
+    maxTokens = anthropicOutputCapacity(response.ok ? await response.json() : null, provider.responseReserveTokens);
+  }
+  const built = buildChatBody(provider.kind, provider, { ...req, maxTokens, modelDefaultOutput: useModel }, strength);
   return { body: { ...built.body, stream }, thinkingFields: built.thinkingFields };
 }
 
@@ -345,7 +354,7 @@ export async function callChat(
 
   try {
     // 构造请求体也可能失败（Anthropic + tools）：必须在 try 内，才能折成 ChatError。
-    const prepared = prepareChatBody(provider, req, req.thinking ?? "off", false);
+    const prepared = await prepareChatBody(provider, { ...req, signal }, req.thinking ?? "off", false);
     const res = await fetch(endpointOf(provider), {
       method: "POST",
       headers: headersOf(provider),
@@ -605,7 +614,7 @@ export async function callChatStream(
   const headers = headersOf(provider);
 
   try {
-    let prepared = prepareChatBody(provider, req, strength, true);
+    let prepared = await prepareChatBody(provider, { ...req, signal }, strength, true);
     let res = await fetch(endpoint, {
       method: "POST",
       headers,
@@ -638,7 +647,7 @@ export async function callChatStream(
        */
       downgraded = true;
       downgradeReason = "thinking";
-      prepared = prepareChatBody(
+      prepared = await prepareChatBody(
         provider,
         { ...req, maxTokens: Math.max(req.maxTokens ?? 600, 2048) },
         "off",

@@ -6,7 +6,7 @@ import { Plus, ArrowUpRight } from "lucide-react";
 import { CourseCatalog } from "@/components/course-catalog";
 import { Nav, Card, SectionTitle, Pill } from "@/components/ui";
 import { useStaggerIn } from "@/components/motion";
-import { KnowledgeBasePanel, type KbCounts } from "@/components/knowledge-base-panel";
+import { KnowledgeBasePanel } from "@/components/knowledge-base-panel";
 import { useAuth } from "@/lib/useAuth";
 import { useClientSnapshot } from "@/lib/useClientSnapshot";
 import { DirectionStudio } from "@/components/direction-studio";
@@ -90,24 +90,15 @@ function DirectionsWorkspace() {
   /** 生成失败原因，按方向 id 记。进度由每个方向的按钮自己持有。 */
   const [genAllError, setGenAllError] = useState<Record<string, string>>({});
 
-  const [manualFor, setManualFor] = useState<string | null>(null);
-
-  /*
-   * 知识库面板只在展开时挂载：useKnowledgeBase 会读该方向的 docs 与 chunks，
-   * 一次读全部方向会让首屏为每个方向付一次 IndexedDB 查询。
-   * 计数由面板回传，收起后仍能显示上次读到的「N 份 · M 段」。
-   *
-   * ?kb=open 深链：首页「去上传教材」等入口直达第一个方向的知识库；
-   * 还没有方向时这个标记保持到列表加载完再消费一次。
-   */
-  const [kbOpen, setKbOpen] = useState<Record<string, boolean>>({});
-  const [kbCounts, setKbCounts] = useState<Record<string, KbCounts>>({});
+  const [panels, setPanels] = useState<Record<string, "kb" | "manual" | null>>({});
+  const togglePanel = (id: string, panel: "kb" | "manual") =>
+    setPanels(prev => ({ ...prev, [id]: prev[id] === panel ? null : panel }));
   // ?kb=open 深链：还没有方向时保持未消费，列表加载完再展开（渲染期 adjust-on-change）
   const [kbConsumed, setKbConsumed] = useState(false);
   if (!kbConsumed && deepLink.kbOpen && mine.length > 0) {
     setKbConsumed(true);
     setKbDeepLinked(true);
-    setKbOpen({ [mine[0].id]: true });
+    setPanels({ [mine[0].id]: "kb" });
   }
   // 消费后清掉参数，刷新后不再自动展开（副作用留在 effect）
   useEffect(() => {
@@ -120,16 +111,6 @@ function DirectionsWorkspace() {
   /* 页面入场与「方向卡片到达」都走同一个一次性 stagger；reduced-motion 下不播。 */
   const mainRef = useRef<HTMLElement>(null);
   useStaggerIn(mainRef);
-
-  const handleKbCounts = useCallback((id: string, counts: KbCounts) => {
-    setKbCounts((prev) => {
-      const current = prev[id];
-      if (current && current.docs === counts.docs && current.chunks === counts.chunks) {
-        return prev;
-      }
-      return { ...prev, [id]: counts };
-    });
-  }, []);
 
   const loadMine = useCallback(async () => {
     if (!user) return;
@@ -178,7 +159,7 @@ function DirectionsWorkspace() {
   const onDirectionSaved = (id: string) => {
     setSaveMessage("方向已保存，可以查看路径或开始诊断。");
     setCreateOpen(false);
-    setKbOpen(prev => ({ ...prev, [id]: true }));
+    setPanels(prev => ({ ...prev, [id]: "kb" }));
     void loadMine();
   };
 
@@ -310,7 +291,7 @@ function DirectionsWorkspace() {
                         </div>
                         <p className="mt-1 text-sm text-[var(--ink-soft)]">{d.description}</p>
 
-                        <div className="mt-2 flex flex-wrap gap-2">
+                        <div className="action-row direction-actions mt-2">
                           <Link
                             href={`/diagnose?direction=${encodeURIComponent(d.id)}`}
                             className="rounded-lg bg-[var(--accent)] px-3 py-1 text-xs font-medium text-[var(--on-accent)]"
@@ -325,19 +306,14 @@ function DirectionsWorkspace() {
                           </Link>
                           <button
                             type="button"
-                            onClick={() =>
-                              setKbOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))
-                            }
-                            className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
-                          >
-                            {kbOpen[d.id] ? "收起知识库" : "知识库"}
-                            {kbCounts[d.id]
-                              ? ` ${kbCounts[d.id].docs} 份 · ${kbCounts[d.id].chunks} 段`
-                              : ""}
+                            onClick={() => togglePanel(d.id, "kb")}
+                            aria-controls={`direction-panel-${d.id}`} aria-expanded={panels[d.id] === "kb"}
+                            className="rounded-lg border border-[var(--line-strong)]"
+                          >知识库
                           </button>
                         </div>
 
-                        <details className="direction-item-tools"><summary>管理题目</summary><div>
+                        <details className="direction-item-tools"><summary>管理题目</summary><div className="action-row">
                           <GenerateAllButton
                             direction={d}
                             provider={provider}
@@ -349,7 +325,8 @@ function DirectionsWorkspace() {
                           />
                           <button
                             type="button"
-                            onClick={() => setManualFor(manualFor === d.id ? null : d.id)}
+                            onClick={() => togglePanel(d.id, "manual")}
+                            aria-controls={`direction-panel-${d.id}`} aria-expanded={panels[d.id] === "manual"}
                             className="rounded-lg border border-[var(--line-strong)] px-3 py-1 text-xs"
                           >
                             手动录题
@@ -360,7 +337,7 @@ function DirectionsWorkspace() {
                         ) : null}
                       </div>
 
-                      <div className="flex shrink-0 flex-wrap gap-1.5">
+                      <div className="action-row">
                         <button
                           type="button"
                           onClick={() => void togglePublic(d.id, !d.isPublic)}
@@ -378,22 +355,23 @@ function DirectionsWorkspace() {
                       </div>
                     </div>
 
-                    {kbOpen[d.id] ? (
+                    <div id={`direction-panel-${d.id}`}>
+                    {panels[d.id] === "kb" ? (
                       <KnowledgeBasePanel
                         directionId={d.id}
                         concepts={d.graph?.concepts ?? []}
                         userId={user?.id ?? null}
-                        onCounts={(counts) => handleKbCounts(d.id, counts)}
                       />
                     ) : null}
 
-                    {manualFor === d.id && d.graph ? (
+                    {panels[d.id] === "manual" && d.graph ? (
                       <ManualItemForm
                         directionId={d.id}
                         concepts={d.graph.concepts}
                         onSaved={() => void loadCoverage(mine)}
                       />
                     ) : null}
+                    </div>
                     </Card>
                   </div>
                 );

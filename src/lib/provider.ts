@@ -561,6 +561,8 @@ export interface ChatBodyRequest {
   readonly user: ChatContent;
   /** Bounded prompt history; the complete conversation is stored separately. */
   readonly history?: readonly { role: "user" | "assistant"; content: string }[];
+  /** Use the provider's output capacity for interactive course planning. */
+  readonly modelDefaultOutput?: boolean;
   readonly maxTokens?: number;
   readonly temperature?: number;
   /** 要求模型返回 JSON 对象。Anthropic 无此参数，靠提示词与 extractJson 兜底。 */
@@ -701,7 +703,12 @@ export function buildChatBody(
           ],
         };
 
-  return buildThinkingBody(kind, strength, base, maxTokens);
+  const result = buildThinkingBody(kind, strength, base, maxTokens);
+  if (req.modelDefaultOutput && kind === "openai-compatible") {
+    delete result.body.max_tokens;
+    delete result.body.max_completion_tokens;
+  }
+  return result;
 }
 
 /** 构造连通性测试的请求体与端点。 */

@@ -341,6 +341,28 @@ try {
   await savedDirection.getByText("竞赛讲义.markdown",{exact:true}).waitFor();
   await pickFile(savedDirection, "补充讲义.txt", "栈和队列：补充资料可从已保存方向的导入按钮添加。");
   await savedDirection.getByText("补充讲义.txt",{exact:true}).waitFor();
+  for (const width of [1487, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const metrics = await savedDirection.locator(".direction-actions > *").evaluateAll(elements => elements.map(el => {
+      const box = el.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const label = range.getBoundingClientRect();
+      return { height: box.height, width: box.width, font: getComputedStyle(el).fontSize,
+        offset: label.top + label.height / 2 - box.top - box.height / 2 };
+    }));
+    check(metrics.length === 3 && metrics.every(m => m.height >= 44 && m.font === metrics[0].font &&
+      Math.abs(m.height - metrics[0].height) < 1 && Math.abs(m.width - metrics[0].width) < 1 &&
+      Math.abs(m.offset - metrics[0].offset) < 1), width + "px 课程操作栏文字中线、字号和按钮尺寸一致");
+  }
+  await savedDirection.getByText("管理题目", { exact: true }).click();
+  const kbButton = savedDirection.getByRole("button", { name: "知识库", exact: true });
+  const manualButton = savedDirection.getByRole("button", { name: "手动录题", exact: true });
+  await manualButton.click();
+  check(await manualButton.getAttribute("aria-expanded") === "true" && await kbButton.getAttribute("aria-expanded") === "false", "录题和知识库互斥展开");
+  await kbButton.click();
+  await savedDirection.getByText("补充讲义.txt",{exact:true}).waitFor();
+  await page.setViewportSize({width:1487,height:1058});
   check(await savedDirection.getByRole("link", {name:"查看路径",exact:true}).isVisible(), "创建时上传的资料保留，已有方向的导入按钮可直接选择文件入库");
   await page.screenshot({path:join(output,"courses-account-desktop.png")});
   check(errors.length === 0, `无浏览器运行错误：${errors.join("; ")}`);

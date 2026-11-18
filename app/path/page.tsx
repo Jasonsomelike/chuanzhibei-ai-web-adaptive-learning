@@ -770,7 +770,7 @@ export default function PathPage() {
         </div>
         </details>
 
-        <div className="mt-6 flex flex-wrap gap-3">
+        <div className="mt-6 flex flex-wrap gap-3 action-row">
           <Link
             href={`/tutor${targetQuery(target)}`}
             className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)]"

@@ -315,7 +315,7 @@ function DocBindingEditor({
           </label>
         ))}
       </div>
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-2 action-row">
         <button
           type="button"
           onClick={() => void save()}
