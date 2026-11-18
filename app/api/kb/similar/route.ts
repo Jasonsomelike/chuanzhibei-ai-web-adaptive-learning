@@ -14,6 +14,7 @@
  * 登录、同源、限量读取请求体三件套与 /api/kb/vectors 的 POST 一致。
  */
 
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 
 import { apiErrorCodes } from "@/lib/apiContracts";
@@ -32,6 +33,8 @@ import {
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  const rateLimited = enforceRateLimit(request, "kb-similar", 60);
+  if (rateLimited !== null) return rateLimited;
   const guard = await requireApiUser();
   if (!guard.ok) return guard.response;
 

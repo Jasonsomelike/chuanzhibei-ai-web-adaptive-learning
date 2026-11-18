@@ -47,6 +47,18 @@ describe.each(["memory", "postgres"] as const)(
             (await p.query<T>(q, a)).rows,
           one: async <T>(q: string, a: unknown[] = []) =>
             (await p.query<T>(q, a)).rows[0] ?? null,
+          tx: async (statements) => {
+            await p.query("BEGIN");
+            try {
+              const counts: number[] = [];
+              for (const s of statements) counts.push((await p.query(s.sql, s.params ?? [])).affectedRows ?? 0);
+              await p.query("COMMIT");
+              return counts;
+            } catch (err) {
+              await p.query("ROLLBACK");
+              throw err;
+            }
+          },
         };
       } else {
         __setDbBackendForTests("memory");

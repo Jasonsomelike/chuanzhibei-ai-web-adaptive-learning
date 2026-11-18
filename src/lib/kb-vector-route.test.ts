@@ -319,6 +319,9 @@ describe("POST /api/kb/similar", () => {
           { chunk_id: "c3", score: "0.25" },
         ] as T[];
       },
+      async tx(statements) {
+        return statements.map(() => 0);
+      },
     };
     __setDbForTests(fake);
 

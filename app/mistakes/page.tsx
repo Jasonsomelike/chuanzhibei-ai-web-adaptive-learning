@@ -152,7 +152,7 @@ export default function MistakesPage() {
     return map;
   }, [target, progress, kcNameMap]);
 
-  const attempts = progress?.attempts ?? [];
+  const attempts = useMemo(() => progress?.attempts ?? [], [progress]);
   const notes = progress?.notes ?? {};
 
   const wrongIds = useMemo(() => historicalWrongQuestionIds(attempts), [attempts]);

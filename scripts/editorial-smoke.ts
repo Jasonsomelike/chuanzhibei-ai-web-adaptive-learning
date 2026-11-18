@@ -216,6 +216,7 @@ try {
         if (name === "guide") await page.locator('.guide-journey[aria-busy="false"]').waitFor();
         if (name === "market") await page.locator('section[aria-label="公开学习方向"][aria-busy="false"]').waitFor();
         if (name === "path" && width === 390) {
+          await page.getByRole("button", { name: "查看完整图谱", exact: true }).click();
           await page.waitForFunction(() => {
             const canvas = document.querySelector(".knowledge-canvas")!.getBoundingClientRect();
             return [...document.querySelectorAll(".knowledge-node .concept-label")].every(label => {
@@ -223,7 +224,7 @@ try {
               return rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom;
             });
           });
-          check(true, `${layout}手机图谱显示完整邻接节点名称`);
+          check(true, `${layout}手机完整取景显示全部先修节点名称`);
         }
         const clipped = await page.locator('main input:not([type="radio"]):not([type="checkbox"]):not([type="file"]), main select, main textarea, .shell-nav-link, .shell-mobile-settings').evaluateAll(controls => controls.filter(control => {
           const rect = control.getBoundingClientRect();

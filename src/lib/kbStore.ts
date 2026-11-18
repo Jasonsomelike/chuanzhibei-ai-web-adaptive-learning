@@ -549,11 +549,13 @@ export function useKnowledgeBase(
     setVectorsWanted((value) => (value === 0 ? 1 : value));
   }, []);
 
-  // 方向 / 账号变化：先清空旧视图再进入 loading
-  useEffect(() => {
+  // 方向 / 账号变化：先清空旧视图再进入 loading（渲染期 adjust-on-change，避免 effect 同步 setState）
+  const [scope, setScope] = useState({ directionId, userId });
+  if (scope.directionId !== directionId || scope.userId !== userId) {
+    setScope({ directionId, userId });
     dispatch({ type: "reset" });
     setVectorsWanted(0);
-  }, [directionId, userId]);
+  }
 
   // 订阅本地向量同步状态：loading / embedding / uploading / ready / unavailable
   useEffect(() => {

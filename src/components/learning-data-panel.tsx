@@ -9,15 +9,17 @@
  * 只读展示：调整章节与预算请回学习路径页。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useSubject } from "@/lib/subject";
-import { useLearner } from "@/lib/useLearner";
-import { chapterScope, readChapterSelection } from "@/lib/chapters";
+import { useLearner } from "@/lib/useLearner";import { chapterScope, readChapterSelection } from "@/lib/chapters";
 import { planPath, computeInputHash, ALGO_VERSION } from "@/lib/plan";
 import { useLearningTime } from "@/lib/useLearningTime";
 import { LearningTimeNote } from "@/components/learning-time-note";
 import { LearningEvidence } from "@/components/learning-evidence";
 import { TargetPicker } from "@/components/target-picker";
+
+/** 未加载完成时的共享空选择：字面量 [] 每次渲染都是新引用，会让下游 useMemo 失效。 */
+const EMPTY_CHAPTERS: readonly string[] = [];
 
 export function LearningDataPanel() {
   const { target, targetId, setTargetId, ready, targetError } = useSubject();
@@ -26,15 +28,14 @@ export function LearningDataPanel() {
   const budget = 60;
   const timing=useLearningTime(targetId,target?.graph,progress);
 
-  // 章节口径：与学习路径页共用同一份 localStorage 选择
-  const [chapters, setChapters] = useState<readonly string[]>([]);
-  useEffect(() => {
-    if (!target) {
-      setChapters([]);
-      return;
-    }
-    setChapters(readChapterSelection(targetId));
-  }, [target, targetId]);
+  // 章节口径：与学习路径页共用同一份 localStorage 选择。
+  // target 挂载后才出现（subject hook 在客户端读取），此时在渲染期同步一次选择；
+  // SSR 与 hydration 期间 target 为空，两侧渲染一致。
+  const [chapterState, setChapterState] = useState<{ readonly id: string; readonly value: readonly string[] }>({ id: "", value: [] });
+  if (target && chapterState.id !== targetId) {
+    setChapterState({ id: targetId, value: readChapterSelection(targetId) });
+  }
+  const chapters = target && chapterState.id === targetId ? chapterState.value : EMPTY_CHAPTERS;
 
   const scope = useMemo(
     () => (target?.graph ? chapterScope(target.graph, chapters) : null),

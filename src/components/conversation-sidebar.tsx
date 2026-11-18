@@ -102,7 +102,7 @@ export function ConversationSidebar({
           onChange={(event) => onQuery(event.target.value)}
         />
       </label>
-      <div className="conversation-list-heading">
+      {items.length || mode !== "active" || query ? <div className="conversation-list-heading">
         <h2>
           {mode === "active"
             ? "最近"
@@ -114,7 +114,7 @@ export function ConversationSidebar({
           {items.length}
           {more ? "+" : ""}
         </span>
-      </div>
+      </div> : null}
       <div className="conversation-list" aria-busy={loading}>
         {loading && !items.length ? (
           <div className="conversation-skeleton" aria-label="正在读取会话">

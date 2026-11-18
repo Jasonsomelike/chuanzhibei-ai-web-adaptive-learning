@@ -115,8 +115,10 @@ export function TargetPicker({
     }
   }, [user]);
 
+  // 拉取推迟到宏任务：loadMine 的同步前缀会 setState，直接在 effect 里调用会触发级联渲染告警
   useEffect(() => {
-    void loadMine();
+    const timer = window.setTimeout(() => void loadMine(), 0);
+    return () => window.clearTimeout(timer);
   }, [loadMine]);
 
   if (presentation === "select") return <div className="target-select-wrap">

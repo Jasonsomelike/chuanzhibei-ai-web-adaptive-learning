@@ -13,6 +13,8 @@ import { browserImageCodec, prepareImage, remainingImageSlots, IMAGE_MAX_COUNT }
 import { detectUploadKind } from "@/components/knowledge-upload";
 import { MAX_FILE_BYTES } from "@/lib/knowledge";
 import { AppDialog } from "@/components/primitives/dialog";
+import { AutoTextarea } from "@/components/auto-textarea";
+import { TutorWorkspace } from "@/components/tutor-workspace";
 import { ConversationSidebar } from "@/components/conversation-sidebar";
 import { archiveContent, type ArchivedMessage } from "@/lib/conversationContracts";
 import { useConversations } from "@/lib/useConversations";
@@ -963,10 +965,12 @@ export default function TutorPage() {
     });
     abortRef.current?.abort();
     speechRef.current?.abort();
-    setBusy(false);
+    // 用原始 setter 而不是 setBusy/setError 包装：这里是「切目标就重置」，
+    // 不需要 isCurrent 守卫；包装函数每次渲染都变，会让本 effect 的依赖永远凑不齐。
+    setBusyState(false);
     setIndex(buildIndex(docs));
     setSourceFocus(null);
-    setError(null);
+    setErrorState(null);
     setImages([]);
     setImageRetry(null);
     setVectorStatus(null);
@@ -2167,9 +2171,8 @@ export default function TutorPage() {
       <Nav />
       <main id="main" ref={mainRef} className="tutor-page tutor-editorial">
         <h1 className="sr-only">课程导师</h1>
-        <div className="tutor-workspace">
-        <ConversationSidebar items={history.conversations} activeId={history.active?.id} mode={history.mode} query={history.query} loading={history.listLoading || history.loading && !history.active} more={!!history.cursor} storage={history.storage} disabled={busy}
-          onMode={history.setMode} onQuery={history.setQuery} onOpen={item => void history.open(item).catch(failure => setError(messageOf(failure)))} onNew={() => void history.newDraft().catch(failure => setError(messageOf(failure)))} onUpdate={history.update} onMore={() => void history.refresh(true)} onLegacy={user ? () => setLegacyOpen(true) : undefined} />
+        <TutorWorkspace sidebar={<ConversationSidebar items={history.conversations} activeId={history.active?.id} mode={history.mode} query={history.query} loading={history.listLoading || history.loading && !history.active} more={!!history.cursor} storage={history.storage} disabled={busy}
+          onMode={history.setMode} onQuery={history.setQuery} onOpen={item => void history.open(item).catch(failure => setError(messageOf(failure)))} onNew={() => void history.newDraft().catch(failure => setError(messageOf(failure)))} onUpdate={history.update} onMore={() => void history.refresh(true)} onLegacy={user ? () => setLegacyOpen(true) : undefined} />}>
         <div className="tutor-stage">
         <header className="tutor-conversation-heading"><div><h2>{history.active?.title ?? "一起把问题想明白"}</h2><p>课程：{history.active?.targetName ?? target.name}</p></div></header>
         {history.active?.parentId ? <div className="conversation-origin"><GitBranch size={17} /><span>从一轮问答新建的分支</span><button type="button" disabled={busy} onClick={() => void history.open({ id:history.active!.parentId! }).catch(failure => setError(messageOf(failure)))}>查看来源</button></div> : null}
@@ -2326,7 +2329,7 @@ export default function TutorPage() {
           {messages.length === 0 && !history.loading ? (
             <div data-motion="suggestions" className="tutor-empty">
               <GraduationCap size={38} className="text-[var(--accent)]" />
-              <h3 className="mt-5 text-lg font-medium">从你卡住的地方开始</h3>
+              <h3 className="mt-5 text-lg font-medium">选择知识点或直接提问</h3>
               <p className="mt-2 text-sm text-[var(--ink-faint)]">一个概念、一段原文，或一道还没想明白的题。</p>
               <div className="tutor-suggestions">
                 {[
@@ -2360,6 +2363,7 @@ export default function TutorPage() {
                 </div>
                 {message.documents.length ? <ul className="mt-2 flex flex-wrap gap-2" aria-label="本轮文档附件">{message.documents.map(doc=><li key={doc.id} className="max-w-full break-all rounded border border-[var(--line)] px-3 py-2 text-xs">📄 {doc.name} · {doc.pageCount?`${doc.pageCount} 页`:"文本资料"}{doc.ocrPages?` · OCR ${doc.ocrPages} 页`:""}<span className="block text-[var(--ink-soft)]">已保存至课程资料 · 回答可核对引用</span></li>)}</ul>:null}
                 {message.images > 0 ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- 用户上传的 data: URL，next/image 无法优化
                   <div className="tutor-saved-images">{message.attachments.map(attachment => <button type="button" key={attachment.id} onClick={() => setPreviewImage({ ...attachment,owner:ownerId })} aria-label={`查看问题图片：${attachment.name}`}><img src={attachment.dataUrl} alt={attachment.name} width={attachment.width} height={attachment.height} /></button>)}<p>{message.attachments.length ? `附 ${message.attachments.length} 张问题图片 · 已随会话保存` : `附 ${message.images} 张图片，旧记录未保存原图`}</p></div>
                 ) : null}
               </Card>
@@ -2681,9 +2685,9 @@ export default function TutorPage() {
           <label htmlFor="q" className="sr-only">
             输入你的问题
           </label>
-          <textarea
+          <AutoTextarea
             id="q"
-            rows={2}
+            rows={1}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             maxLength={4000}
@@ -2708,7 +2712,7 @@ export default function TutorPage() {
             className="min-w-0 resize-y rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)]"
           />
           {/* 左下角：📎 附件 / 🎤 语音 / 🌐 联网；右下角：快捷键提示 + 发送 */}
-          <div className="flex items-center gap-2">
+          <div className="tutor-compose-actions">
           <input
             ref={attachInputRef}
             type="file"
@@ -2741,7 +2745,7 @@ export default function TutorPage() {
           >
             <Mic size={17} />
           </button>
-          <span className="inline-flex items-center gap-2 text-[11px] text-[var(--ink-soft)]">
+          <span className="tutor-web-switch inline-flex items-center gap-2 text-[11px] text-[var(--ink-soft)]">
             <Globe size={15} />
             <span>联网模式</span>
             <button
@@ -2755,10 +2759,8 @@ export default function TutorPage() {
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${webOn ? "translate-x-4" : "translate-x-0.5"}`} />
             </button>
-            <span className="text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
-            <Link href="/settings?panel=search" className="underline" title="联网搜索设置：供应商、默认开与关、测试">搜索设置</Link>
           </span>
-          <span className="ml-auto text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
+          <span className="tutor-compose-shortcut ml-auto text-[11px] text-[var(--ink-faint)]">Enter 发送 · Shift+Enter 换行</span>
             {busy ? (
               <button
                 type="button"
@@ -2777,16 +2779,23 @@ export default function TutorPage() {
               </button>
             )}
           </div>
+          <div className="tutor-search-status">
+            <span className="text-[var(--ink-faint)]">当前：{webProviderLabel(searchProvider.provider)} · 搜索失败不阻塞回答</span>
+            <Link href="/settings?panel=search" className="underline" title="联网搜索设置：供应商、默认开与关、测试">搜索设置</Link>
+          </div>
         </form>
         <div className="tutor-save-status" role="status">{history.saveState === "error" ? <><span>有内容尚未保存</span><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></> : history.saveState === "saving" ? "正在保存会话…" : <><Check size={15} />{history.active ? "会话已保存" : "新会话"}</>}</div>
         {history.error ? <div className="conversation-save-error" role="alert"><p>{history.error}</p><button type="button" onClick={() => void history.flush().catch(() => undefined)}>重试保存</button></div> : null}
         </div>
         </section>
         </div>
-        </div>
+        </TutorWorkspace>
       </main>
       <AppDialog open={!!previewImage && previewImage.owner === ownerId} onOpenChange={open => { if (!open) setPreviewImage(null); }} title={previewImage?.name ?? "问题图片"} description="本轮提问保存的图片。">
-        {previewImage && previewImage.owner === ownerId ? <img src={previewImage.dataUrl} alt={previewImage.name} width={previewImage.width} height={previewImage.height} className="mx-auto max-h-[65dvh] w-auto max-w-full object-contain" /> : null}
+        {previewImage && previewImage.owner === ownerId ? (
+          // eslint-disable-next-line @next/next/no-img-element -- data: URL 原图预览，next/image 无法优化
+          <img src={previewImage.dataUrl} alt={previewImage.name} width={previewImage.width} height={previewImage.height} className="mx-auto max-h-[65dvh] w-auto max-w-full object-contain" />
+        ) : null}
       </AppDialog>
       <AppDialog open={legacyOpen} onOpenChange={setLegacyOpen} title="旧版教学记录" description="旧版只保存最近四轮短文本和最后一个任务；更早的问答、引用原文及图片未被保存。新会话会完整存档。">
         {resumableTask ? <div><div className="space-y-5">{resumableTask.turns.map((turn,index) => <div key={index}><p className="text-sm font-medium whitespace-pre-wrap">{turn.question}</p><p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap text-[var(--ink-soft)]">{turn.answer}</p></div>)}</div><TeachingTaskCard key={`legacy-${ownerId}-${resumableTask.workflow.runId}`} workflow={resumableTask.workflow} query={targetQuery(target)} initialAssessment={resumableTask.assessment} disabled={busy} onFollowup={(intent,question) => { prepareFollowup(intent,question); setLegacyOpen(false); }} onAssessed={() => { void refreshProgress().catch(() => undefined); }} /></div> : <p className="text-sm text-[var(--ink-soft)]">当前课程没有可恢复的旧版教学任务。</p>}

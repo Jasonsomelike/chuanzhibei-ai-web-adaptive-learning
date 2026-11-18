@@ -17,6 +17,27 @@ import { CONVERSATION_SCHEMA } from "@/lib/conversationSql";
 import { ARTIFACT_SCHEMA, createArtifactMemory } from "@/lib/learningArtifacts";
 import { DOCUMENT_PUBLISH_SQL } from "@/lib/documentSql";
 
+/** 一条可进入事务的语句。 */
+export interface DbStatement {
+  readonly sql: string;
+  readonly params?: unknown[];
+  /** Abort the whole transaction when a compare-and-swap does not claim its row. */
+  readonly expectedRows?: number;
+}
+
+export class DbWriteConflict extends Error {
+  constructor() { super("Concurrent write conflict"); this.name = "DbWriteConflict"; }
+}
+
+/** A runtime SQL assertion, inside the transaction, never a post-commit check. */
+export function guardedStatement(stmt: DbStatement): string {
+  if (stmt.expectedRows === undefined) return stmt.sql;
+  if (!Number.isSafeInteger(stmt.expectedRows) || stmt.expectedRows < 0) throw new Error("Invalid row expectation");
+  return `WITH changed AS (${stmt.sql} RETURNING 1)
+    SELECT count(*)::int AS affected,
+      1 / CASE WHEN count(*) = ${stmt.expectedRows} THEN 1 ELSE 0 END AS guard FROM changed`;
+}
+
 /** 一个可执行查询的最小接口，让内存实现与 Postgres 实现共用上层代码。 */
 export interface Db {
   /** 执行写操作，返回受影响行数（或 0）。 */
@@ -25,6 +46,12 @@ export interface Db {
   all<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   /** 查询单行，没有则返回 null。 */
   one<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null>;
+  /**
+   * 在单个事务里顺序执行一批语句，返回每条语句的受影响行数；
+   * 任一失败全部回滚。Postgres 侧走 neon HTTP 的非交互事务；
+   * 内存侧先快照再执行，抛错时整体还原。
+   */
+  tx(statements: readonly DbStatement[]): Promise<number[]>;
 }
 
 // ── 新表的 SQL 形状（Postgres 与内存实现共用） ─────────────────────
@@ -67,6 +94,35 @@ export const KB_VECTOR_SQL = {
     ORDER BY v.vec <=> $4::vector(512) LIMIT $5`,
   /** 删一个片段在该用户下的全部模型行（对应复合外键的父行删除）。 */
   deleteByChunk: `DELETE FROM kb_chunk_vectors WHERE user_id = $1 AND chunk_id = $2`,
+} as const;
+
+/**
+ * kb_tombstones 的 SQL 形状：跨设备删除标记。
+ *
+ * 删除文档/方向时写下 tombstone（deleted_at 单调不减）。文档 PUT 的事务末尾
+ * 用 undoIfTombstoned 自查：若写入期间出现了不比 base 旧的 tombstone，
+ * 说明另一设备的删除与本写入并发，删除赢——撤掉刚写入的文档（片段随外键级联），
+ * 调用方收到 409。base 为 null（全新导入）时不撤：重新导入是新的用户意图，
+ * 同时由 deleteById 清掉旧 tombstone。
+ */
+export const KB_TOMBSTONE_SQL = {
+  /** 写入/刷新一个删除标记。参数顺序固定：user_id, doc_id, direction_id, deleted_at。 */
+  upsert: `INSERT INTO kb_tombstones (user_id, doc_id, direction_id, deleted_at)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (user_id, doc_id) DO UPDATE SET
+      direction_id = EXCLUDED.direction_id,
+      deleted_at = EXCLUDED.deleted_at`,
+  /** 全新导入（base 为 null）成功后清掉旧 tombstone。参数：user_id, doc_id。 */
+  deleteById: `DELETE FROM kb_tombstones WHERE user_id = $1 AND doc_id = $2`,
+  /**
+   * PUT 事务末尾的复活守卫：仅当存在 deleted_at >= base 的 tombstone 时，
+   * 撤掉本事务刚写入的文档行。deleted_at 由本代码写入，恒为毫秒数字符串，
+   * ::numeric 比较不会遇到历史 ISO 行。参数：user_id, doc_id, updated_at, base(nullable)。
+   */
+  undoIfTombstoned: `DELETE FROM kb_docs WHERE user_id = $1 AND doc_id = $2 AND updated_at = $3
+    AND $4::text IS NOT NULL
+    AND EXISTS (SELECT 1 FROM kb_tombstones t
+      WHERE t.user_id = $1 AND t.doc_id = $2 AND t.deleted_at::numeric >= $4::numeric)`,
 } as const;
 
 /** 按方向读回的向量行。updated_at 在 SQL 里 ::text，两种后端都返回字符串。 */
@@ -159,6 +215,25 @@ function createPostgresDb(url: string): Db {
       return Array.isArray(result.rows) && result.rows.length > 0
         ? (result.rows[0] as T)
         : null;
+    },
+    async tx(statements) {
+      /*
+       * neon HTTP 的非交互事务：整批语句一次提交，任一失败全部回滚。
+       * 事务内沿用 fullResults: true，逐个取 rowCount，与 run() 同口径。
+       */
+      try {
+        const results = await sql.transaction((txn) =>
+          statements.map((stmt) => txn.query(guardedStatement(stmt), stmt.params ?? [])),
+        );
+        return (results as unknown as FullResult[]).map((result, index) =>
+          statements[index].expectedRows !== undefined
+            ? Number((result.rows?.[0] as { affected: number }).affected)
+            : result.rowCount ?? result.rows?.length ?? 0,
+        );
+      } catch (error) {
+        if (statements.some(s => s.expectedRows !== undefined) && (error as { code?: string }).code === "22012") throw new DbWriteConflict();
+        throw error;
+      }
     },
   };
 }
@@ -321,6 +396,8 @@ function createMemoryDb(): Db {
   const userSecrets = new Map<string, Record<string, unknown>>();
   const kbDocs = new Map<string, Record<string, unknown>>();
   const kbChunks = new Map<string, Record<string, unknown>>();
+  /** key = `${user_id}|${doc_id}`，对应 Postgres 的复合主键。 */
+  const kbTombstones = new Map<string, Record<string, unknown>>();
   const memories = new Map<string, Record<string, unknown>>();
   /** key = `${user_id}|${chunk_id}|${model}`，对应 Postgres 的复合主键。 */
   const kbChunkVectors = new Map<string, Record<string, unknown>>();
@@ -328,7 +405,6 @@ function createMemoryDb(): Db {
   const mcpServers = new Map<string, Record<string, unknown>>();
 
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-
   /*
    * 删片段时同步删掉它的向量行：Postgres 侧由 kb_chunk_vectors 的复合外键
    * ON DELETE CASCADE 完成。少了这一步，内存实现会在「删片段 → 用同一个
@@ -343,8 +419,36 @@ function createMemoryDb(): Db {
     }
   };
 
-  return {
-    async run(text, params = []) {
+  const memory = {
+    /*
+     * 事务：先快照全部表再顺序执行；任一语句抛错就整体还原。
+     * 覆盖的是 createMemoryDb 自己持有的表；conversationArchive / artifacts
+     * 有独立存储，当前没有事务调用方写它们，真有时再纳入快照。
+     */
+    tx(statements: readonly DbStatement[]) {
+      const tables = [
+        users, sessions, progress, learningSessions, directions, directionItems,
+        userSecrets, kbDocs, kbChunks, kbTombstones, memories, kbChunkVectors, mcpServers,
+      ];
+      const backups = tables.map((table) => new Map(table));
+      try {
+        const counts: number[] = [];
+        for (const stmt of statements) {
+          const count = this.run(stmt.sql, stmt.params ?? []);
+          if (stmt.expectedRows !== undefined && count !== stmt.expectedRows) throw new DbWriteConflict();
+          counts.push(count);
+        }
+        return counts;
+      } catch (err) {
+        tables.forEach((table, index) => {
+          table.clear();
+          for (const [key, value] of backups[index]) table.set(key, value);
+        });
+        throw err;
+      }
+    },
+
+    run(text: string, params: unknown[] = []) {
       const q = norm(text);
       const archiveResult = conversationArchive.run(text, params);
       if (archiveResult !== undefined) return archiveResult;
@@ -553,6 +657,17 @@ function createMemoryDb(): Db {
         );
       }
 
+      if (q.startsWith("insert into kb_tombstones")) {
+        return upsertRow(kbTombstones, q, params, "kb_tombstones", ["user_id", "doc_id"], (row) =>
+          `${row.user_id}|${row.doc_id}`,
+        );
+      }
+
+      if (q.startsWith("delete from kb_tombstones")) {
+        const [user_id, doc_id] = params as string[];
+        return kbTombstones.delete(`${user_id}|${doc_id}`) ? 1 : 0;
+      }
+
       if (q.startsWith("insert into memories")) {
         return upsertRow(memories, q, params, "memories", ["user_id", "mem_id"], (row) =>
           `${row.user_id}|${row.mem_id}`,
@@ -622,7 +737,8 @@ function createMemoryDb(): Db {
       }
 
       /*
-       * kb_docs 的两种删除形状：
+       * kb_docs 的三种删除形状：
+       *   - 复活守卫（含 kb_tombstones 子查询）：条件全命中才删，用于 PUT 事务末尾；
        *   - (user_id, doc_id)：删一篇文档，并级联删它的全部片段；
        *   - (user_id, direction_id)：删一个方向的全部文档与片段。
        * 先判 doc_id：`direction_id =` 不含 `doc_id =`，但反过来判定顺序错会把
@@ -632,6 +748,26 @@ function createMemoryDb(): Db {
       if (q.startsWith("delete from kb_docs")) {
         const user_id = params[0] as string;
         let n = 0;
+
+        /*
+         * 复活守卫（KB_TOMBSTONE_SQL.undoIfTombstoned）：多了 updated_at 精确匹配
+         * 与 tombstone 存在性两个条件，必须最先判，否则会落进下面的普通删除分支，
+         * 把「条件不命中该删 0 行」误判成「删掉了」。
+         */
+        if (q.includes("kb_tombstones")) {
+          const [, doc_id, updated_at, base] = params as [string, string, string, string | null];
+          if (base === null) return 0;
+          const key = `${user_id}|${doc_id}`;
+          const existing = kbDocs.get(key);
+          if (!existing || existing.updated_at !== updated_at) return 0;
+          const tomb = kbTombstones.get(key);
+          if (!tomb || Number(tomb.deleted_at) < Number(base)) return 0;
+          kbDocs.delete(key);
+          for (const [chunkKey, row] of kbChunks) {
+            if (row.user_id === user_id && row.doc_id === doc_id) dropChunk(chunkKey, row);
+          }
+          return 1;
+        }
 
         if (q.includes("doc_id =")) {
           const doc_id = params[1] as string;
@@ -734,7 +870,7 @@ function createMemoryDb(): Db {
       return 0;
     },
 
-    async all<T>(text: string, params: unknown[] = []) {
+    all<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
       const archiveRows = conversationArchive.all(text, params);
       if (archiveRows !== undefined) return archiveRows as T[];
@@ -758,6 +894,19 @@ function createMemoryDb(): Db {
           rows = rows.filter((r) => r.doc_id === params[1]);
         }
         rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        return rows as T[];
+      }
+
+      /*
+       * kb_tombstones 的读取形状：按用户列出，可选按方向过滤。
+       * 参数顺序固定：user_id（$1），可选 direction_id（$2）。
+       */
+      if (q.includes("from kb_tombstones")) {
+        let rows = [...kbTombstones.values()].filter((r) => r.user_id === params[0]);
+        if (q.includes("direction_id =")) {
+          rows = rows.filter((r) => r.direction_id === params[1]);
+        }
+        rows.sort((a, b) => String(a.doc_id).localeCompare(String(b.doc_id)));
         return rows as T[];
       }
 
@@ -944,7 +1093,7 @@ function createMemoryDb(): Db {
       return [];
     },
 
-    async one<T>(text: string, params: unknown[] = []) {
+    one<T>(text: string, params: unknown[] = []) {
       const q = norm(text);
       const archiveRows = conversationArchive.all(text, params);
       if (archiveRows !== undefined) return (archiveRows[0] ?? null) as T | null;
@@ -1021,6 +1170,14 @@ function createMemoryDb(): Db {
 
       return null;
     },
+  };
+  // Mutations and snapshots run synchronously to completion. Async callers cannot
+  // interleave another write halfway through a transaction or its rollback.
+  return {
+    run: async (q, p) => memory.run(q, p),
+    all: async <T>(q: string, p?: unknown[]) => memory.all<T>(q, p),
+    one: async <T>(q: string, p?: unknown[]) => memory.one<T>(q, p),
+    tx: async statements => memory.tx(statements),
   };
 }
 
@@ -1188,6 +1345,18 @@ export const SCHEMA = [
     PRIMARY KEY (user_id, doc_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_kb_docs_direction ON kb_docs(user_id, direction_id)`,
+  /*
+   * 跨设备删除标记：删除文档/方向时留下 tombstone，PUT 事务末尾用它撤掉
+   * 与删除并发的在途写入（删除赢），防止已删除的文档被旧设备「复活」。
+   * deleted_at 恒为毫秒数字符串，复活守卫按 ::numeric 比较。
+   */
+  `CREATE TABLE IF NOT EXISTS kb_tombstones (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_id TEXT NOT NULL,
+    direction_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, doc_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS kb_chunks (
     user_id TEXT NOT NULL,
     chunk_id TEXT NOT NULL,

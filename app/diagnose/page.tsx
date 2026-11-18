@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useClientSnapshot, useMounted } from "@/lib/useClientSnapshot";
 import Link from "next/link";
 import { Nav, Card, SectionTitle, Pill, MasteryBar } from "@/components/ui";
 import { useStaggerIn, useSwapIn } from "@/components/motion";
@@ -149,20 +150,28 @@ export default function DiagnosePage() {
   const submittedQuestion = useRef<string | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
-  const [requestedKc, setRequestedKc] = useState<string | null>(null);
-  /** 错题本带来的重做队列种子：?redo=逗号分隔题目id&redoLabel=显示名。 */
-  const [redoSeed, setRedoSeed] = useState<{ ids: readonly string[]; label: string } | null>(null);
+  /** URL 参数只在挂载后可读（useClientSnapshot）：?kc= 优先测评，?redo= 重做队列种子。 */
+  const urlSeed = useClientSnapshot(
+    () => {
+      const params = new URLSearchParams(window.location.search);
+      const redo = params.get("redo");
+      const ids =
+        redo !== null && redo.trim() !== ""
+          ? redo.split(",").map((id) => id.trim()).filter((id) => id !== "")
+          : [];
+      return {
+        kc: params.get("kc"),
+        redo: ids.length > 0 ? { ids, label: params.get("redoLabel") ?? "" } : null,
+      };
+    },
+    { kc: null, redo: null },
+  );
+  const requestedKc = urlSeed.kc;
+  /** 错题本带来的重做队列种子：?redo=逗号分隔题目id&redoLabel=显示名。"pending" 表示跟随 URL 种子。 */
+  const [redoSeedState, setRedoSeed] = useState<{ ids: readonly string[]; label: string } | null | "pending">("pending");
+  const redoSeed = redoSeedState === "pending" ? urlSeed.redo : redoSeedState;
   /** 激活后的重做队列。非空时按队列逐题走，作答仍走既有 submit 流程。 */
   const [redoQueue, setRedoQueue] = useState<{ ids: readonly string[]; index: number; label: string } | null>(null);
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setRequestedKc(params.get("kc"));
-    const redo = params.get("redo");
-    if (redo !== null && redo.trim() !== "") {
-      const ids = redo.split(",").map(id => id.trim()).filter(id => id !== "");
-      if (ids.length > 0) setRedoSeed({ ids, label: params.get("redoLabel") ?? "" });
-    }
-  }, []);
 
   /** 当前题的学习者笔记（错题本里写的）：重做时直接摆在题面旁，复习闭环。 */
   const currentNote = current && progress ? progress.notes?.[current.question.id] ?? null : null;
@@ -209,10 +218,14 @@ export default function DiagnosePage() {
     previousQuestion.current = id;
   }, [current?.question.id]);
 
-  // 切目标时重读一次：用户可能刚在设置页改过供应商配置
-  useEffect(() => {
+  // 切目标时重读一次：用户可能刚在设置页改过供应商配置。
+  // localStorage 只能在挂载后读（mounted 门），渲染期 adjust-on-change。
+  const mounted = useMounted();
+  const [providerFor, setProviderFor] = useState<string | null>(null);
+  if (mounted && providerFor !== targetId) {
+    setProviderFor(targetId);
     setProvider(loadProvider());
-  }, [targetId]);
+  }
 
   const graph = target?.graph;
   /*
@@ -345,13 +358,15 @@ export default function DiagnosePage() {
     return new Map([...latest].map(([kcId, v]) => [kcId, v.at] as const));
   }, [progress]);
 
-  // 切目标时清空本次答题与生成状态
-  useEffect(() => {
+  // 切目标时清空本次答题与生成状态（渲染期 adjust-on-change；
+  // abort 与 ref 清理是副作用，放在 cleanup 里，换目标与卸载时都会执行）
+  const [resetFor, setResetFor] = useState(targetId);
+  if (resetFor !== targetId) {
+    setResetFor(targetId);
     setAnswered([]);
     setCurrent(null);
     setSelected(null);
     setRevealed(false);
-    submittedQuestion.current = null;
     setDirectionItems([]);
     setGen({ kind: "idle" });
     setSkippedKcs(new Set());
@@ -361,32 +376,41 @@ export default function DiagnosePage() {
     setConfusionWith("");
     setConfusionSaved(false);
     setMemoryWarning(null);
-    genAbort.current?.abort();
-    genAbort.current = null;
-    attemptedGenKcs.current = new Set();
+  }
+  useEffect(() => {
+    return () => {
+      genAbort.current?.abort();
+      genAbort.current = null;
+      submittedQuestion.current = null;
+      attemptedGenKcs.current = new Set();
+    };
   }, [targetId]);
 
-  // 方向目标：先拉一次全量已落库题目（含 rejected 的过滤在内部）
+  // 方向目标：先拉一次全量已落库题目（含 rejected 的过滤在内部）。
+  // 拉取推迟到宏任务，避免 effect 同步 setItemsLoading 触发级联渲染告警。
   useEffect(() => {
     if (target?.kind !== "direction") return;
     let cancelled = false;
-    setItemsLoading(true);
-    void (async () => {
-      try {
-        const res = await fetch(
-          `/api/directions/items?directionId=${encodeURIComponent(target.id)}`,
-          { cache: "no-store" },
-        );
-        if (res.ok) {
-          const data = (await res.json()) as { items?: DirectionItem[] };
-          if (!cancelled) setDirectionItems(data.items ?? []);
+    const timer = window.setTimeout(() => {
+      setItemsLoading(true);
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/directions/items?directionId=${encodeURIComponent(target.id)}`,
+            { cache: "no-store" },
+          );
+          if (res.ok) {
+            const data = (await res.json()) as { items?: DirectionItem[] };
+            if (!cancelled) setDirectionItems(data.items ?? []);
+          }
+        } finally {
+          if (!cancelled) setItemsLoading(false);
         }
-      } finally {
-        if (!cancelled) setItemsLoading(false);
-      }
-    })();
+      })();
+    }, 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [target]);
 
@@ -608,20 +632,24 @@ export default function DiagnosePage() {
     [target, provider, directionItems, materialPack, materialSelection, uploadedPack, kbLoading],
   );
 
-  // 出题：没有 current 且还没答满上限时，先看要不要生成，再选题
+  // 出题：没有 current 且还没答满上限时，先选题（纯推导，渲染期完成）；
+  // 没有可出的题时的懒生成有副作用（计费请求），留在下面的 effect。
+  if (learner && target && graph && !current && answered.length < HARD_CAP) {
+    const picked = pickNext(learner);
+    if (picked) setCurrent(picked);
+  }
+
+  // 方向目标：没有可出的题时，尝试为下一个 KC 懒生成。
+  // 推迟到宏任务：generateFor 的同步前缀会 setState，直接在 effect 里调用触发级联渲染告警。
   useEffect(() => {
     if (!learner || !target || !graph || current || answered.length >= HARD_CAP) return;
+    if (pickNext(learner) !== null) return;
 
-    const picked = pickNext(learner);
-    if (picked) {
-      setCurrent(picked);
-      return;
-    }
-
-    // 方向目标：没有可出的题时，尝试为下一个 KC 懒生成
     if (target.kind === "direction" && gen.kind === "idle" && !itemsLoading && !kbLoading) {
       const need = kcNeedingItems(learner);
-      if (need) void generateFor(need.id, need.name);
+      if (!need) return;
+      const timer = window.setTimeout(() => void generateFor(need.id, need.name), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [
     learner,
@@ -812,7 +840,7 @@ export default function DiagnosePage() {
    * 作答仍走 submit：掌握度、记忆卡、预测校准与正常答题完全同一条路径。
    * 该题所在 KC 若在本次会话被跳过，一并放开，否则 answered 之外没有出口。
    */
-  const retrainQuestion = (question: Question) => {
+  const retrainQuestion = useCallback((question: Question) => {
     if (!graph) return;
     setSkippedKcs((prev) => {
       if (!prev.has(question.kcId)) return prev;
@@ -842,21 +870,27 @@ export default function DiagnosePage() {
       materialLabel: checks.find((c) => c.startsWith(MATERIAL_CHECK_PREFIX)) ?? null,
       chapter: concept?.chapter ?? "",
     });
-  };
+  }, [graph, directionItems, depths]);
 
   // ── 错题重做队列（错题本 → 诊断页）────────────────────────────────
   // 题目就绪（方向题要等落库题拉回）后进入第一题；作答走既有 submit，
   // 掌握度 / 记忆卡 / 预测校准与正常答题完全同一条路径。
+  // 推迟到宏任务：retrainQuestion 会清 submittedQuestion ref 并同步 setState，
+  // 既不能放渲染期（react-hooks/refs），也不能在 effect 里同步执行。
   useEffect(() => {
     if (!redoSeed || !graph || availableQuestions.length === 0) return;
-    const questions = redoSeed.ids
-      .map(id => availableQuestions.find(q => q.id === id))
-      .filter((q): q is Question => q !== undefined);
-    setRedoSeed(null);
-    const first = questions[0];
-    if (!first) return;
-    setRedoQueue({ ids: questions.map(q => q.id), index: 0, label: redoSeed.label });
-    retrainQuestion(first);
+    const timer = window.setTimeout(() => {
+      const questions = redoSeed.ids
+        .map(id => availableQuestions.find(q => q.id === id))
+        .filter((q): q is Question => q !== undefined);
+      setRedoSeed(null);
+      const first = questions[0];
+      if (first) {
+        setRedoQueue({ ids: questions.map(q => q.id), index: 0, label: redoSeed.label });
+        retrainQuestion(first);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [redoSeed, graph, availableQuestions, retrainQuestion]);
 
   /** 进入队列下一题；走完时清队列回到常规出题。 */

@@ -10,6 +10,7 @@
  *   serverTts 内脱敏并截断到 200 字符，响应里绝不出现密钥。
  */
 
+import { enforceRateLimit } from "@/lib/rateLimit";
 import { NextResponse } from "next/server";
 
 import { tts, type ApiErrorCode } from "@/lib/apiContracts";
@@ -79,6 +80,8 @@ function toTtsRow(
 }
 
 export async function POST(request: Request) {
+  const rateLimited = enforceRateLimit(request, "tts", 20);
+  if (rateLimited !== null) return rateLimited;
   const user = await getCurrentUser();
   if (!user) return failure(401, "unauthorized", "请先登录");
 

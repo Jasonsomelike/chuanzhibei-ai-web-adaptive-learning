@@ -12,7 +12,7 @@
  * 用户填的页码作为正文末尾的标注保存；引用抬头仍然不会凭空生成页码。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Panel, Pill } from "@/components/ui";
 import { chaptersOf } from "@/lib/chapters";
@@ -73,15 +73,23 @@ export function MaterialSourcePanel() {
   /*
    * 存储里的选择由 hook 在挂载后异步读出，因此草稿要跟着 selection 走；
    * 但用户正在编辑（dirty）时绝不能覆盖，否则每保存一条笔记都会把未保存的口径改动冲掉。
+   * 渲染期 adjust-on-change：selection 变化、或 dirty 从 true 落回 false 时重新同步。
    */
-  useEffect(() => {
-    if (dirty) return;
-    setDraft(selection);
-    setBasis(selection.sourceIds.length > 0 ? "materials" : "model");
-  }, [selection, dirty]);
+  const [selectionSync, setSelectionSync] = useState({ selection, dirty });
+  if (selectionSync.selection !== selection || (selectionSync.dirty && !dirty)) {
+    setSelectionSync({ selection, dirty });
+    if (!dirty) {
+      setDraft(selection);
+      setBasis(selection.sourceIds.length > 0 ? "materials" : "model");
+    }
+  } else if (selectionSync.dirty !== dirty) {
+    setSelectionSync({ selection, dirty });
+  }
 
-  // 切换目标时清空草稿与编辑表单：上一个目标的绑定关系不能带过来
-  useEffect(() => {
+  // 切换目标时清空草稿与编辑表单：上一个目标的绑定关系不能带过来（渲染期 adjust-on-change）
+  const [lastTargetId, setLastTargetId] = useState(targetId);
+  if (lastTargetId !== targetId) {
+    setLastTargetId(targetId);
     setDirty(false);
     setSelectionNotice(null);
     setEditingId(null);
@@ -91,7 +99,7 @@ export function MaterialSourcePanel() {
     setNotePageTo("");
     setNoteKcIds([]);
     setNoteNotice(null);
-  }, [targetId]);
+  }
 
   const conceptById = useMemo(() => {
     const map = new Map<string, KnowledgeConcept>();

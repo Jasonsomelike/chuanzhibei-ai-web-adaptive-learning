@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetRateLimits } from "@/lib/rateLimit";
 
 import type { AllowedTarget } from "@/lib/ssrfGuard";
 
@@ -174,6 +175,10 @@ beforeEach(() => {
     contentType: "audio/mpeg",
   });
   h.assertUpstreamAllowed.mockImplementation(async (raw: string) => allowedTarget(raw));
+});
+
+beforeEach(() => {
+  resetRateLimits();
 });
 
 describe("POST /api/search", () => {

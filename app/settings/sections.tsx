@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { useClientSnapshot } from "@/lib/useClientSnapshot";
 import {
   FormRow,
   Pill,
@@ -379,15 +380,14 @@ export function parseVectorChunkIdsPayload(raw: unknown): string[] | null {
 // ── 语气分区 ──────────────────────────────────────────────────
 
 export function ToneSection() {
-  const [tone, setTone] = useState<TutorTone>(DEFAULT_TUTOR_TONE);
+  // localStorage 只能在挂载后读（useClientSnapshot）；用户选择进 chosen 覆盖层
+  const storedTone = useClientSnapshot(loadTutorTone, DEFAULT_TUTOR_TONE);
+  const [chosen, setChosen] = useState<TutorTone | null>(null);
+  const tone = chosen ?? storedTone;
   const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => {
-    setTone(loadTutorTone());
-  }, []);
-
   function choose(next: TutorTone) {
-    setTone(next);
+    setChosen(next);
     storeTutorTone(next);
     setNotice(`已保存「${TONE_LABELS[next]}」到本浏览器。`);
   }
@@ -502,29 +502,29 @@ export function McpSection({
   /*
    * 换账号时必须清掉上一位用户的草稿与列表：组件在登出/登录之间不会卸载，
    * 不清的话上一位用户填了一半的鉴权头会留在下一位用户的表单里。
+   * （渲染期 adjust-on-change；未登录时的列表清空也在这里完成）
    */
-  useEffect(() => {
+  const [lastUserId, setLastUserId] = useState(userId);
+  if (lastUserId !== userId) {
+    setLastUserId(userId);
     setForm(EMPTY_MCP_FORM);
     setEditingId(null);
     setError(null);
     setNotice(null);
     setBusyId(null);
     setServers(null);
-  }, [userId]);
+    setLoading(false);
+  }
 
   // 只在已登录时读列表；未登录不发请求——/api/mcp/servers 必然 401。
+  // 拉取推迟到宏任务：effect 里同步 setLoading/setError 会触发级联渲染告警。
   useEffect(() => {
-    if (authLoading) return;
-    if (userId === null) {
-      setServers(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
+    if (authLoading || userId === null) return;
     const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    void (async () => {
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      void (async () => {
       try {
         const res = await fetch("/api/mcp/servers", {
           cache: "no-store",
@@ -551,8 +551,12 @@ export function McpSection({
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
-    })();
-    return () => controller.abort();
+      })();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [userId, authLoading]);
 
   function upsert(next: PublicMcpServer): void {
@@ -1013,26 +1017,31 @@ export function VectorSection({ userId }: VectorSectionProps) {
     readonly message: string | null;
     readonly elapsedMs: number | null;
   }>({ status: "idle", message: null, elapsedMs: null });
-  const [direction, setDirection] = useState("data-structures");
   const [state, setState] = useState<KbVectorSyncState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 方向沿用导师 / 诊断页的选择（src/lib/subject.tsx:28 的 alp.subject）
-  useEffect(() => {
+  // 方向沿用导师 / 诊断页的选择（src/lib/subject.tsx:28 的 alp.subject）；
+  // localStorage 只能在挂载后读（useClientSnapshot），用户改选进 override 覆盖层
+  const storedDirection = useClientSnapshot(() => {
     try {
       const stored = window.localStorage.getItem("alp.subject");
-      if (stored !== null && stored.trim() !== "") setDirection(stored.trim());
+      return stored !== null && stored.trim() !== "" ? stored.trim() : "data-structures";
     } catch {
       // 隐私模式或配额异常：保留默认方向
+      return "data-structures";
     }
-  }, []);
+  }, "data-structures");
+  const [directionOverride, setDirection] = useState<string | null>(null);
+  const direction = directionOverride ?? storedDirection;
 
-  // 换账号：上一位用户的同步状态不能留给下一位用户
-  useEffect(() => {
+  // 换账号：上一位用户的同步状态不能留给下一位用户（渲染期 adjust-on-change）
+  const [lastVectorUserId, setLastVectorUserId] = useState(userId);
+  if (lastVectorUserId !== userId) {
+    setLastVectorUserId(userId);
     setState(null);
     setError(null);
-  }, [userId]);
+  }
 
   async function checkModelFiles() {
     if (modelCheckRunning.current) return;

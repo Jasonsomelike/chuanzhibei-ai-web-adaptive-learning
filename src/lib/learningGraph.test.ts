@@ -4,6 +4,7 @@ import { initialMastery } from "@/lib/mastery";
 import { planPath } from "@/lib/plan";
 import { layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes } from "@/lib/learningGraph";
 import type { KnowledgeGraph } from "@/lib/graph";
+import { learningNodeSize, routeLearningEdges, segmentCrossesRect } from "./learningGraphLayout";
 
 describe("先修图谱使用真实规划与证据", () => {
   const subject = SUBJECTS[0];
@@ -50,10 +51,12 @@ describe("先修图谱使用真实规划与证据", () => {
     expect(Math.max(...first.map(node => node.position.y))).toBeLessThan(first.length * 120);
     expect(new Set(first.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(first.length);
   });
-  it("窄屏将后续层合为三列，保留节点身份与独立位置", () => {
+  it("窄屏保留真实先修层级、节点身份与独立位置", () => {
     const nodes = learningGraphNodes(subject.graph, mastery, plan, plan.steps);
     const compact = layoutLearningNodes(nodes, "compact");
-    expect([...new Set(compact.map(node => node.position.x))]).toEqual([0,132,264]);
+    for (const node of compact) for (const id of node.prerequisites) {
+      expect(compact.find(n => n.id === id)!.position.y + learningNodeSize("compact").height).toBeLessThan(node.position.y);
+    }
     expect(new Set(compact.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(compact.length);
     expect(compact.map(({position: _position,...node}) => node)).toEqual(nodes.map(({position: _position,...node}) => node));
   });
@@ -68,6 +71,30 @@ describe("先修图谱使用真实规划与证据", () => {
     expect(vertical.find(node => node.id === "c01")!.position.y).toBeLessThan(vertical.find(node => node.id === "c09")!.position.y);
     expect(new Set(vertical.map(node => `${node.position.x}:${node.position.y}`)).size).toBe(vertical.length);
     expect(subset.every(node => node.mean === null)).toBe(true);
+  });
+});
+
+describe.each(SUBJECTS)("$name 图谱几何", subject => {
+  it.each(["horizontal", "vertical", "compact"] as const)("%s 无矩形重叠，全部真实先修边绕开其他节点", direction => {
+    const mastery = subject.graph.concepts.map(c => initialMastery(c.id, 0));
+    const plan = planPath({ graph: subject.graph, mastery, budgetMinutes: 90 });
+    const source = learningGraphNodes(subject.graph, mastery, plan, plan.steps);
+    const nodes = layoutLearningNodes(source, direction), size = learningNodeSize(direction);
+    const reversed = layoutLearningNodes([...source].reverse(), direction);
+    for (const node of nodes) expect(reversed.find(n => n.id === node.id)?.position).toEqual(node.position);
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i].position, b = nodes[j].position;
+      expect(a.x + size.width <= b.x || b.x + size.width <= a.x || a.y + size.height <= b.y || b.y + size.height <= a.y).toBe(true);
+    }
+    const routes = routeLearningEdges(nodes, direction);
+    expect(routes.size).toBe(subject.graph.edges.length);
+    for (const edge of subject.graph.edges) {
+      const points = routes.get(`${edge.before}-${edge.after}`)!;
+      expect(points.length).toBeGreaterThanOrEqual(2);
+      for (let i = 1; i < points.length; i++) for (const node of nodes) {
+        expect(segmentCrossesRect(points[i-1], points[i], { ...node.position, ...size }), `${edge.before} → ${edge.after} crosses ${node.id}`).toBe(false);
+      }
+    }
   });
 });
 

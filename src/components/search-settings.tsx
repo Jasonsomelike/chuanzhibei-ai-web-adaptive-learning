@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { useClientSnapshot, useMounted } from "@/lib/useClientSnapshot";
 import {
   DangerButton,
   FormRow,
@@ -97,22 +98,23 @@ export function SearchSettings({
   readonly mode: CallMode;
   readonly loggedIn: boolean;
 }) {
-  const [config, setConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
-  const [ready, setReady] = useState(false);
+  // localStorage 只能在挂载后读（useClientSnapshot）；用户编辑进 edited 覆盖层
+  const stored = useClientSnapshot(loadSearchConfig, DEFAULT_SEARCH_CONFIG);
+  const [edited, setEdited] = useState<SearchConfig | null>(null);
+  const config = edited ?? stored;
+  const ready = useMounted();
   const [showKey, setShowKey] = useState(false);
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const [cleared, setCleared] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    setConfig(loadSearchConfig());
-    setReady(true);
     return () => controller.current?.abort();
   }, []);
 
   function update(patch: Partial<SearchConfig>) {
     const next: SearchConfig = { ...config, ...patch };
-    setConfig(next);
+    setEdited(next);
     saveSearchConfig(next);
     setTest({ status: "idle" });
     setCleared(false);
@@ -136,7 +138,7 @@ export function SearchSettings({
 
   function clearAll() {
     clearSearchConfig();
-    setConfig({ ...DEFAULT_SEARCH_CONFIG });
+    setEdited({ ...DEFAULT_SEARCH_CONFIG });
     setTest({ status: "idle" });
     setCleared(true);
   }

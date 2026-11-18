@@ -40,6 +40,7 @@ import { THEMES, MODES } from "@/lib/themes";
 import { useTheme } from "@/lib/theme";
 import { LAYOUTS, useAppearance } from "@/lib/appearance";
 import { useAuth } from "@/lib/useAuth";
+import { useClientSnapshot, useMounted } from "@/lib/useClientSnapshot";
 import {
   DEFAULT_CALL_MODE,
   hydrateProviderFromServer,
@@ -318,19 +319,18 @@ export default function SettingsPage() {
   const { user, loading: authLoading } = useAuth();
 
   // 分区导航：同一时刻只展示一个面板；所有面板保持挂载，避免切走再回来丢草稿
-  const [active, setActive] = useState<SectionId>("appearance");
   const mainRef = useRef<HTMLElement | null>(null);
 
   /*
-   * ?panel=<id> 深链必须在挂载后读：用 useState 初始化时读 window 会让
-   * 服务端渲染成 "mode"、客户端水合不再重跑，深链失效并报 hydration 不一致。
+   * ?panel=<id> 深链必须在挂载后读（useClientSnapshot：SSR/hydration 用 null，
+   * 之后换成 URL 里的值）；用户点击进 activeOverride 覆盖层。
    */
-  useEffect(() => {
+  const panelParam = useClientSnapshot(() => {
     const param = new URLSearchParams(window.location.search).get("panel");
-    if (param !== null && SECTIONS.some((s) => s.id === param)) {
-      setActive(param as SectionId);
-    }
-  }, []);
+    return param !== null && SECTIONS.some((s) => s.id === param) ? (param as SectionId) : null;
+  }, null);
+  const [activeOverride, setActive] = useState<SectionId | null>(null);
+  const active = activeOverride ?? panelParam ?? "appearance";
   const panelRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -344,8 +344,11 @@ export default function SettingsPage() {
   useStaggerIn(mainRef);
   useSwapIn(panelRef, active);
 
-  // 调用模式与账号配置；未登录时按本机模式工作（服务端模式按钮禁用）
-  const [callMode, setCallMode] = useState<CallMode>(DEFAULT_CALL_MODE);
+  // 调用模式与账号配置；未登录时按本机模式工作（服务端模式按钮禁用）。
+  // localStorage 只能在挂载后读（useClientSnapshot）；用户选择进 override 覆盖层。
+  const storedCallMode = useClientSnapshot(loadCallMode, DEFAULT_CALL_MODE);
+  const [callModeOverride, setCallMode] = useState<CallMode | null>(null);
+  const callMode = callModeOverride ?? storedCallMode;
   const [serverState, setServerState] = useState<ServerProviderState | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(false);
@@ -373,13 +376,26 @@ export default function SettingsPage() {
 
   // 三个新分区按需挂载；首次进入后保持挂载，切走再回来不丢草稿。
   // 分开三个标记是为了「点语气」不会顺带触发 MCP 请求与模型文件检查。
-  const [toneMounted, setToneMounted] = useState(false);
-  const [agentMounted, setAgentMounted] = useState(false);
-  const [vectorMounted, setVectorMounted] = useState(false);
+  // （渲染期记录访问过的分区，替代 effect 同步 setState）
+  const [visitedSections, setVisitedSections] = useState<readonly SectionId[]>([]);
+  if (
+    (active === "tone" || active === "agent" || active === "vector") &&
+    !visitedSections.includes(active)
+  ) {
+    setVisitedSections([...visitedSections, active]);
+  }
+  const toneMounted = visitedSections.includes("tone");
+  const agentMounted = visitedSections.includes("agent");
+  const vectorMounted = visitedSections.includes("vector");
 
-  // 首次挂载：回显已保存的配置
-  useEffect(() => {
-    const p = loadProvider();
+  // 首次挂载：回显已保存的配置（localStorage 只能在挂载后读）。
+  // 渲染期一次性初始化：applyPreset 是函数声明，提升后可在这里调用。
+  const mounted = useMounted();
+  const savedProvider = useClientSnapshot(loadProvider, null);
+  const [echoed, setEchoed] = useState(false);
+  if (mounted && !echoed) {
+    setEchoed(true);
+    const p = savedProvider;
     if (p) {
       setExisting(p);
       setLabel(p.label);
@@ -398,43 +414,51 @@ export default function SettingsPage() {
       );
       setPresetId(matched?.id ?? (p.kind === "anthropic" ? "custom-anthropic" : "custom-openai"));
     } else {
-      applyPreset("deepseek");
+      /*
+       * 等价于 applyPreset("deepseek")，但不经过 resetThinkingStatus：
+       * 渲染期不能读写 probeController ref（react-hooks/refs），
+       * 而挂载时探测本来就没启动，test/probe/thinkingStatus 都是初始值。
+       */
+      const preset = PRESETS.find((x) => x.id === "deepseek");
+      setPresetId("deepseek");
+      if (preset) {
+        setLabel(preset.label);
+        setKind(preset.kind);
+        setBaseUrl(preset.baseUrl);
+        setModel(preset.model);
+      }
     }
-    // 只在挂载时回显一次；applyPreset 是稳定的纯 setter，放进依赖会重复覆盖用户输入
+  }
+  // 只在挂载时回显一次；离开页面时中止在途探测
+  useEffect(() => {
     return () => probeController.current?.abort();
   }, []);
 
   // 回显上次选择的调用模式；服务端默认值在 serverConfig 里
-  useEffect(() => {
-    setCallMode(loadCallMode());
-  }, []);
-
-  // 第一次进入某个新分区时才加载对应内容；之后保持挂载
-  useEffect(() => {
-    if (active === "tone") setToneMounted(true);
-    else if (active === "agent") setAgentMounted(true);
-    else if (active === "vector") setVectorMounted(true);
-  }, [active]);
-
   /**
    * 生效模式：未登录时服务端模式没有意义（保存不了、代理也会 401），
    * 界面与调用链一律按本机模式工作，但不改写用户存下的选择。
    */
   const effectiveMode: CallMode = user === null ? "local" : callMode;
 
-  // 登录后（以及表单保存后）把账号里的 llm 行读回来；未登录时清空，不显示假状态
-  useEffect(() => {
-    if (authLoading) return;
+  // 登录后（以及表单保存后）把账号里的 llm 行读回来；未登录时清空，不显示假状态。
+  // 清空在渲染期做（adjust-on-change），拉取推迟到宏任务，避免 effect 同步 setState。
+  const [lastAuthUser, setLastAuthUser] = useState(user);
+  if (lastAuthUser !== user) {
+    setLastAuthUser(user);
     if (user === null) {
       setServerState(null);
       setServerError(null);
       setHydrating(false);
-      return;
     }
+  }
+  useEffect(() => {
+    if (authLoading || user === null) return;
 
     const controller = new AbortController();
-    setHydrating(true);
-    void (async () => {
+    const timer = window.setTimeout(() => {
+      setHydrating(true);
+      void (async () => {
       const result = await hydrateProviderFromServer(effectiveMode, controller.signal);
       if (controller.signal.aborted) return;
       setHydrating(false);
@@ -461,9 +485,13 @@ export default function SettingsPage() {
           setExisting(local);
         }
       }
-    })();
+      })();
+    }, 0);
 
-    return () => controller.abort();
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [authLoading, user, effectiveMode, hydrateTick]);
 
   /*
