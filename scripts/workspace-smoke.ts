@@ -15,6 +15,31 @@ page.on("pageerror", e => errors.push(e.message));
 let checks = 0;
 const check = (value: unknown, label: string) => { assert(value, label); checks++; console.log(`PASS ${label}`); };
 try {
+  for (const width of [1480, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    await page.goto(`${base}/path?subject=network&budget=90`);
+    const graph = page.locator(".knowledge-canvas");
+    await graph.locator(".react-flow__edge-path").first().waitFor();
+    if (width === 390) await page.locator('.knowledge-workspace[data-compact="true"]').waitFor();
+    await page.waitForFunction(() => document.querySelector(".react-flow__edge-path[d*='C']"));
+    const gaps = await graph.evaluate((canvas, vertical) => {
+      const boxes = [...canvas.querySelectorAll(".knowledge-node")].map(el => el.getBoundingClientRect());
+      return [...canvas.querySelectorAll<SVGPathElement>(".react-flow__edge-path")].filter(edge => {
+        const matrix = edge.getScreenCTM()!;
+        return [0, edge.getTotalLength()].some((distance, end) => {
+          const point = edge.getPointAtLength(distance).matrixTransform(matrix);
+          return !boxes.some(box => {
+            const x = vertical ? box.left + box.width / 2 : end ? box.left : box.right;
+            const y = vertical ? (end ? box.top : box.bottom) : box.top + box.height / 2;
+            return Math.hypot(x - point.x, y - point.y) < 1;
+          });
+        });
+      }).map(edge => edge.id);
+    }, width === 390);
+    check(!gaps.length, `${width}px 计算机网络图谱每条线的两端贴合节点边界：${gaps.join(",")}`);
+    await graph.screenshot({ path: join(output, `network-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1480, height: 1000 });
   await page.goto(`${base}/path?subject=data-structures&budget=60`);
   await page.locator(".react-flow__edge path.react-flow__edge-path").first().waitFor();
   for (const all of [false, true]) {

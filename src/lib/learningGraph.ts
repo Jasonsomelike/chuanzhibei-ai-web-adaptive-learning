@@ -114,12 +114,12 @@ export function learningEdgeVisual(source: string, target: string, context: Lear
     return {
       tone: "warn",
       emphasized: connected,
-      opacity: context.selectedId !== null && !connected ? 0.3 : 1,
+      opacity: context.selectedId !== null && !connected ? 0.64 : 1,
       dashed: true,
     };
   }
   if (connected) return { tone: "accent", emphasized: true, opacity: 1, dashed: false };
-  if (context.selectedId !== null) return { tone: "plain", emphasized: false, opacity: 0.3, dashed: false };
+  if (context.selectedId !== null) return { tone: "plain", emphasized: false, opacity: 0.64, dashed: false };
   if (context.showAll) return { tone: "plain", emphasized: false, opacity: 0.55, dashed: false };
   return { tone: "plain", emphasized: false, opacity: 1, dashed: false };
 }

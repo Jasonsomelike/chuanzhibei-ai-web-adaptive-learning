@@ -10,7 +10,7 @@ import { prefersReducedMotion } from "@/components/motion";
 import { useAppearance } from "@/lib/appearance";
 import { chaptersOf } from "@/lib/chapters";
 import { LEARNING_STATUS_LABELS, layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes, type LearningGraphNode } from "@/lib/learningGraph";
-import { learningNodeSize, routeLearningEdges, type GraphPoint } from "@/lib/learningGraphLayout";
+import { learningEdgePath, learningNodeSize, routeLearningEdges } from "@/lib/learningGraphLayout";
 import type { KnowledgeGraph } from "@/lib/graph";
 import type { MasteryState } from "@/lib/mastery";
 import type { PathStep, PlanResult } from "@/lib/plan";
@@ -21,7 +21,7 @@ const Concept = memo(function Concept({ id, data, selected }: NodeProps<ConceptN
   useEffect(() => { updateInternals(id); }, [id, data.vertical, data.compact, updateInternals]);
   const item = data.concept;
   const Symbol = item.status === "blocked" ? Diamond : item.status === "mastered" ? CircleDot : Circle;
-  return <div data-new-step={data.added || undefined} className={`knowledge-node node-${item.status} ${selected ? "node-selected" : ""}`}>
+  return <div style={learningNodeSize(data.compact ? "compact" : data.vertical ? "vertical" : "horizontal")} data-new-step={data.added || undefined} className={`knowledge-node node-${item.status} ${selected ? "node-selected" : ""}`}>
     <Handle id="left" type="target" position={Position.Left} isConnectable={false}  />
     <Handle id="top" type="target" position={Position.Top} isConnectable={false}  />
     <span className="concept-mark"><Symbol className="concept-anchor" size={30} strokeWidth={selected ? 2.8 : 2} />{item.order ? <span className="concept-order">{item.order}</span> : null}</span>
@@ -31,10 +31,9 @@ const Concept = memo(function Concept({ id, data, selected }: NodeProps<ConceptN
   </div>;
 });
 const nodeTypes = { concept: Concept };
-type PrerequisiteEdge = Edge<{ points: GraphPoint[] }>;
+type PrerequisiteEdge = Edge<{ path: string }>;
 function RoutedEdge({ id, data, style, markerEnd }: EdgeProps<PrerequisiteEdge>) {
-  const path = data?.points.map((point, i) => `${i ? "L" : "M"}${point.x},${point.y}`).join(" ") ?? "";
-  return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+  return <BaseEdge id={id} path={data?.path ?? ""} style={style} markerEnd={markerEnd} />;
 }
 const edgeTypes = { prerequisite: RoutedEdge };
 
@@ -93,9 +92,9 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
     let settle: ReturnType<typeof setTimeout>;
     const fit = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
       const duration = prefersReducedMotion() ? 0 : 220;
-      if (canvas.current && canvas.current.clientWidth < 600 && !compact) {
+      if (canvas.current && canvas.current.clientWidth < 600 && !showAll) {
         const node = flow.getNodes().find(item => item.selected) ?? flow.getNodes()[0];
-        if (node) void flow.setCenter(node.position.x + 90, node.position.y + 38, { zoom: .9, duration });
+        if (node) void flow.setCenter(node.position.x + nodeSize.width / 2, node.position.y + nodeSize.height / 2 + (compact ? 60 : 0), { zoom: .95, duration });
       } else {
         const all = flow.getNodes();
         const selected = all.find(node => node.selected);
@@ -107,8 +106,13 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
     observer.observe(canvas.current);
     fit();
     return () => { clearTimeout(settle); cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [flow, showAll, stepSignature, layout, compact]);
-  const routes = useMemo(() => routeLearningEdges(visibleModels, direction), [visibleModels, direction]);
+  }, [flow, showAll, stepSignature, layout, compact, nodeSize.width, nodeSize.height]);
+  const paths = useMemo(() => {
+    const size = learningNodeSize(direction);
+    const obstacles = visibleModels.map(node => ({ ...node.position, ...size }));
+    const routes = routeLearningEdges(visibleModels, direction);
+    return new Map(Array.from(routes, ([id, points]) => [id, learningEdgePath(points, obstacles, direction)]));
+  }, [visibleModels, direction]);
   const edges = useMemo(() => {
     const visible = new Set(visibleModels.map(item => item.id));
     const blockedTargets = new Set(visibleModels.filter(item => item.status === "blocked").map(item => item.id));
@@ -117,9 +121,9 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       const visual = learningEdgeVisual(edge.before, edge.after, { selectedId: selectedNodeId, showAll, isBlockedTarget: id => blockedTargets.has(id) });
       const color = strokeVar[visual.tone];
       const downward = direction !== "horizontal";
-      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "prerequisite", data: { points: routes.get(`${edge.before}-${edge.after}`) ?? [] }, markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
+      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "prerequisite", data: { path: paths.get(`${edge.before}-${edge.after}`) ?? "" }, markerEnd: { type: MarkerType.ArrowClosed, color, markerUnits: "userSpaceOnUse", width: 22, height: 22 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
     });
-  }, [graph, visibleModels, byId, direction, selectedNodeId, showAll, routes]);
+  }, [graph, visibleModels, byId, direction, selectedNodeId, showAll, paths]);
 
   /**
    * 导出当前画布为 PNG。

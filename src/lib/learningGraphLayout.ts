@@ -3,13 +3,13 @@ import type { LearningGraphNode } from "./learningGraph";
 
 export type GraphDirection = "horizontal" | "vertical" | "compact";
 export type GraphPoint = { x: number; y: number };
-export const learningNodeSize = (direction: GraphDirection) => ({ width: direction === "compact" ? 168 : 224, height: 88 });
+export const learningNodeSize = (direction: GraphDirection) => ({ width: direction === "compact" ? 168 : 206, height: 76 });
 
 /** Stable input ordering gives stable ranks even when search/filter returns a different order. */
 export function arrangeLearningNodes(nodes: readonly LearningGraphNode[], direction: GraphDirection): LearningGraphNode[] {
   if (!nodes.length) return [];
   const size = learningNodeSize(direction);
-  const graph = new Graph().setGraph({ rankdir: direction === "horizontal" ? "LR" : "TB", ranksep: 72, nodesep: 32, edgesep: 18, marginx: 16, marginy: 16 }).setDefaultEdgeLabel(() => ({}));
+  const graph = new Graph().setGraph({ rankdir: direction === "horizontal" ? "LR" : "TB", ranksep: direction === "horizontal" ? 88 : 58, nodesep: 28, edgesep: 18, marginx: 16, marginy: 16 }).setDefaultEdgeLabel(() => ({}));
   const ids = new Set(nodes.map(n => n.id));
   const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   for (const node of sorted) graph.setNode(node.id, { ...size });
@@ -19,6 +19,45 @@ export function arrangeLearningNodes(nodes: readonly LearningGraphNode[], direct
 }
 
 export type GraphRect = GraphPoint & { width: number; height: number };
+
+/** A cubic stays inside its control points' bounding box. Use the clear gap
+ * between ranks when possible, otherwise soften the obstacle router's bends. */
+export function learningEdgePath(points: readonly GraphPoint[], obstacles: readonly GraphRect[], direction: GraphDirection): string {
+  if (points.length < 2) return "";
+  const from = points[0], to = points[points.length - 1];
+  const xy = (p: GraphPoint) => `${p.x},${p.y}`;
+  const horizontal = direction === "horizontal";
+  const forward = horizontal ? to.x > from.x : to.y > from.y;
+  let path = `M${xy(from)}`;
+  if (forward) {
+    const mid = horizontal ? (from.x + to.x) / 2 : (from.y + to.y) / 2;
+    const c1 = horizontal ? { x: mid, y: from.y } : { x: from.x, y: mid };
+    const c2 = horizontal ? { x: mid, y: to.y } : { x: to.x, y: mid };
+    const overlaps = (a: GraphPoint, b: GraphPoint, box: GraphRect, pad: number) =>
+      box.x - pad < Math.max(a.x, b.x) && box.x + box.width + pad > Math.min(a.x, b.x) &&
+      box.y - pad < Math.max(a.y, b.y) && box.y + box.height + pad > Math.min(a.y, b.y);
+    const nearby = obstacles.filter(box => overlaps(from, to, box, 0));
+    // Both coordinates are monotone, so each subcurve lies inside its two
+    // endpoints' rectangle. This also admits clear curves spanning several ranks.
+    let previous = from, clear = true;
+    for (let i = 1; nearby.length && clear && i <= 16; i++) {
+      const t = i / 16, u = 1 - t;
+      const coord = (k: keyof GraphPoint) => u ** 3 * from[k] + 3 * u ** 2 * t * c1[k] + 3 * u * t ** 2 * c2[k] + t ** 3 * to[k];
+      const next = { x: coord("x"), y: coord("y") };
+      clear = !nearby.some(box => overlaps(previous, next, box, 5));
+      previous = next;
+    }
+    if (clear) return `${path} C${xy(c1)} ${xy(c2)} ${xy(to)}`;
+  }
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = points[i - 1], b = points[i], c = points[i + 1];
+    // Stay within the router's 12px obstacle clearance even on tight corners.
+    const trim = Math.min(10, Math.hypot(a.x - b.x, a.y - b.y) / 2, Math.hypot(c.x - b.x, c.y - b.y) / 2);
+    const toward = (p: GraphPoint) => ({ x: b.x + Math.sign(p.x - b.x) * trim, y: b.y + Math.sign(p.y - b.y) * trim });
+    path += ` L${xy(toward(a))} Q${xy(b)} ${xy(toward(c))}`;
+  }
+  return `${path} L${xy(to)}`;
+}
 /** Open-interior intersection: travelling on the padded boundary is safe. */
 export function segmentCrossesRect(a: GraphPoint, b: GraphPoint, rect: GraphRect): boolean {
   if (a.x === b.x) return a.x > rect.x && a.x < rect.x + rect.width && Math.max(a.y, b.y) > rect.y && Math.min(a.y, b.y) < rect.y + rect.height;

@@ -4,7 +4,7 @@ import { initialMastery } from "@/lib/mastery";
 import { planPath } from "@/lib/plan";
 import { layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes } from "@/lib/learningGraph";
 import type { KnowledgeGraph } from "@/lib/graph";
-import { learningNodeSize, routeLearningEdges, segmentCrossesRect } from "./learningGraphLayout";
+import { learningEdgePath, learningNodeSize, routeLearningEdges, segmentCrossesRect } from "./learningGraphLayout";
 
 describe("先修图谱使用真实规划与证据", () => {
   const subject = SUBJECTS[0];
@@ -74,6 +74,15 @@ describe("先修图谱使用真实规划与证据", () => {
   });
 });
 
+it("连接两端时使用平滑曲线，跨层遇到障碍时沿安全通道圆角绕行", () => {
+  const route = [{ x: 0, y: 0 }, { x: 12, y: 0 }, { x: 12, y: 50 }, { x: 108, y: 50 }, { x: 108, y: 0 }, { x: 120, y: 0 }];
+  expect(learningEdgePath(route, [], "horizontal")).toBe("M0,0 C60,0 60,0 120,0");
+  const obstacle = { x: 40, y: -10, width: 40, height: 35 };
+  const detour = learningEdgePath(route, [obstacle], "horizontal");
+  expect(detour).toContain("Q");
+  expect(detour).toMatch(/^M0,0 .*L120,0$/);
+});
+
 describe.each(SUBJECTS)("$name 图谱几何", subject => {
   it.each(["horizontal", "vertical", "compact"] as const)("%s 无矩形重叠，全部真实先修边绕开其他节点", direction => {
     const mastery = subject.graph.concepts.map(c => initialMastery(c.id, 0));
@@ -113,19 +122,19 @@ describe("learningEdgeVisual：先修边的视觉规则", () => {
   it("选中节点的相连边高亮强调，其余边淡化", () => {
     expect(learningEdgeVisual("a", "sel", ctx({ selectedId: "sel" }))).toEqual({ tone: "accent", emphasized: true, opacity: 1, dashed: false });
     expect(learningEdgeVisual("sel", "b", ctx({ selectedId: "sel" }))).toEqual({ tone: "accent", emphasized: true, opacity: 1, dashed: false });
-    expect(learningEdgeVisual("a", "b", ctx({ selectedId: "sel" }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.3, dashed: false });
+    expect(learningEdgeVisual("a", "b", ctx({ selectedId: "sel" }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.64, dashed: false });
   });
 
   it("指向 blocked 节点的边永远是警示虚线，选中时加粗不改色", () => {
     expect(learningEdgeVisual("a", "blocked-kc", ctx())).toEqual({ tone: "warn", emphasized: false, opacity: 1, dashed: true });
     expect(learningEdgeVisual("sel", "blocked-kc", ctx({ selectedId: "blocked-kc" }))).toEqual({ tone: "warn", emphasized: true, opacity: 1, dashed: true });
-    expect(learningEdgeVisual("a", "blocked-kc", ctx({ selectedId: "other" }))).toEqual({ tone: "warn", emphasized: false, opacity: 0.3, dashed: true });
+    expect(learningEdgeVisual("a", "blocked-kc", ctx({ selectedId: "other" }))).toEqual({ tone: "warn", emphasized: false, opacity: 0.64, dashed: true });
   });
 
   it("全科模式无选中时整体降权让节点颜色可读", () => {
     expect(learningEdgeVisual("a", "b", ctx({ showAll: true }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.55, dashed: false });
     // 有选中项时选中淡化规则优先于全科降权
-    expect(learningEdgeVisual("a", "b", ctx({ showAll: true, selectedId: "sel" }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.3, dashed: false });
+    expect(learningEdgeVisual("a", "b", ctx({ showAll: true, selectedId: "sel" }))).toEqual({ tone: "plain", emphasized: false, opacity: 0.64, dashed: false });
   });
 
   it("源节点是 blocked 目标的判断只看 target，不影响反向边", () => {
