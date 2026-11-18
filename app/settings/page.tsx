@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { CategoryNav, ModelTabs, isModelPanel, panelAttrs, resolvePanel, type SectionId } from "./navigation";
+import { AccountSecurity } from "@/components/account-security";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { Check, CircleHelp, ClipboardList, Palette, ShieldCheck, SlidersHorizontal, BookOpen } from "lucide-react";
+import { Check } from "lucide-react";
 import paperPreview from "../../docs/design/editorial/path-paper.png";
 import atlasPreview from "../../docs/design/editorial/path-atlas.png";
 import chaptersPreview from "../../docs/design/editorial/path-chapters.png";
@@ -111,30 +114,6 @@ const THINKING_LABEL: Record<ThinkingStrength, string> = {
   standard: "标准",
   deep: "深入",
 };
-
-const SECTIONS = [
-  { id: "mode", label: "调用模式" },
-  { id: "provider", label: "模型供应商" },
-  { id: "thinking", label: "思考与核对" },
-  { id: "tone", label: "语气" },
-  { id: "tts", label: "语音朗读" },
-  { id: "search", label: "联网搜索" },
-  { id: "materials", label: "知识口径" },
-  { id: "agent", label: "智能体与工具" },
-  { id: "vector", label: "向量检索" },
-  { id: "appearance", label: "外观" },
-  { id: "learning-data", label: "学习数据" },
-  { id: "privacy", label: "密钥与隐私" },
-] as const;
-
-type SectionId = (typeof SECTIONS)[number]["id"];
-
-const panelAttrs = (id: SectionId, active: SectionId) => ({
-  role: "tabpanel" as const,
-  id: `settings-panel-${id}`,
-  "aria-labelledby": `settings-tab-${id}`,
-  hidden: active !== id,
-});
 
 const MATERIAL_NOTES: ReadonlyArray<{ readonly term: string; readonly detail: string }> = [
   {
@@ -314,6 +293,10 @@ const LLM_FIELDS: readonly SecretField[] = [
 ];
 
 export default function SettingsPage() {
+  return <Suspense fallback={<main id="main" aria-busy="true">正在读取设置…</main>}><SettingsWorkspace /></Suspense>;
+}
+
+function SettingsWorkspace() {
   const { theme, mode, setTheme, setMode, resolvedMode } = useTheme();
   const { layout, setLayout, reducedMotion, setReducedMotion } = useAppearance();
   const { user, loading: authLoading } = useAuth();
@@ -321,18 +304,16 @@ export default function SettingsPage() {
   // 分区导航：同一时刻只展示一个面板；所有面板保持挂载，避免切走再回来丢草稿
   const mainRef = useRef<HTMLElement | null>(null);
 
-  /*
-   * ?panel=<id> 深链必须在挂载后读（useClientSnapshot：SSR/hydration 用 null，
-   * 之后换成 URL 里的值）；用户点击进 activeOverride 覆盖层。
-   */
-  const panelParam = useClientSnapshot(() => {
-    const param = new URLSearchParams(window.location.search).get("panel");
-    return param !== null && SECTIONS.some((s) => s.id === param) ? (param as SectionId) : null;
-  }, null);
-  const [activeOverride, setActive] = useState<SectionId | null>(null);
-  const active = activeOverride ?? panelParam ?? "appearance";
+  const queryPanel = useSearchParams().get("panel");
+  const active = resolvePanel(queryPanel);
+  const modelPanel = isModelPanel(active);
+  function setActive(panel: SectionId) {
+    if (active === panel) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("panel", panel);
+    window.history.pushState(null, "", url);
+  }
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const runMotion = useMotionSafe();
 
@@ -604,132 +585,14 @@ export default function SettingsPage() {
 
   const preset = PRESETS.find((p) => p.id === presetId);
 
-  function onTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
-    const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
-    if (!keys.includes(event.key)) return;
-    event.preventDefault();
-    const visible = SECTIONS.map((section, i) => ({ section, i })).filter(({ section }) => !["appearance", "materials", "learning-data", "privacy"].includes(section.id));
-    const position = visible.findIndex(item => item.i === index);
-    let next = position;
-    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-      next = (position + 1) % visible.length;
-    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-      next = (position - 1 + visible.length) % visible.length;
-    } else if (event.key === "Home") {
-      next = 0;
-    } else if (event.key === "End") {
-      next = visible.length - 1;
-    }
-    const target = visible[next]?.section;
-    if (target === undefined) return;
-    setActive(target.id);
-    tabRefs.current[visible[next].i]?.focus();
-  }
-
   return (
     <>
       <Nav />
       <main id="main" ref={mainRef} className="settings-workspace mx-auto max-w-6xl px-5 py-8 sm:py-10">
         <h1 className="sr-only">设置中心</h1>
 
-        {/* ── 当前状态：只读摘要，不参与编辑 ── */}
-        <div
-          data-motion="status"
-          hidden={active === "appearance"}
-          className="settings-provider-status mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm"
-        >
-          <span className="text-[var(--ink-soft)]">当前状态</span>
-          {effectiveMode === "server" ? (
-            serverState?.serverConfigured ? (
-              <>
-                <Pill tone="good">已配置（账号）</Pill>
-                <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
-                  {serverState.label} · {serverState.model} ·{" "}
-                  {serverState.api === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} ·
-                  密钥加密存服务端 · 思考 {THINKING_LABEL[serverState.options.thinking]} · 依据核对{" "}
-                  {serverState.options.verification ? "开" : "关"}
-                </span>
-              </>
-            ) : hydrating ? (
-              <span className="text-xs text-[var(--ink-faint)]">正在读取账号配置…</span>
-            ) : (
-              <>
-                <Pill tone="warn">未配置（账号）</Pill>
-                <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
-                  在「模型供应商」保存一次模型配置；在此之前导师页使用知识库检索模式
-                </span>
-              </>
-            )
-          ) : existing ? (
-            <>
-              <Pill tone="good">已配置（本机）</Pill>
-              <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
-                {existing.label} · {existing.model} ·{" "}
-                {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
-                <span className="font-mono">{maskKey(existing.apiKey)}</span> · 思考{" "}
-                {THINKING_LABEL[existing.thinking ?? "off"]} · 依据核对{" "}
-                {existing.verification !== false ? "开" : "关"}
-              </span>
-            </>
-          ) : (
-            <>
-              <Pill tone="warn">未配置（本机）</Pill>
-              <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
-                导师页将使用知识库检索模式，路径功能不受影响
-              </span>
-            </>
-          )}
-        </div>
-        {effectiveMode === "server" && serverError !== null ? (
-          <p className="mb-8 max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--warn)]">{serverError}</p>
-        ) : null}
-
         <div className="settings-layout lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-10">
-          {/* 窄屏：分区标签换行铺满，11 个分区始终可见；lg 以上改为左侧竖向导航 */}
-          <nav aria-label="设置分区" data-motion="nav" className="lg:sticky lg:top-8 lg:self-start">
-            <div className="settings-category-nav">
-              {[{ id: "appearance", label: "外观", icon: Palette }, { id: "mode", label: "模型与工具", icon: SlidersHorizontal }, { id: "materials", label: "资料与口径", icon: BookOpen }, { id: "learning-data", label: "学习数据", icon: ClipboardList }, { id: "privacy", label: "账号与隐私", icon: ShieldCheck }].map(category => {
-                const selected = category.id === "mode" ? !["appearance", "materials", "learning-data", "privacy"].includes(active) : active === category.id;
-                return <button key={category.id} type="button" aria-current={selected ? "true" : undefined} onClick={() => setActive(category.id as SectionId)}><category.icon size={20} />{category.label}</button>;
-              })}
-              <a href="/guide"><CircleHelp size={20} />使用帮助</a>
-            </div>
-            <div
-              role="tablist"
-              aria-label="模型与工具分区"
-              aria-orientation="vertical"
-              hidden={["appearance", "materials", "learning-data", "privacy"].includes(active)}
-              className="settings-model-tabs -mx-1 flex flex-wrap gap-1 px-1 pb-2 lg:mx-0 lg:flex-col lg:flex-nowrap lg:gap-0.5 lg:px-0 lg:pb-0"
-            >
-              {SECTIONS.map((section, index) => {
-                const selected = active === section.id;
-                return (
-                  <button
-                    key={section.id}
-                    ref={(element) => {
-                      tabRefs.current[index] = element;
-                    }}
-                    type="button"
-                    role="tab"
-                    id={`settings-tab-${section.id}`}
-                    aria-selected={selected}
-                    aria-controls={`settings-panel-${section.id}`}
-                      tabIndex={selected ? 0 : -1}
-                      hidden={["appearance", "materials", "learning-data", "privacy"].includes(section.id)}
-                    onClick={() => setActive(section.id)}
-                    onKeyDown={(event) => onTabKeyDown(event, index)}
-                    className={`shrink-0 rounded-lg px-3 py-2 text-left text-sm transition-colors lg:w-full ${
-                      selected
-                        ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-                        : "text-[var(--ink-soft)] hover:bg-[var(--line)] hover:text-[var(--ink)]"
-                    }`}
-                  >
-                    {section.label}
-                  </button>
-                );
-              })}
-            </div>
-          </nav>
+          <CategoryNav active={active} select={setActive} />
 
           <div
             ref={panelRef}
@@ -737,6 +600,59 @@ export default function SettingsPage() {
             data-motion-manual
             className="mt-6 min-w-0 lg:mt-0"
           >
+            {modelPanel && <ModelTabs active={active} select={setActive} />}
+            {/* ── 当前状态：只读摘要，不参与编辑 ── */}
+            <div
+              data-motion="status"
+              hidden={!modelPanel}
+              className="settings-provider-status mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--line)] pb-5 text-sm"
+            >
+              <span className="text-[var(--ink-soft)]">当前状态</span>
+              {effectiveMode === "server" ? (
+                serverState?.serverConfigured ? (
+                  <>
+                    <Pill tone="good">已配置（账号）</Pill>
+                    <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
+                      {serverState.label} · {serverState.model} ·{" "}
+                      {serverState.api === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} ·
+                      密钥加密存服务端 · 思考 {THINKING_LABEL[serverState.options.thinking]} · 依据核对{" "}
+                      {serverState.options.verification ? "开" : "关"}
+                    </span>
+                  </>
+                ) : hydrating ? (
+                  <span className="text-xs text-[var(--ink-faint)]">正在读取账号配置…</span>
+                ) : (
+                  <>
+                    <Pill tone="warn">未配置（账号）</Pill>
+                    <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
+                      在「模型供应商」保存一次模型配置；在此之前导师页使用知识库检索模式
+                    </span>
+                  </>
+                )
+              ) : existing ? (
+                <>
+                  <Pill tone="good">已配置（本机）</Pill>
+                  <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
+                    {existing.label} · {existing.model} ·{" "}
+                    {existing.kind === "anthropic" ? "Anthropic 协议" : "OpenAI 兼容"} · key{" "}
+                    <span className="font-mono">{maskKey(existing.apiKey)}</span> · 思考{" "}
+                    {THINKING_LABEL[existing.thinking ?? "off"]} · 依据核对{" "}
+                    {existing.verification !== false ? "开" : "关"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Pill tone="warn">未配置（本机）</Pill>
+                  <span className="max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--ink-faint)]">
+                    导师页将使用知识库检索模式，路径功能不受影响
+                  </span>
+                </>
+              )}
+            </div>
+            {modelPanel && effectiveMode === "server" && serverError !== null ? (
+              <p className="mb-8 max-w-[70ch] wrap-anywhere text-xs leading-relaxed text-[var(--warn)]">{serverError}</p>
+            ) : null}
+
             {/* ── 调用模式 ── */}
             <div {...panelAttrs("mode", active)}>
               <SettingsSection
@@ -1231,9 +1147,10 @@ export default function SettingsPage() {
             {/* ── 密钥与隐私 ── */}
             <div {...panelAttrs("privacy", active)}>
               <SettingsSection
-                title="密钥与隐私"
-                hint="只把边界说清楚：密钥存在哪、什么会外发、怎么彻底删除。"
+                title="账号与隐私"
+                hint="管理登录密码、找回方式和服务密钥。"
               >
+                {user ? (active === "privacy" && <AccountSecurity key={user.id} />) : <a className="graph-start-learning" href="/login?next=%2Fsettings%3Fpanel%3Dprivacy">登录后管理账号安全</a>}
                 <SettingsGroup
                   title="存储与删除位置"
                   hint="三类密钥位置不同，各有各的存储键与清除入口。"

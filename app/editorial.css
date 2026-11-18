@@ -103,11 +103,13 @@ button, a { touch-action: manipulation; }
 .settings-category-nav > button, .settings-category-nav > a { display: flex; min-height: 50px; align-items: center; gap: 13px; padding: 11px 16px; border-radius: 8px; text-align: left; font-size: 16px; }
 .settings-category-nav > button[aria-current] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); font-weight: 600; }
 .settings-category-nav > :hover { background: var(--accent-soft); }
-.settings-model-tabs { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 22px; }
+.settings-model-tabs > button { padding: 8px 12px; min-height: 44px; color: var(--ink-soft); border-radius: 6px; }
+.settings-model-tabs > button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.settings-model-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 16px; }
 .settings-layout > div { margin-top: 0; padding-bottom: 24px; }
-.settings-layout [role="tabpanel"] > section > div:first-child h2 { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif; font-size: 38px; line-height: 1.35; }
-.settings-layout [role="tabpanel"] > section > div:first-child p { font-size: 16px; margin-top: 8px; }
-.settings-layout [role="tabpanel"] > section > div:nth-child(2) { margin-top: 24px; }
+.settings-layout [id^="settings-panel-"] > section > div:first-child h2 { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif; font-size: 38px; line-height: 1.35; }
+.settings-layout [id^="settings-panel-"] > section > div:first-child p { font-size: 16px; margin-top: 8px; }
+.settings-layout [id^="settings-panel-"] > section > div:nth-child(2) { margin-top: 24px; }
 #settings-panel-appearance section section { border-top: 1px solid var(--line); padding-top: 22px; margin-top: 24px; }
 #settings-panel-appearance section section h3 { font-size: 18px; font-weight: 600; }
 .layout-preferences { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 20px; padding-top: 6px; }
@@ -344,12 +346,12 @@ button, a { touch-action: manipulation; }
   .settings-workspace { padding-top: 16px; }
   .settings-layout { display: block; }
   .settings-layout > nav { position: static; border-right: 0; padding-right: 0; margin-bottom: 24px; }
-  .settings-category-nav { display: flex; overflow-x: auto; gap: 4px; padding-block: 4px; }
-  .settings-category-nav > button, .settings-category-nav > a { flex-shrink: 0; min-height: 44px; padding: 8px 12px; font-size: 14px; gap: 7px; }
+  .settings-category-nav { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 4px; padding-block: 4px; }
+  .settings-category-nav > button, .settings-category-nav > a { flex-shrink: 0; min-height: 44px; padding: 8px 4px; justify-content: center; font-size: 13px; gap: 4px; }
   .settings-category-nav > button[aria-current] { box-shadow: inset 0 -3px var(--accent); }
   .settings-category-nav svg { width: 17px; }
-  .settings-layout [role="tabpanel"] > section > div:first-child h2 { font-size: 30px; }
-  .settings-model-tabs { display: flex; flex-wrap: wrap; padding-top: 12px; margin-top: 12px; }
+  .settings-layout [id^="settings-panel-"] > section > div:first-child h2 { font-size: 30px; }
+  .settings-model-tabs { gap: 2px; }
   .layout-preferences { display: grid; grid-template-columns: minmax(0,1fr); gap: 14px; padding: 5px; }
   .layout-preferences > button { display: grid; grid-template-columns: 43% minmax(0,1fr); grid-template-rows: auto auto; column-gap: 14px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; }
   .layout-preferences > button[aria-pressed="true"] { border-color: var(--accent); }
@@ -1074,3 +1076,11 @@ button, a { touch-action: manipulation; }
 .tutor-search-status { display:flex; flex-wrap:wrap; gap:6px 10px; font-size:11px; line-height:1.6; color:var(--ink-soft); }
 .tutor-compose-shortcut { white-space:nowrap; }
 @container (max-width:680px) { .tutor-compose-shortcut { display:none; } }
+
+.account-security-form { max-width: 34rem; margin-block: 12px 20px; }
+.account-security-form fieldset, .account-security-form label { display: grid; gap: 6px; min-width: 0; }
+.account-security-form fieldset { gap: 12px; }
+.account-security-form .login-submit { justify-self: start; background: var(--accent); color: var(--on-accent); padding: 8px 18px; border-radius: 6px; }
+.security-disclosure { border-bottom: 1px solid var(--line); }
+.security-disclosure > button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: space-between; color: var(--accent); }
+.login-form-column input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; vertical-align: middle; accent-color: var(--accent); }

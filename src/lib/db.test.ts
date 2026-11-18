@@ -1059,12 +1059,13 @@ const migrationSql = readFileSync(
 const learningSessionMigration = readFileSync(new URL("../../db/migrations/0002_learning_sessions.sql", import.meta.url), "utf8");
 const artifactMigration = readFileSync(new URL("../../db/migrations/0004_learning_artifacts.sql", import.meta.url), "utf8");
 const conversationMigration = readFileSync(new URL("../../db/migrations/0003_tutor_conversations.sql", import.meta.url), "utf8");
+const recoveryMigration = readFileSync(new URL("../../db/migrations/0006_account_recovery.sql", import.meta.url), "utf8");
 const tombstoneMigration = readFileSync(new URL("../../db/migrations/0005_kb_tombstones.sql", import.meta.url), "utf8");
 
 const normalizeSql = (sql: string): string => sql.replace(/\s+/g, " ").trim().toLowerCase();
 
 describe(`${MIGRATION_FILE}`, () => {
-  const statements = splitSqlStatements(`${migrationSql}\n${learningSessionMigration}\n${conversationMigration}\n${artifactMigration}\n${tombstoneMigration}`);
+  const statements = splitSqlStatements(`${migrationSql}\n${learningSessionMigration}\n${conversationMigration}\n${artifactMigration}\n${tombstoneMigration}\n${recoveryMigration}`);
 
   it("逐条覆盖 SCHEMA，且 CREATE EXTENSION 是单独的第一条", () => {
     const normalized = statements.map(normalizeSql);

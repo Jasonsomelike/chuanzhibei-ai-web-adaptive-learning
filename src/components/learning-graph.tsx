@@ -1,12 +1,13 @@
 "use client";
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { gsap } from "gsap";
 import Link from "next/link";
 import { BaseEdge, type Edge, type EdgeProps, Controls, Handle, MarkerType, Position, ReactFlow, getNodesBounds, getViewportForBounds, useUpdateNodeInternals, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
 import { ArrowRight, BookOpen, Check, Circle, CircleDot, Diamond, ListOrdered, Network, Search } from "lucide-react";
 import "@xyflow/react/dist/style.css";
 import { Hint } from "@/components/primitives/hint";
-import { prefersReducedMotion } from "@/components/motion";
+import { prefersReducedMotion, useSwapIn } from "@/components/motion";
 import { useAppearance } from "@/lib/appearance";
 import { chaptersOf } from "@/lib/chapters";
 import { LEARNING_STATUS_LABELS, layoutLearningNodes, learningEdgeVisual, learningGraphFileName, learningGraphNodes, relatedLearningNodes, type LearningGraphNode } from "@/lib/learningGraph";
@@ -19,21 +20,37 @@ type ConceptNode = Node<{ concept: LearningGraphNode; added: boolean; vertical: 
 const Concept = memo(function Concept({ id, data, selected }: NodeProps<ConceptNode>) {
   const updateInternals = useUpdateNodeInternals();
   useEffect(() => { updateInternals(id); }, [id, data.vertical, data.compact, updateInternals]);
+  const mark = useRef<HTMLSpanElement>(null);
+  useSwapIn(mark, selected ? id : null);
   const item = data.concept;
   const Symbol = item.status === "blocked" ? Diamond : item.status === "mastered" ? CircleDot : Circle;
   return <div style={learningNodeSize(data.compact ? "compact" : data.vertical ? "vertical" : "horizontal")} data-new-step={data.added || undefined} className={`knowledge-node node-${item.status} ${selected ? "node-selected" : ""}`}>
     <Handle id="left" type="target" position={Position.Left} isConnectable={false}  />
     <Handle id="top" type="target" position={Position.Top} isConnectable={false}  />
-    <span className="concept-mark"><Symbol className="concept-anchor" size={30} strokeWidth={selected ? 2.8 : 2} />{item.order ? <span className="concept-order">{item.order}</span> : null}</span>
+    <span ref={mark} className="concept-mark"><Symbol className="concept-anchor" size={30} strokeWidth={selected ? 2.8 : 2} />{item.order ? <span className="concept-order">{item.order}</span> : null}</span>
     <div className="concept-label"><span title={item.name}>{item.name}</span><small>{item.mean === null ? (item.order ? "本次学习" : "") : <>{Math.round(item.mean * 100)}%<span className="node-mastery-sd">±{Math.round((item.sd ?? 0) * 100)}</span> · {item.evidenceN} 条证据</>}{data.added ? " · 新增" : ""}</small></div>
     <Handle id="right" type="source" position={Position.Right} isConnectable={false}  />
     <Handle id="bottom" type="source" position={Position.Bottom} isConnectable={false}  />
   </div>;
 });
 const nodeTypes = { concept: Concept };
-type PrerequisiteEdge = Edge<{ path: string }>;
+type PrerequisiteEdge = Edge<{ path: string; trace: boolean }>;
 function RoutedEdge({ id, data, style, markerEnd }: EdgeProps<PrerequisiteEdge>) {
-  return <BaseEdge id={id} path={data?.path ?? ""} style={style} markerEnd={markerEnd} />;
+  const trace = useRef<SVGPathElement>(null);
+  useEffect(() => {
+    const line = trace.current;
+    if (!line || prefersReducedMotion()) return;
+    const animation = gsap.context(() => {
+      gsap.timeline().fromTo(line, { opacity: .85, strokeDashoffset: .14 }, {
+        strokeDashoffset: -1, duration: .48, ease: "power1.inOut",
+      }).set(line, { opacity: 0 });
+    }, line);
+    return () => animation.revert();
+  }, [data?.trace, data?.path]);
+  return <>
+    <BaseEdge id={id} path={data?.path ?? ""} style={style} markerEnd={markerEnd} />
+    {data?.trace && <path ref={trace} d={data.path} pathLength={1} fill="none" stroke="var(--accent)" strokeWidth={4} strokeDasharray=".14 1" strokeLinecap="round" opacity={0} pointerEvents="none" aria-hidden="true" />}
+  </>;
 }
 const edgeTypes = { prerequisite: RoutedEdge };
 
@@ -76,6 +93,8 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
   const byId = useMemo(() => new Map(models.map(item => [item.id, item])), [models]);
   const selected = models.find(item => item.id === selectedId) ?? models.find(item => item.order === 1) ?? models[0];
   const selectedNodeId = selected?.id;
+  const detailRef = useRef<HTMLDivElement>(null);
+  useSwapIn(detailRef, selectedNodeId ?? null);
   const related = useMemo(() => relatedLearningNodes(graph, steps, selectedNodeId), [graph, steps, selectedNodeId]);
   const direction = compact ? "compact" : vertical ? "vertical" : "horizontal";
   const nodeSize = learningNodeSize(direction);
@@ -121,7 +140,7 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       const visual = learningEdgeVisual(edge.before, edge.after, { selectedId: selectedNodeId, showAll, isBlockedTarget: id => blockedTargets.has(id) });
       const color = strokeVar[visual.tone];
       const downward = direction !== "horizontal";
-      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "prerequisite", data: { path: paths.get(`${edge.before}-${edge.after}`) ?? "" }, markerEnd: { type: MarkerType.ArrowClosed, color, markerUnits: "userSpaceOnUse", width: 22, height: 22 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
+      return { id: `${edge.before}-${edge.after}`, source: edge.before, target: edge.after, sourceHandle: downward ? "bottom" : "right", targetHandle: downward ? "top" : "left", type: "prerequisite", data: { trace: visual.emphasized && !visual.dashed, path: paths.get(`${edge.before}-${edge.after}`) ?? "" }, markerEnd: { type: MarkerType.ArrowClosed, color, markerUnits: "userSpaceOnUse", width: 22, height: 22 }, style: { stroke: color, strokeWidth: visual.emphasized ? 2.2 : 1.65, opacity: visual.opacity, ...(visual.dashed ? { strokeDasharray: "6 4" } : {}) }, ariaLabel: `${byId.get(edge.before)?.name} 是 ${byId.get(edge.after)?.name} 的先修知识${visual.dashed ? "（阻塞来源）" : ""}` };
     });
   }, [graph, visibleModels, byId, direction, selectedNodeId, showAll, paths]);
 
@@ -223,7 +242,7 @@ export default function LearningGraph({ graph, mastery, plan, steps, query, sele
       {steps.length ? <ol>{steps.map((step, index) => <li key={step.kcId} data-kc={step.kcId}><button type="button" aria-pressed={selectedNodeId === step.kcId} onClick={() => focus(step.kcId)}><span className="sequence-number">{index + 1}</span><span>{byId.get(step.kcId)?.name ?? step.kcId}{added.has(step.kcId) ? <small>新增安排</small> : null}</span><span className="sequence-time">{step.estMinutes} 分钟</span></button></li>)}</ol> : <p className="text-sm text-[var(--ink-soft)]">本次范围没有待学步骤。</p>}
       <Link href={studyHref} className="graph-start-learning">开始学习<ArrowRight size={18} /></Link>
     </section>
-    <aside className="knowledge-desktop-inspector" aria-label="知识点详情">{selected ? <div className="knowledge-inspector">
+    <aside className="knowledge-desktop-inspector" aria-label="知识点详情">{selected ? <div ref={detailRef} className="knowledge-inspector">
       <div className="knowledge-inspector-main"><p className="concept-chapter">{selected.chapter}</p><div className="concept-detail-heading"><h2>{selected.name}</h2><span>{selected.mean === null ? "尚未测评" : LEARNING_STATUS_LABELS[selected.status]}</span></div>
         <p className="concept-summary">{selected.summary}</p>
         <div className="concept-prerequisites"><span>前置知识：</span>{selected.prerequisites.length ? selected.prerequisites.map(item => <button type="button" key={item} onClick={() => focus(item)}>{byId.get(item)?.name ?? item}</button>) : <span>无，可以从这里建立基础。</span>}</div>

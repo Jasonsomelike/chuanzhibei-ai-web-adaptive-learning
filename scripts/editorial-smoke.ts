@@ -72,6 +72,15 @@ try {
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1487, height: 1058 });
   await page.screenshot({ path: join(output, "atlas-appearance.png") });
+  await page.getByRole("button", { name: "模型与工具", exact: true }).click();
+  await page.getByRole("tab", { name: "模型供应商", exact: true }).click();
+  await page.reload();
+  await page.locator("#settings-panel-provider").waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("panel"), "provider");
+  await page.goBack(); await page.locator("#settings-panel-mode").waitFor();
+  await page.goForward(); await page.locator("#settings-panel-provider").waitFor();
+  check(true, "设置子页刷新、后退与前进都能恢复对应面板");
+  await page.getByRole("button", { name: "外观", exact: true }).click();
   await chooseLayout("导览", "paper");
   await page.getByRole("button", { name: "深蓝", exact: true }).click(); await rootIs("theme", "indigo");
   check(await page.locator("html").getAttribute("data-layout") === "paper", "换配色不会改变导览布局");

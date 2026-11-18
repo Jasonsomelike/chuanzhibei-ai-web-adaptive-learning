@@ -7,7 +7,7 @@ import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, BookOpen, CheckCircle2, Circle, CircleDot, PencilLine } from "lucide-react";
 import { ButtonLink } from "@/components/ui";
-import { useStaggerIn } from "@/components/motion";
+import { useStaggerIn, useSwapIn } from "@/components/motion";
 import { SUBJECTS } from "@/data/subjects";
 import { useSubject } from "@/lib/subject";
 import { useLearner } from "@/lib/useLearner";
@@ -30,6 +30,8 @@ export function LearningDashboard() {
   const [now] = useState(() => new Date().toISOString());
   const root = useRef<HTMLElement>(null);
   useStaggerIn(root);
+  const schedule = useRef<HTMLOListElement>(null);
+  useSwapIn(schedule, `${targetId}:${budget}:${timing.source}`);
   const plan = useMemo(() => target && progress ? planPath({ graph: target.graph, mastery: progress.mastery, budgetMinutes: budget,timeEstimates:timing.estimates }) : null, [target, progress, budget,timing.estimates]);
   const query = target ? targetQuery(target) : "";
   const attempts = progress?.attempts.filter(attempt => !attempt.retired) ?? [];
@@ -80,7 +82,7 @@ export function LearningDashboard() {
           <LearningTimeNote timing={timing}/>
           <div className="overview-steps">
             <p className="sr-only" aria-live="polite">建议 {plan.steps.length} 步，预计 {plan.totalMinutes} 分钟。{!last ? "尚未测评，按先修顺序建议；诊断后更新。" : ""}</p>
-            {plan.steps.length ? <ol>{plan.steps.slice(0, 4).map((step, index) => <li key={step.kcId}><span className="overview-step-number tabular">{index + 1}</span><div><Link href={`${pathHref}&kc=${encodeURIComponent(step.kcId)}`}>{names.get(step.kcId)}</Link></div><span className="overview-step-time">{step.estMinutes} 分钟</span></li>)}</ol> : <p className="py-4 text-sm text-[var(--ink-soft)]">当前范围内没有待学步骤。</p>}
+            {plan.steps.length ? <ol ref={schedule}>{plan.steps.slice(0, 4).map((step, index) => <li key={step.kcId}><span className="overview-step-number tabular">{index + 1}</span><div><Link href={`${pathHref}&kc=${encodeURIComponent(step.kcId)}`}>{names.get(step.kcId)}</Link></div><span className="overview-step-time">{step.estMinutes} 分钟</span></li>)}</ol> : <p className="py-4 text-sm text-[var(--ink-soft)]">当前范围内没有待学步骤。</p>}
             <Link href={pathHref} className="overview-list-link">完整学习清单<ArrowRight size={16} /></Link>
           </div>
         </section>

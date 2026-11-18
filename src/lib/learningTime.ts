@@ -23,6 +23,7 @@ export interface LearningTimeResult {
   fingerprint: string;
   source: "llm" | "rules";
   model?: string;
+  cached?: boolean;
   estimates: TimeEstimate[];
   notice?: string;
   stages: {

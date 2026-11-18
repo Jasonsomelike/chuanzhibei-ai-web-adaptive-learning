@@ -77,6 +77,7 @@ export async function estimateLearningTime(
   )
     return {
       ...cached.value.result,
+      cached: true,
       stages: cached.value.result.stages.map((s) => ({
         ...s,
         label: `复用估算 · ${s.label}`,

@@ -4,12 +4,20 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { CredentialForm, newRecoveryProof, RecoveryFields } from "@/components/account-security";
+import type { RecoveryProof } from "@/lib/recovery";
+import { useSwapIn } from "@/components/motion";
 import { useAuth } from "@/lib/useAuth";
 
 export default function LoginPage() {
   const router = useRouter();
   const { login, register } = useAuth();
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register" | "recover">("login");
+  const [proof, setProof] = useState<RecoveryProof | null>(null);
+  const [notice, setNotice] = useState("");
+  const formColumn = useRef<HTMLElement>(null);
+  useSwapIn(formColumn, mode);
+  const title = mode === "login" ? "登录账号" : mode === "register" ? "创建账号" : "找回密码";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -32,7 +40,7 @@ export default function LoginPage() {
     setBusy(true);
     try {
       if (mode === "login") await login(email, password);
-      else await register(email, password, name);
+      else await register(email, password, name, proof ?? undefined);
       const value = new URLSearchParams(window.location.search).get("next");
       let destination = "/";
       if (value?.startsWith("/") && !value.startsWith("//")) {
@@ -67,7 +75,7 @@ export default function LoginPage() {
       </section>
       <section
         className="login-form-column"
-        aria-label={mode === "login" ? "登录账号" : "创建账号"}
+        ref={formColumn} aria-label={title}
       >
         <div className="login-modes" role="group" aria-label="登录或注册">
           {(["login", "register"] as const).map((value) => (
@@ -78,6 +86,9 @@ export default function LoginPage() {
               disabled={busy}
               onClick={() => {
                 setMode(value);
+                setPassword("");
+                setNotice("");
+                setProof(null);
                 setError(null);
                 setConfirmation("");
               }}
@@ -86,7 +97,11 @@ export default function LoginPage() {
             </button>
           ))}
         </div>
-        <h1>{mode === "login" ? "登录账号" : "创建账号"}</h1>
+        <h1>{title}</h1>
+        {notice && <p role="status">{notice}</p>}
+        {mode === "recover" ? <CredentialForm action="reset-password" onReset={address => {
+          setEmail(address); setPassword(""); setMode("login"); setNotice("密码已重设。请使用新密码登录，并在账号与隐私中重新设置找回方式。");
+        }} /> : (
         <form onSubmit={(event) => void submit(event)}>
           <fieldset disabled={busy}>
             {mode === "register" ? (
@@ -158,6 +173,10 @@ export default function LoginPage() {
                 ) : null}
               </>
             ) : null}
+            {mode === "register" && <>
+              <label><span><input type="checkbox" checked={proof !== null} onChange={event => setProof(event.target.checked ? newRecoveryProof() : null)} /> 设置密码找回方式</span></label>
+              {proof && <RecoveryFields proof={proof} onChange={setProof} enrolling />}
+            </>}
             {error ? (
               <p className="login-error" role="alert">
                 {error}
@@ -177,7 +196,8 @@ export default function LoginPage() {
               {busy ? "正在处理…" : mode === "login" ? "登录" : "创建账号"}
             </button>
           </fieldset>
-        </form>
+        </form>)}
+        {mode === "login" && <button type="button" disabled={busy} className="login-anonymous" onClick={() => { setMode("recover"); setPassword(""); setNotice(""); setError(null); }}>忘记密码？</button>}
         <Link href="/directions" className="login-anonymous">
           不登录，继续学习
         </Link>

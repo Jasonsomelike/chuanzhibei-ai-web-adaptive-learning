@@ -20,7 +20,8 @@ import {
   type LearningTimeResult,
 } from "./learningTime";
 
-const requests = new Map<string, Promise<LearningTimeResult>>();
+const requests = new Map<string, { request: Promise<LearningTimeResult>; completedAt?: number }>();
+const CACHE_TTL = 24 * 60 * 60 * 1000;
 async function localEstimate(
   provider: ProviderConfig,
   graph: KnowledgeGraph,
@@ -87,10 +88,7 @@ export function useLearningTime(
     if (authLoading || !graph || !progress) return;
     let active = true;
     const controller = new AbortController();
-    // Fast cached results do not flash a loading label.
-    const loadingTimer = window.setTimeout(() => {
-      if (active) setLoadingKey(key);
-    }, 150);
+    let loadingTimer: number | undefined;
     const work = async () => {
       let provider = loadProvider();
       if (user && loadCallMode() === "server")
@@ -103,32 +101,41 @@ export function useLearningTime(
         (provider.mode !== "server" && !provider.apiKey)
       )
         return null;
+      loadingTimer = window.setTimeout(() => { if (active) setLoadingKey(key); }, 150);
       const requestKey = `${key}:${provider.mode}:${provider.baseUrl}:${provider.model}`;
-      let request = requests.get(requestKey);
-      if (!request) {
-        const configured = provider;
-        request = (async () => {
-          if (configured.mode !== "server")
-            return localEstimate(configured, graph, progress, fingerprint);
-          const response = await fetch("/api/learning/time-estimates", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ targetId }),
-            signal: AbortSignal.timeout(150_000),
-          });
-          if (!response.ok) throw new Error("模型估算暂时不可用。");
-          const data = (await response.json()) as LearningTimeResult;
-          const estimates = validateTimeEstimates(
-            { estimates: data.estimates },
-            graph,
-          );
-          if (data.source !== "llm" && data.source !== "rules")
-            throw new Error("估算来源不正确。");
-          return { ...data, estimates };
-        })();
-        requests.set(requestKey, request);
-        if (requests.size > 30) requests.delete(requests.keys().next().value!);
+      const prior = requests.get(requestKey);
+      if (prior && prior.completedAt === undefined) return prior.request;
+      if (prior?.completedAt && Date.now() - prior.completedAt < CACHE_TTL) {
+        return { ...await prior.request, cached: true };
       }
+      const configured = provider;
+      const request = (async () => {
+        if (configured.mode !== "server")
+          return localEstimate(configured, graph, progress, fingerprint);
+        const response = await fetch("/api/learning/time-estimates", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ targetId }),
+          signal: AbortSignal.timeout(150_000),
+        });
+        if (!response.ok) throw new Error("模型估算暂时不可用。");
+        const data = (await response.json()) as LearningTimeResult;
+        const estimates = validateTimeEstimates(
+          { estimates: data.estimates },
+          graph,
+        );
+        if (data.source !== "llm" && data.source !== "rules")
+          throw new Error("估算来源不正确。");
+        return { ...data, estimates };
+      })();
+      const entry: { request: Promise<LearningTimeResult>; completedAt?: number } = { request };
+      requests.set(requestKey, entry);
+      const evict = () => { if (requests.get(requestKey) === entry) requests.delete(requestKey); };
+      void request.then(result => {
+        if (result.source === "llm") entry.completedAt = Date.now();
+        else evict();
+      }, evict);
+      if (requests.size > 30) requests.delete(requests.keys().next().value!);
       return request;
     };
     void work()
@@ -172,6 +179,7 @@ export function useLearningTime(
     source: result?.source ?? "rules",
     pending: loadingKey === key,
     notice: result?.notice,
+    cached: result?.cached ?? false,
     model: result?.model,
     refresh: () => setRefresh((n) => n + 1),
   };

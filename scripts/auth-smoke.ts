@@ -628,6 +628,28 @@ check(
 await a.fetch(`/api/directions?id=${encodeURIComponent(directionId)}`, { method: "DELETE" });
 await b.fetch(`/api/directions?id=${encodeURIComponent(copyData.id ?? "")}`, { method: "DELETE" });
 
+// An old account can enroll without registering again. Rotations invalidate
+// earlier sessions and only the first successful reset consumes the proof.
+const postAuth = (session: ReturnType<typeof client>, body: Record<string, unknown>) =>
+  session.fetch("/api/auth", { method: "POST", body: JSON.stringify(body) });
+const recovery = { question: "哪一本书对你影响最大？", answer: "离散数学", code: crypto.randomUUID().replaceAll("-", "") };
+const password = crypto.randomUUID() + "a1";
+const newPassword = crypto.randomUUID() + "b2";
+const device = client();
+await postAuth(device, { action: "login", ...userA });
+const enrolled = await postAuth(a, { action: "set-recovery", password: userA.password, recovery });
+check("现有账号设置安全问题与恢复码", enrolled.ok, `HTTP ${enrolled.status}`);
+const changed = await postAuth(a, { action: "change-password", password: userA.password, newPassword: password });
+const oldDevice = await (await device.fetch("/api/auth")).json();
+check("改密后旧设备失效、当前设备继续登录", changed.ok && oldDevice.user === null && (await (await a.fetch("/api/auth")).json()).user?.email === userA.email, "");
+const reset = { action: "reset-password", email: userA.email, newPassword, recovery };
+check("错误安全答案不能找回账号", !(await postAuth(anon, { ...reset, recovery: { ...recovery, answer: "错误" } })).ok, "");
+const attempts = await Promise.all([postAuth(anon, reset), postAuth(anon, reset)]);
+check("一次性恢复码并发使用仅一次生效", attempts.filter(res => res.ok).length === 1, "");
+check("重设密码后旧会话失效，新密码可以登录", (await (await a.fetch("/api/auth")).json()).user === null &&
+  !(await postAuth(a, { action: "login", email: userA.email, password })).ok &&
+  (await postAuth(a, { action: "login", email: userA.email, password: newPassword })).ok, "");
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 通过`);
 if (failed.length > 0) {

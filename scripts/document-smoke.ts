@@ -315,7 +315,7 @@ try {
   await page.screenshot({ path: join(output, "documents-tutor.png") });
   await page.goto(`${base}/path?subject=data-structures&budget=30`);
   await page
-    .getByText(/用时由 time-estimator-fixture/)
+    .getByText(/模型估算 · time-estimator-fixture/)
     .waitFor({ timeout: 30000 });
   check(
     (await page.locator("[data-path-summary]").innerText()).includes("22"),
@@ -347,7 +347,7 @@ try {
   const localPage = await local.newPage();
   await localPage.goto(`${base}/path?subject=data-structures&budget=30`);
   await localPage
-    .getByText(/用时由 local-time-fixture/)
+    .getByText(/模型估算 · local-time-fixture/)
     .waitFor({ timeout: 30000 });
   check(
     (await localPage.locator("[data-path-summary]").innerText()).includes("22"),

@@ -152,7 +152,7 @@ describe("POST /api/auth 的入口守卫", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(h.register).toHaveBeenCalledWith("u@test.local", "pw", "测试");
+    expect(h.register).toHaveBeenCalledWith("u@test.local", "pw", "测试", undefined);
     expect(h.setSessionCookie).toHaveBeenCalledWith("t-register");
   });
 

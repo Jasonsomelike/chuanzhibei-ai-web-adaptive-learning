@@ -8,10 +8,10 @@ export function LearningTimeNote({
     <div className="my-2 text-xs leading-relaxed text-[var(--ink-soft)]">
       <p role="status">
         {timing.pending
-          ? "正在结合课程内容和学习证据估算用时，先显示规则初估…"
+          ? "正在获取模型估算，以下暂用规则初估…"
           : timing.source === "llm"
-            ? `用时由 ${timing.model} 估算并校验；实际进度可调整。`
-            : "用时按内容与学习证据初估；配置模型后会结合学情估算。"}
+            ? `模型估算 · ${timing.model}${timing.cached ? "（复用已有结果）" : ""}。分钟数已通过校验。`
+            : "规则初估 · 根据课程内容、先修关系和作答证据计算。"}
         {timing.notice ? ` ${timing.notice}` : ""}
         {!timing.pending ? (
           <button

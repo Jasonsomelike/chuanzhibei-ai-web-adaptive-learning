@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { register, login, logout, getCurrentUser, setSessionCookie } from "@/lib/auth";
+import { register, login, logout, manageCredentials, resetPassword, getCurrentUser, setSessionCookie } from "@/lib/auth";
 import { MAX_AUTH_BODY_BYTES } from "@/lib/bodyLimit";
 import { assertMutationOrigin, readLimitedText } from "@/lib/routeAuth";
 
@@ -8,6 +8,8 @@ export const runtime = "nodejs";
 interface AuthBody {
   action?: unknown;
   email?: unknown;
+  recovery?: unknown;
+  newPassword?: unknown;
   password?: unknown;
   displayName?: unknown;
 }
@@ -62,9 +64,20 @@ export async function POST(request: Request) {
     const email = typeof body.email === "string" ? body.email : "";
     const password = typeof body.password === "string" ? body.password : "";
 
+    const next = typeof body.newPassword === "string" ? body.newPassword : "";
+    if (action === "reset-password") {
+      const error = await resetPassword(email, next, body.recovery);
+      return NextResponse.json(error ? { error } : { ok: true }, { status: error ? 400 : 200 });
+    }
+    if (action === "change-password" || action === "set-recovery") {
+      const user = await getCurrentUser();
+      if (!user) return NextResponse.json({ error: "请先登录。" }, { status: 401 });
+      const error = await manageCredentials(user.id, password, next, action === "set-recovery" ? body.recovery ?? null : undefined);
+      return NextResponse.json(error ? { error } : { ok: true }, { status: error ? 400 : 200 });
+    }
     if (action === "register") {
       const displayName = typeof body.displayName === "string" ? body.displayName : "";
-      const result = await register(email, password, displayName);
+      const result = await register(email, password, displayName, body.recovery);
       if (!result.ok) {
         return NextResponse.json(
           { error: result.error, field: result.field },

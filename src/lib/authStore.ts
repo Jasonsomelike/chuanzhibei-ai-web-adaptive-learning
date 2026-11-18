@@ -20,6 +20,7 @@
  * 本文件只执行计划（applyAccountTransition），不另写一套清库流程。
  */
 
+import type { RecoveryProof } from "./recovery";
 import { MATERIALS_STORAGE_KEY } from "@/lib/materials";
 import { clearProgressSyncCache } from "@/lib/progressClient";
 import { CHAPTERS_STORAGE_KEY } from "@/lib/chapters";
@@ -59,7 +60,7 @@ export interface AuthStore {
   /** 读取 /api/auth；并发调用共享同一个请求。 */
   refresh(): Promise<void>;
   login(email: string, password: string): Promise<AuthUser>;
-  register(email: string, password: string, displayName: string): Promise<AuthUser>;
+  register(email: string, password: string, displayName: string, recovery?: RecoveryProof): Promise<AuthUser>;
   logout(): Promise<void>;
 }
 
@@ -340,6 +341,7 @@ async function register(
   email: string,
   password: string,
   displayName: string,
+  recovery?: RecoveryProof,
 ): Promise<AuthUser> {
   generation += 1;
   inFlight = null;
@@ -347,7 +349,7 @@ async function register(
   const res = await fetch("/api/auth", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "register", email, password, displayName }),
+    body: JSON.stringify({ action: "register", email, password, displayName, recovery }),
   });
   const data = (await res.json()) as {
     ok?: boolean;

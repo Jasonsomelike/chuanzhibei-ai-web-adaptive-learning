@@ -478,13 +478,28 @@ function createMemoryDb(): Db {
         if ([...users.values()].some((u) => u.email === email)) {
           throw new Error("duplicate email");
         }
-        users.set(id, { id, email, password_hash, display_name, created_at });
+        users.set(id, { id, email, password_hash, display_name, created_at, recovery_hash: params[5] ?? null, auth_version: 0 });
+        return 1;
+      }
+
+      if (q.startsWith("update users set recovery_hash") || q.startsWith("update users set password_hash")) {
+        const stored = users.get(params[1] as string);
+        const row = stored && { ...stored };
+        if (!row || row.password_hash !== params[2]) return 0;
+        if (q.includes("and recovery_hash =") && row.recovery_hash !== params[3]) return 0;
+        if (q.startsWith("update users set recovery_hash")) row.recovery_hash = params[0];
+        else {
+          row.password_hash = params[0];
+          row.auth_version = Number(row.auth_version) + 1;
+          if (q.includes("recovery_hash = null")) row.recovery_hash = null;
+        }
+        users.set(params[1] as string, row);
         return 1;
       }
 
       if (q.startsWith("insert into sessions")) {
         const [token, user_id, expires_at, created_at] = params as string[];
-        sessions.set(token, { token, user_id, expires_at, created_at });
+        sessions.set(token, { token, user_id, expires_at, created_at, auth_version: params[4] ?? 0 });
         return 1;
       }
 
@@ -1137,7 +1152,7 @@ function createMemoryDb(): Db {
         if (!s) return null;
         // 关联查出用户（对应 Postgres 版的 JOIN users）
         const u = users.get(s.user_id as string);
-        if (!u) return null;
+        if (!u || s.auth_version !== u.auth_version) return null;
         return {
           user_id: s.user_id,
           expires_at: s.expires_at,
@@ -1235,6 +1250,9 @@ export const SCHEMA = [
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_hash TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
   `CREATE TABLE IF NOT EXISTS progress (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

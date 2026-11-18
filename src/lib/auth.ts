@@ -10,6 +10,7 @@
  * 不引第三方认证库：本项目的认证需求只有「注册/登录/登出/取当前用户」四件事。
  */
 
+import { recoverySecret } from "./recovery";
 import { cookies } from "next/headers";
 import { getDb } from "@/lib/db";
 
@@ -30,6 +31,8 @@ interface UserRow {
   id: string;
   email: string;
   password_hash: string;
+  auth_version: number;
+  recovery_hash: string | null;
   display_name: string;
   created_at: string;
 }
@@ -167,6 +170,7 @@ export async function register(
   email: string,
   password: string,
   displayName: string,
+  recovery?: unknown,
 ): Promise<AuthResult> {
   for (const err of [
     validateEmail(email),
@@ -186,14 +190,16 @@ export async function register(
 
   const id = newId();
   const now = new Date().toISOString();
+  const proof = recoverySecret(recovery);
+  if (recovery !== undefined && !proof) return { ok: false, error: "请填写完整的安全问题和恢复码。" };
   const passwordHash = await hashPassword(password);
 
   await db.run(
-    "INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES ($1, $2, $3, $4, $5)",
-    [id, normalized, passwordHash, displayName.trim(), now],
+    "INSERT INTO users (id, email, password_hash, display_name, created_at, recovery_hash) VALUES ($1, $2, $3, $4, $5, $6)",
+    [id, normalized, passwordHash, displayName.trim(), now, proof ? await hashPassword(proof) : null],
   );
 
-  const token = await createSession(id);
+  const token = await createSession(id, 0);
   return {
     ok: true,
     token,
@@ -218,19 +224,19 @@ export async function login(email: string, password: string): Promise<AuthResult
   const ok = await verifyPassword(password, row.password_hash);
   if (!ok) return genericError;
 
-  const token = await createSession(row.id);
+  const token = await createSession(row.id, row.auth_version);
   return { ok: true, token, user: toPublicUser(row) };
 }
 
-async function createSession(userId: string): Promise<string> {
+async function createSession(userId: string, version: number): Promise<string> {
   const db = await getDb();
   const token = newToken();
   const now = new Date();
   const expires = new Date(now.getTime() + SESSION_DAYS * 24 * 60 * 60 * 1000);
 
   await db.run(
-    "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES ($1, $2, $3, $4)",
-    [token, userId, expires.toISOString(), now.toISOString()],
+    "INSERT INTO sessions (token, user_id, expires_at, created_at, auth_version) VALUES ($1, $2, $3, $4, $5)",
+    [token, userId, expires.toISOString(), now.toISOString(), version],
   );
 
   // 顺手清理过期会话，避免表无限增长
@@ -260,7 +266,7 @@ export async function getCurrentUser(): Promise<PublicUser | null> {
   }>(
     `SELECT s.user_id, s.expires_at, u.email, u.display_name, u.created_at
      FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.token = $1`,
+     WHERE s.token = $1 AND s.auth_version = u.auth_version`,
     [token],
   );
 
@@ -277,6 +283,41 @@ export async function getCurrentUser(): Promise<PublicUser | null> {
     displayName: row.display_name,
     createdAt: row.created_at ?? "",
   };
+}
+
+/** Credential updates compare the verified hash again at write time. A password
+ * change advances the session version atomically, including racing logins. */
+export async function manageCredentials(userId: string, current: string, next: string, recovery?: unknown) {
+  const db = await getDb();
+  const row = await db.one<UserRow>("SELECT * FROM users WHERE id = $1", [userId]);
+  if (!row || !await verifyPassword(current, row.password_hash)) return "当前密码不正确。";
+  if (recovery !== undefined) {
+    const proof = recoverySecret(recovery);
+    if (!proof) return "请填写完整的安全问题和恢复码。";
+    const updated = await db.run("UPDATE users SET recovery_hash = $1 WHERE id = $2 AND password_hash = $3", [await hashPassword(proof), row.id, row.password_hash]);
+    return updated ? null : "账号信息已变更，请重试。";
+  }
+  const invalid = validatePassword(next);
+  if (invalid) return invalid.message;
+  if (current === next) return "新密码与当前密码相同。";
+  const updated = await db.run("UPDATE users SET password_hash = $1, auth_version = auth_version + 1 WHERE id = $2 AND password_hash = $3", [await hashPassword(next), row.id, row.password_hash]);
+  if (!updated) return "账号信息已变更，请重试。";
+  await setSessionCookie(await createSession(row.id, row.auth_version + 1));
+  return null;
+}
+
+export async function resetPassword(email: string, next: string, recovery: unknown) {
+  const invalid = validatePassword(next);
+  if (invalid) return invalid.message;
+  const proof = recoverySecret(recovery);
+  const denied = "邮箱、安全问题、答案或恢复码不匹配。";
+  if (!proof || validateEmail(email)) return denied;
+  const db = await getDb();
+  const row = await db.one<UserRow>("SELECT * FROM users WHERE email = $1", [email.trim().toLowerCase()]);
+  const valid = await verifyPassword(proof, row?.recovery_hash ?? ("pbkdf2$600000$00000000000000000000000000000000$" + "0".repeat(64)));
+  if (!valid || !row?.recovery_hash) return denied;
+  const changed = await db.run("UPDATE users SET password_hash = $1, auth_version = auth_version + 1, recovery_hash = NULL WHERE id = $2 AND password_hash = $3 AND recovery_hash = $4", [await hashPassword(next), row.id, row.password_hash, row.recovery_hash]);
+  return changed ? null : denied;
 }
 
 /** 设置会话 Cookie。 */
