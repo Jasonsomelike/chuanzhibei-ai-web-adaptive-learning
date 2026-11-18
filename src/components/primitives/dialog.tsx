@@ -5,9 +5,9 @@ import type { ReactNode } from "react";
 import { Icon } from "@/components/icons";
 
 /** Shared focus trap, Escape handling and focus restoration for menus and material drawers. */
-export function AppDialog({ open, onOpenChange, trigger, title, description, children, drawer = false, onCloseAutoFocus }: {
+export function AppDialog({ open, onOpenChange, trigger, title, description, toolbar, children, drawer = false, onCloseAutoFocus }: {
   open: boolean; onOpenChange: (open: boolean) => void; trigger?: ReactNode;
-  title: string; description: string; children: ReactNode; drawer?: boolean;
+  title: string; description: string; toolbar?: ReactNode; children: ReactNode; drawer?: boolean;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -15,11 +15,14 @@ export function AppDialog({ open, onOpenChange, trigger, title, description, chi
     <Dialog.Portal>
       <Dialog.Overlay className="app-dialog-overlay" />
       <Dialog.Content onCloseAutoFocus={onCloseAutoFocus} className={drawer ? "app-dialog app-drawer" : "app-dialog"}>
-        <div className="flex items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4">
+        <div className="app-dialog-heading">
           <div><Dialog.Title className="font-semibold">{title}</Dialog.Title><Dialog.Description className="mt-1 text-xs leading-relaxed text-[var(--ink-faint)]">{description}</Dialog.Description></div>
           <Dialog.Close className="icon-button shrink-0" aria-label="关闭"><Icon name="close" /></Dialog.Close>
         </div>
-        <div className="min-h-0 overflow-y-auto p-5">{children}</div>
+        <div className="app-dialog-body">
+          {toolbar && <div className="app-dialog-toolbar">{toolbar}</div>}
+          <div className="app-dialog-inner">{children}</div>
+        </div>
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>;

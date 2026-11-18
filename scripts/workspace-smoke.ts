@@ -15,6 +15,43 @@ page.on("pageerror", e => errors.push(e.message));
 let checks = 0;
 const check = (value: unknown, label: string) => { assert(value, label); checks++; console.log(`PASS ${label}`); };
 try {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto(`${base}/tutor?subject=data-structures&materials=1`);
+    const dialog = page.getByRole("dialog", { name: "课程学习材料" });
+    const body = dialog.locator(".app-dialog-body");
+    const text = dialog.locator(".workbench-reader article p").nth(1);
+    await text.hover();
+    const initialPageY = await page.evaluate(() => scrollY);
+    await page.mouse.wheel(0, 420);
+    await page.waitForFunction(() => document.querySelector(".app-dialog-body")!.scrollTop > 150);
+    await page.mouse.wheel(0, 10000);
+    await page.waitForFunction(() => {
+      const el = document.querySelector(".app-dialog-body")!;
+      return el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+    });
+    check(await page.evaluate(() => scrollY) === initialPageY, `${width}px 教材正文滚轮抵达末段，底层页面保持原位`);
+    await page.mouse.wheel(0, -420);
+    await page.waitForFunction(() => {
+      const el = document.querySelector(".app-dialog-body")!;
+      return el.scrollHeight - el.clientHeight - el.scrollTop > 150;
+    });
+    await dialog.getByRole("tab", { name: "学习设置" }).click();
+    check(await body.evaluate(el => el.scrollTop) === 0, `${width}px 滚动后可直接切换材料标签，新面板从顶部开始`);
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+  }
+  await page.setViewportSize({ width: 1280, height: 640 });
+  await page.keyboard.press("Control+k");
+  const search = page.getByRole("dialog", { name: "快速前往" });
+  await search.getByRole("link").first().hover();
+  await page.mouse.wheel(0, 640);
+  await page.waitForFunction(() => document.querySelector(".app-dialog-body")!.scrollTop > 150);
+  await search.getByRole("textbox").fill("学习路径");
+  await search.getByRole("link").filter({ hasText: "学习路径" }).waitFor();
+  check(await search.getByRole("link").count() === 1, "搜索列表使用弹窗滚轮，滚动后仍可筛选");
+  await page.keyboard.press("Escape");
+  await search.waitFor({ state: "hidden" });
   for (const width of [1480, 390]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
     await page.goto(`${base}/path?subject=network&budget=90`);

@@ -53,13 +53,13 @@ export function MaterialReader({
   const activeChapter = readableViews.find(view => view.chapter === openChapter) ?? readableViews[0];
 
   if (variant === "workbench") return <section aria-label="教材原文" className="workbench-reader">
-    <label htmlFor={chapterId} className="mb-2 block text-xs text-[var(--ink-faint)]">阅读章节 · {readableViews.length} 章 / {totalEntries} 段</label>
+    <label htmlFor={chapterId} className="mb-2 block text-xs text-[var(--ink-faint)]">阅读章节 · 共 {readableViews.length} 章</label>
     <select id={chapterId} value={activeChapter.chapter} onChange={event => setOpenChapter(event.target.value)} className="mb-6 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-sm">{readableViews.map(view => <option key={view.chapter} value={view.chapter}>{view.chapter}</option>)}</select>
     <div className="space-y-8">{activeChapter.items.filter(item => item.hasContent).map(item => <article key={item.kcId}>
       <h2 className="text-lg font-semibold">{item.kcName}</h2>
       {item.entries.map((entry, index) => <div key={`${item.kcId}-${index}`} className="mt-3">
         <p className="text-[11px] leading-relaxed text-[var(--ink-faint)]">{entry.label}</p>
-        <p className="mt-3 whitespace-pre-wrap wrap-anywhere text-[15px] leading-[1.9] text-[var(--ink-soft)]">{entry.text}</p>
+        <p className="mt-3 whitespace-pre-wrap wrap-anywhere text-[var(--ink)]">{entry.text}</p>
         {onAsk ? <button type="button" data-material-ask onClick={() => onAsk(entry.text, entry.label)} className="mt-3 inline-flex items-center gap-2 text-xs text-[var(--accent)] underline underline-offset-4"><Icon name="chat" size={15} />围绕这段提问</button> : null}
       </div>)}
     </article>)}</div>
